@@ -1,0 +1,31 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0.0",
+	"FriendlyName": "Nav3D",
+	"Description": "3D Pathfinding module using Sparse Voxel Octrees",
+	"Category": "AI",
+	"CreatedBy": "Darby Costello",
+	"CreatedByURL": "",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"CanContainContent": false,
+	"IsBetaVersion": false,
+	"Installed": false,
+	"Modules": 
+	[
+		{
+			"Name": "Nav3D",
+			"Type": "Runtime",
+			"LoadingPhase": "Default",
+			"WhitelistPlatforms": [ "Win64", "Win32" ]
+		},
+		{
+			"Name": "Nav3DEditor",
+			"Type": "Editor",
+			"LoadingPhase":  "PostEngineInit",
+			"WhitelistPlatforms": [ "Win64", "Win32" ]
+		}
+	]
+}
