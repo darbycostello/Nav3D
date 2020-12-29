@@ -38,7 +38,7 @@ bool UNav3DOcclusionComponent::FindVolume(ANav3DVolume*& CurrentVolume) const {
 
 	for (auto& NavVolume : Volumes) {
 		CurrentVolume = Cast<ANav3DVolume>(NavVolume);
-		if (CurrentVolume->IsValidLowLevel() && Volume->EncompassesPoint(GetOwner()->GetActorLocation())) {
+		if (CurrentVolume->IsValidLowLevel() && Volume->IsWithinBounds(GetOwner()->GetActorLocation())) {
 			return true;
 		}
 	}

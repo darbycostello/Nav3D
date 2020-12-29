@@ -19,8 +19,8 @@ void UNav3DComponent::BeginPlay()
 }
 
 bool UNav3DComponent::VolumeContainsOctree() const
-{
-	return Volume && GetOwner() && Volume->EncompassesPoint(GetPawnLocation()) && Volume->OctreeValid();
+{	
+	return Volume && GetOwner() && Volume->IsWithinBounds(GetOwner()->GetActorLocation()) && Volume->OctreeValid();
 }
 
 bool UNav3DComponent::FindVolume()
@@ -31,10 +31,12 @@ bool UNav3DComponent::FindVolume()
 	for (auto& NavVolume : Volumes)
 	{
 		ANav3DVolume* CurrentVolume = Cast<ANav3DVolume>(NavVolume);
-		if (CurrentVolume && Volume->EncompassesPoint(GetOwner()->GetActorLocation()))
-		{
-			Volume = CurrentVolume;
-			return true;
+		if (CurrentVolume) {
+			
+			if (CurrentVolume->IsWithinBounds(GetOwner()->GetActorLocation())) {
+				Volume = CurrentVolume;
+				return true;
+			}
 		}
 	}
 	return false;
@@ -59,8 +61,8 @@ FNav3DOctreeEdge UNav3DComponent::GetEdgeAtLocation() const
 		{
 			FVector NodePosition;
 			const bool bIsValid = Volume->GetEdgeLocation(Edge, NodePosition);
-			DrawDebugLine(GetWorld(), GetPawnLocation(), NodePosition, bIsValid ? FColor::Green : FColor::Red, false, -1.f, 0, 10.f);
-			DrawDebugString(GetWorld(), GetPawnLocation() + FVector(0.f, 0.f, -50.f), Edge.ToString(), nullptr, FColor::Yellow, 0.01f);
+			DrawDebugLine(GetWorld(), GetOwner()->GetActorLocation(), NodePosition, bIsValid ? FColor::Green : FColor::Red, false, -1.f, 0, 10.f);
+			DrawDebugString(GetWorld(), GetOwner()->GetActorLocation() + FVector(0.f, 0.f, -50.f), Edge.ToString(), nullptr, FColor::Yellow, 0.01f);
 		}
 	}
 	return Edge;
@@ -69,7 +71,7 @@ FNav3DOctreeEdge UNav3DComponent::GetEdgeAtLocation() const
 void UNav3DComponent::FindPath(const FVector& StartLocation, const FVector& TargetLocation, FFindPathTaskCompleteDynamicDelegate OnComplete, bool &bSuccess)
 {
 	bSuccess = false;
-	UE_LOG(LogTemp, Log, TEXT("Finding path from %s and %s"), *StartLocation.ToString(), *TargetLocation.ToString());
+	UE_LOG(LogTemp, Warning, TEXT("Finding path from %s to %s"), *StartLocation.ToString(), *TargetLocation.ToString());
 	FNav3DOctreeEdge StartEdge;
 	FNav3DOctreeEdge TargetEdge;
 	if (VolumeContainsOctree())
@@ -88,14 +90,15 @@ void UNav3DComponent::FindPath(const FVector& StartLocation, const FVector& Targ
 
 		FNav3DPathFindingConfig Config;
 		Config.EstimateWeight = HeuristicWeight;
-		Config.NodeSizeCompensation = NodeSizeCompensation;
+		Config.NodeSizeCompensation = NodeSizePreference;
 		Config.PathSmoothing = PathSmoothing;
 
 		(new FAutoDeleteAsyncTask<FNav3DFindPathTask>(this, StartEdge, TargetEdge, StartLocation, TargetLocation, Config, &Nav3DPath, OnComplete))->StartBackgroundTask();
 		bSuccess = true;
+		return;
 	}
 
-	UE_LOG(LogTemp, Error, TEXT("Pawn is not inside a Nav3DVolume, or octree has not been generated"));
+	UE_LOG(LogTemp, Error, TEXT("Nav3D component owner is not inside a Nav3D volume, or octree has not been generated"));
 }
 
 void UNav3DComponent::DebugLocalPosition() const
@@ -105,20 +108,11 @@ void UNav3DComponent::DebugLocalPosition() const
 		for (int32 I = 0; I < Volume->NumLayers - 1; I++)
 		{
 			FIntVector Location;
-			Volume->GetVolumeExtents(GetPawnLocation(), I, Location);
+			Volume->GetVolumeExtents(GetOwner()->GetActorLocation(), I, Location);
 			FString CodeString = FString::FromInt(morton3D_64_encode(Location.X, Location.Y, Location.Z));
-			DrawDebugString(GetWorld(), GetPawnLocation() + FVector(0.f, 0.f, I * 50.0f), Location.ToString() + " - " + CodeString, nullptr, FColor::White, 0.01f);
+			DrawDebugString(GetWorld(), GetOwner()->GetActorLocation() + FVector(0.f, 0.f, I * 50.0f), Location.ToString() + " - " + CodeString, nullptr, FColor::White, 0.01f);
 		}
 	}
-}
-
-FVector UNav3DComponent::GetPawnLocation() const {
-	FVector Location;
-	AController* Controller = Cast<AController>(GetOwner());
-	if (Controller) {
-		if (APawn* Pawn = Controller->GetPawn()) Location = Pawn->GetActorLocation();
-	}
-	return Location;
 }
 
 void UNav3DComponent::ExecutePathFinding(
@@ -129,7 +123,7 @@ void UNav3DComponent::ExecutePathFinding(
 	FNav3DPathFindingConfig Config,
 	FNav3DPathSharedPtr* Path) {
 
-	TArray<FNav3DOctreeEdge> OpenSet;
+	TSet<FNav3DOctreeEdge> OpenSet;
 	TSet<FNav3DOctreeEdge> ClosedSet;
 	TMap<FNav3DOctreeEdge, FNav3DOctreeEdge> Parent;
 	TMap<FNav3DOctreeEdge, float> G;
@@ -152,10 +146,12 @@ void UNav3DComponent::ExecutePathFinding(
 		OpenSet.Remove(CurrentEdge);
 		ClosedSet.Add(CurrentEdge);
 
-		if (CurrentEdge == TargetEdge) {
+		if (CurrentEdge.NodeIndex == TargetEdge.NodeIndex) {
 			FNav3DPathPoint PathPoint;
 			TArray<FNav3DPathPoint> PathPoints;
-			if (!Path || !Path->IsValid()) return;
+			if (!Path || !Path->IsValid()) {
+				return;
+			}
 
 			while (Parent.Contains(CurrentEdge) && !(CurrentEdge == Parent[CurrentEdge])) {
 				CurrentEdge = Parent[CurrentEdge];
@@ -182,7 +178,6 @@ void UNav3DComponent::ExecutePathFinding(
 			for (auto& Point : PathPoints) {
 				Path->Get()->GetPathPoints().Add(Point);
 			}
-			UE_LOG(LogTemp, Display, TEXT("Pathfinding complete, iterations : %i"), I);
 			return;
 		}
 
@@ -197,8 +192,12 @@ void UNav3DComponent::ExecutePathFinding(
 
 		for (auto& AdjacentEdge : AdjacentEdges) {
 			if (AdjacentEdge.IsValid()) {
-				if (ClosedSet.Contains(AdjacentEdge)) continue;
-				if (!OpenSet.Contains(AdjacentEdge)) OpenSet.Add(AdjacentEdge);
+				if (ClosedSet.Contains(AdjacentEdge)) {
+					continue;
+				}
+				if (!OpenSet.Contains(AdjacentEdge)) {
+					OpenSet.Add(AdjacentEdge);
+				}
 
 				float GScore = FLT_MAX;
 				if (G.Contains(CurrentEdge))
@@ -206,10 +205,15 @@ void UNav3DComponent::ExecutePathFinding(
 					FVector CurrentLocation(0.f), AdjacentLocation(0.f);
 					Volume->GetEdgeLocation(CurrentEdge, CurrentLocation);
 					Volume->GetEdgeLocation(AdjacentEdge, AdjacentLocation);
-					float Cost = (CurrentLocation - AdjacentLocation).Size() * (1.0f - (static_cast<float>(TargetEdge.GetLayerIndex()) / static_cast<float>(Volume->NumLayers)) * Config.NodeSizeCompensation);
+					float Cost = 1.0f - static_cast<float>(TargetEdge.GetLayerIndex()) / static_cast<float>(Volume->NumLayers) * Config.NodeSizeCompensation;
+					if (Config.Heuristic == Euclidean) {
+						Cost *= (CurrentLocation - AdjacentLocation).Size();
+					}
 					GScore = G[CurrentEdge] + Cost;
 				}
-				else G.Add(CurrentEdge, FLT_MAX);
+				else {
+					G.Add(CurrentEdge, FLT_MAX);
+				}
 
 				if (GScore >= (G.Contains(AdjacentEdge) ? G[AdjacentEdge] : FLT_MAX)) continue;
 				Parent.Add(AdjacentEdge, CurrentEdge);
@@ -229,14 +233,18 @@ float UNav3DComponent::HeuristicScore(const FNav3DOctreeEdge StartEdge, const FN
 	FVector StartLocation, TargetLocation;
 	Volume->GetEdgeLocation(StartEdge, StartLocation);
 	Volume->GetEdgeLocation(TargetEdge, TargetLocation);
-	// Use Euclidean distance as heuristic
-	return (StartLocation - TargetLocation).Size() * (1.0f - (static_cast<float>(TargetEdge.GetLayerIndex()) / static_cast<float>(Volume->NumLayers)) * Config.NodeSizeCompensation);
+
+	if (Config.Heuristic == Manhattan) {
+		return FMath::Abs(TargetLocation.X - StartLocation.X) + FMath::Abs(TargetLocation.Y - StartLocation.Y) + FMath::Abs(TargetLocation.Z - StartLocation.Z);	
+	}
+	
+	return (StartLocation - TargetLocation).Size() * (1.0f - (static_cast<float>(TargetEdge.LayerIndex) / static_cast<float>(Volume->NumLayers)) * Config.NodeSizeCompensation);	
 }
 
 // Apply Catmull-Rom smoothing to the Nav3DPath shared path
-void UNav3DComponent::ApplyPathSmoothing() const {
+void UNav3DComponent::ApplyPathSmoothing(FNav3DPathSharedPtr* Path) const {
 	if (PathSmoothing < 1) return;
-	TArray<FNav3DPathPoint> PathPoints = Nav3DPath.Get()->GetPathPoints();
+	TArray<FNav3DPathPoint> PathPoints = Path->Get()->GetPathPoints();
 	if (PathPoints.Num() < 3) return;
 	const FNav3DPathPoint Start = FNav3DPathPoint(PathPoints[1].PointLocation - PathPoints[0].PointLocation, PathPoints[0].PointLayer);
 	PathPoints.Insert(FNav3DPathPoint(PathPoints[0].PointLocation - Start.PointLocation, PathPoints[0].PointLayer), 0);  
@@ -254,17 +262,16 @@ void UNav3DComponent::ApplyPathSmoothing() const {
 		}
 	}
 	SplinePoints.Add(PathPoints[PathPoints.Num() - 2]);
-	Nav3DPath->SetPathPoints(SplinePoints);
+	Path->Get()->SetPathPoints(SplinePoints);
 }
 
-void UNav3DComponent::DebugDrawNavPath() const
+void UNav3DComponent::DebugDrawNavPath(FNav3DPathSharedPtr* Path) const
 {
-	if (!bDebugDrawNavPath) return;
-	const UWorld* World = GetWorld();
-	if (!World || !Volume) return;
-	for (auto& Point: Nav3DPath.Get()->PathPoints) {
-		const float Size = Point.PointLayer == 0 ? Volume->GetVoxelScale(Point.PointLayer) * 0.25f : Volume->GetVoxelScale(Point.PointLayer) * 0.5f;
-		DrawDebugBox(World, Point.PointLocation, FVector(Size), DebugDrawNavPathColour, true, -1.f, 0, 30.f);
-		DrawDebugSphere(World, Point.PointLocation, 30.f, 20, FColor::Cyan, true, -1.f, 0, 100.f);
+	TArray<FNav3DPathPoint> PathPoints = Path->Get()->GetPathPoints();
+	if (!GetWorld() || PathPoints.Num() < 2) return;
+	DrawDebugSphere(GetWorld(), PathPoints[0].PointLocation,DebugPathLineScale * 2.f, 12, DebugPathColour,true,-1.f,0, DebugPathLineScale);
+	for (int32 I = 1; I < PathPoints.Num(); I++) {
+		DrawDebugLine(GetWorld(), PathPoints[I - 1].PointLocation, PathPoints[I].PointLocation, DebugPathColour, true, -1, DebugPathLineScale);
+		DrawDebugSphere( GetWorld(), PathPoints[I].PointLocation, DebugPathLineScale * 2.f, 12, DebugPathColour, true, -1.f, 0, DebugPathLineScale);		
 	}
 }

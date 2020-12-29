@@ -3,6 +3,8 @@
 #include "CoreMinimal.h"
 #include "Nav3D/Private/libmorton/morton.h"
 
+enum NAV3D_API EPathFindingHeuristic { Manhattan, Euclidean };
+
 struct NAV3D_API FNav3DOctreeEdge {
 	uint8 LayerIndex:4;
 	uint_fast32_t NodeIndex:22;
@@ -32,6 +34,7 @@ struct NAV3D_API FNav3DOctreeEdge {
 	bool IsValid() const { return LayerIndex != 15; }
 	void Invalidate() { LayerIndex = 15; }
 	bool operator==(const FNav3DOctreeEdge& OtherEdge) const { return memcmp(this, &OtherEdge, sizeof(FNav3DOctreeEdge)) == 0; }
+	bool operator!=(const FNav3DOctreeEdge& OtherEdge) const { return !(*this == OtherEdge); }
 	static FNav3DOctreeEdge GetInvalidEdge() { return FNav3DOctreeEdge(15, 0, 0); }
 	FString ToString() const { return FString::Printf(TEXT("%i:%i:%i"), LayerIndex, NodeIndex, SubNodeIndex); }
 };
@@ -149,7 +152,6 @@ struct NAV3D_API FNav3DPath {
 	
 	void AddPoint(const FNav3DPathPoint& PathPoint) { PathPoints.Add(PathPoint); }
 	void Reset() { PathPoints.Empty(); }
-	const TArray<FNav3DPathPoint>& GetPathPoints() const { return PathPoints; }
 	TArray<FNav3DPathPoint>& GetPathPoints() { return PathPoints; }
 	void SetPathPoints(const TArray<FNav3DPathPoint> NewPoints) { PathPoints = NewPoints; }
 	bool IsReady() const { return bIsReady; }
@@ -165,11 +167,13 @@ struct NAV3D_API FNav3DPathFindingConfig
 {
 	float EstimateWeight;
 	float NodeSizeCompensation;
+	EPathFindingHeuristic Heuristic;
 	int32 PathSmoothing;
 
 	FNav3DPathFindingConfig() :
 		EstimateWeight(5.0f),
 		NodeSizeCompensation(1.0f),
-		PathSmoothing(3)
-	{}
+		Heuristic(Euclidean),
+		PathSmoothing(3) {
+	}
 };

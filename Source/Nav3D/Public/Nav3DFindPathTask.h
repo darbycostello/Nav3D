@@ -41,8 +41,8 @@ protected:
 
 	void DoWork() const {
 		Nav3DComponent->ExecutePathFinding(Start, Target, StartLocation, TargetLocation, Config, Path);
-		Nav3DComponent->ApplyPathSmoothing();
-		Nav3DComponent->DebugDrawNavPath();
+		Nav3DComponent->ApplyPathSmoothing(Path);
+		//Nav3DComponent->DebugDrawNavPath(Path);
 		TaskComplete.Execute();
 	}
 

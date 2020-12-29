@@ -5,7 +5,7 @@
 /**
 *  Volume used to modify the leaf quantization level in an overlapping Nav3D Volume
 */
-UCLASS(Blueprintable)
+UCLASS(Blueprintable, meta=(DisplayName = "Nav3D Modifier Volume"))
 class NAV3D_API ANav3DModifierVolume : public AVolume
 {
 	friend class ANav3DVolume;

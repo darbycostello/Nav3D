@@ -9,7 +9,7 @@
 /**
  *  Volume contains the octree and methods required for 3D navigation
  */
-UCLASS(Blueprintable)
+UCLASS(Blueprintable, meta=(DisplayName = "Nav3D Volume"))
 class NAV3D_API ANav3DVolume : public AVolume
 {
 	GENERATED_BODY()
@@ -70,21 +70,29 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging|Voxels")
     bool bDisplayDynamicOcclusion = false;
 
-	// The colours for debug drawing each layer
+	// Show adjacency edges between each node
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging|Voxels")
+    bool bDisplayEdgeAdjacency = false;
+
+	// The scaling factor for debug line drawing
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging|Voxels")	
+    float LineScale = 1.0f;
+
+	// The colours for debug drawing each layer
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging|Voxels|Colours")
     TArray<FColor> LayerColours = { FColor::Blue, FColor::Black, FColor::Cyan, FColor::Green, FColor::Magenta };
 
 	// The colour for leaf occlusion debug drawing
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging|Voxels")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging|Voxels|Colours")
     FColor LeafOcclusionColour = FColor::Yellow;
 
-	// The colour for highlight debug drawing, such as with dynamic occlusion and navigation paths
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging|Voxels")
-    FColor HighlightColour = FColor::Red;
+	// The colour for dynamic occlusion debug drawing
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging|Voxels|Colours")
+    FColor DynamicOcclusionColour = FColor::Red;
 
-	// The scaling factor for morton code debug drawing
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging|Voxels")	
-    float LineScale = 1.0f;
+	// The colour for edge adjacency debug line drawing
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging|Voxels|Colours")
+    FColor EdgeAdjacencyColour = FColor::White;
 	
 	// Show the morton codes within each voxel
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging|Morton Codes")
@@ -131,9 +139,12 @@ public:
 	FBox GetBoundingBox() const;
 	bool GetEdge(const FVector& Location, FNav3DOctreeEdge& Edge);
 	void GetVolumeExtents(const FVector& Location, int32 LayerIndex, FIntVector& Extents) const;
+
+	void GetMortonVoxel(const FVector& Location, int32 LayerIndex, FIntVector& MortonLocation) const;
 	bool OctreeValid() const { return NumLayers > 0; }
 	const TArray<FNav3DOctreeNode>& GetLayer(uint8 LayerIndex) const { return Octree.Layers[LayerIndex]; };
 	const FNav3DOctreeNode& GetNode(const FNav3DOctreeEdge& Edge) const;
+	bool EdgeNodeIsValid(const FNav3DOctreeEdge& Edge) const;
 	const FNav3DOctreeLeaf& GetLeaf(int32 LeafIndex) const;
 	bool GetEdgeLocation(const FNav3DOctreeEdge& Edge, FVector& Location) const;
 	bool GetNodeLocation(uint8 LayerIndex, uint_fast64_t MortonCode, FVector& Location) const;
@@ -142,12 +153,14 @@ public:
 	void GetAdjacentLeafs(const FNav3DOctreeEdge& Edge, TArray<FNav3DOctreeEdge>& AdjacentEdges) const;
 	void GetAdjacentEdges(const FNav3DOctreeEdge& Edge, TArray<FNav3DOctreeEdge>& AdjacentEdges) const;
 	float GetVoxelScale(uint8 LayerIndex) const;
+	bool IsWithinBounds(const FVector Location) const { return GetBoundingBox().IsInside(Location); }
 	TArray<FNav3DOctreeEdge> CalculateVolatileEdges(const AActor* Actor) const;
 	void AddDirtyOcclusionComponent(UNav3DOcclusionComponent* OcclusionComponent);
 		
 private:
 	FNav3DOctree Octree;
 	TArray<float> VoxelHalfSizes;
+	TArray<TPair<FVector, FVector>> DebugEdges;
 	
 	UPROPERTY()
     TArray<UNav3DOcclusionComponent*> DirtyOcclusionComponents;
@@ -156,7 +169,7 @@ private:
 	TArray<ANav3DModifierVolume*> ModifierVolumes;
 
 	TArray<TSet<uint_fast64_t>> Occluded;
-	FVector Origin;
+	FVector VolumeOrigin;
 	FVector VolumeExtent;
 	const FIntVector Directions[6] = {{1, 0, 0}, {-1,0,0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
 	const int32 NodeOffsets[6][4] = {{0, 4, 2, 6}, {1, 3, 5, 7}, {0, 1, 4, 5}, {2, 3, 6, 7}, {0, 1, 2, 3}, {4, 5, 6, 7}};
@@ -172,7 +185,7 @@ private:
 	void RasterizeLayer(uint8 LayerIndex);
 	void RasterizeLeaf(FVector NodeLocation, int32 LeafIndex, uint8 LOD);
 	void BuildEdges(uint8 LayerIndex);
-	bool FindEdge(uint8 LayerIndex, int32 NodeIndex, uint8 Direction, FNav3DOctreeEdge& Edge);
+	bool FindEdge(uint8 LayerIndex, int32 NodeIndex, uint8 Direction, FNav3DOctreeEdge& Edge, const FVector& NodeLocation);
 	bool GetMortonCodeIndex(uint8 LayerIndex, uint_fast64_t MortonCode, int32& CodeIndex) const;
 	bool IsOccluded(const FVector& Location, float Size) const;
 	int32 GetLayerNodeCount(uint8 LayerIndex) const;
@@ -189,6 +202,7 @@ private:
 	void DebugDrawMortonCode(FVector Location, FString String, FColor Colour) const;
 	void DebugDrawOccludedLeafs();
 	void DebugDrawVolatileNodes();
+	void DebugDrawEdgeAdjacency() const;
 	void DebugDrawBoundsMesh(FBox Box, FColor Colour) const;
 	void UpdateModifierVolumes();
 	FColor GetLayerColour(const int32 LayerIndex) const { return LayerColours[FMath::Clamp(LayerIndex, 0, LayerColours.Num()-1)]; }

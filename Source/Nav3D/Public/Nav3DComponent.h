@@ -23,33 +23,36 @@ public:
 
 	// Making this value greater than 1 will make the algorithm prefer larger-sized nodes
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Pathfinding")
-	float NodeSizeCompensation = 1.0f;
+	float NodeSizePreference = 1.0f;
 
-	// Number of times to iterate Catmull-Rom during pathfinding 
+	// Number of times to iterate Catmull-Rom smoothing on navigation paths 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Pathfinding")
     int32 PathSmoothing = 3;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Pathfinding")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging")
     bool bDebugCurrentPosition;
 
 	// Whether to debug draw the path from a pathfinding task 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Pathfinding")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging")
     bool bDebugDrawNavPath;
 
-	// The navigation path debug colout
+	// The navigation path debug colour
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging")
+    FColor DebugPathColour = FColor(0, 255, 255);
+
+	// The navigation path thickness
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Pathfinding")
-    FColor DebugDrawNavPathColour = FColor(255, 255, 255);
+	float DebugPathLineScale = 10.0f;
 	
 	UNav3DComponent(const FObjectInitializer& ObjectInitializer);
 
 	const ANav3DVolume* GetCurrentVolume() const { return Volume; }
 	FNav3DOctreeEdge GetEdgeAtLocation() const;
-	FVector GetPawnLocation() const;
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 	void ExecutePathFinding(const FNav3DOctreeEdge& StartEdge, const FNav3DOctreeEdge& TargetEdge, const FVector& StartLocation, const FVector& TargetLocation, FNav3DPathFindingConfig Config, FNav3DPathSharedPtr* Path);
 	float HeuristicScore(FNav3DOctreeEdge StartEdge, FNav3DOctreeEdge TargetEdge, FNav3DPathFindingConfig Config) const;
-	void ApplyPathSmoothing() const;
-	void DebugDrawNavPath() const;
+	void ApplyPathSmoothing(FNav3DPathSharedPtr* Path) const;
+	void DebugDrawNavPath(FNav3DPathSharedPtr* Path) const;
 	
 	UFUNCTION(BlueprintCallable, Category = "Nav3D")
 	void FindPath(const FVector& StartLocation, const FVector& TargetLocation, FFindPathTaskCompleteDynamicDelegate OnComplete, bool &bSuccess);
