@@ -138,14 +138,13 @@ public:
 	void DebugDrawOctree();
 	FBox GetBoundingBox() const;
 	bool GetEdge(const FVector& Location, FNav3DOctreeEdge& Edge);
+	void FlushDebugDraw() const;
 	void GetVolumeExtents(const FVector& Location, int32 LayerIndex, FIntVector& Extents) const;
-
 	void GetMortonVoxel(const FVector& Location, int32 LayerIndex, FIntVector& MortonLocation) const;
 	bool OctreeValid() const { return NumLayers > 0; }
 	const TArray<FNav3DOctreeNode>& GetLayer(uint8 LayerIndex) const { return Octree.Layers[LayerIndex]; };
 	const FNav3DOctreeNode& GetNode(const FNav3DOctreeEdge& Edge) const;
 	bool EdgeNodeIsValid(const FNav3DOctreeEdge& Edge) const;
-	const FNav3DOctreeLeaf& GetLeaf(int32 LeafIndex) const;
 	bool GetEdgeLocation(const FNav3DOctreeEdge& Edge, FVector& Location) const;
 	bool GetNodeLocation(uint8 LayerIndex, uint_fast64_t MortonCode, FVector& Location) const;
 	bool GetNodeLocation(FNav3DOctreeEdge Edge, FVector& Location);
@@ -196,7 +195,6 @@ private:
 	void UpdateOctree();
 	void UpdateNode(FNav3DOctreeEdge Edge);
 	void UpdateLeaf(const FVector& Location, int32 LeafIndex);
-	void FlushDebugDraw() const;
 	void DebugDrawVolume() const;
 	void DebugDrawVoxel(FVector Location, FVector Extent, FColor Colour) const;
 	void DebugDrawMortonCode(FVector Location, FString String, FColor Colour) const;

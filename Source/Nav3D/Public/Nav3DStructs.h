@@ -140,7 +140,7 @@ struct NAV3D_API FNav3DOctreeLeaf {
 	void SetLOD(const int32 NewLOD) { LOD = FMath::Clamp(NewLOD, 0, 2); }
 	uint8 GetLOD() const { return LOD; } 
 	void SetSubNode(const uint8 Index) { SubNodes |= 1ULL << Index; }
-	bool GetSubNode(const uint_fast64_t Index) const { return (SubNodes & 1ULL << Index) != 0; }
+	bool GetSubNode(const uint_fast64_t MortonCode) const { return (SubNodes & 1ULL << MortonCode) != 0; }
 	void ClearSubNode(const uint8 Index) { SubNodes &= !(1ULL << Index); }
 	bool IsOccluded() const { return SubNodes == -1; }
 	bool IsEmpty() const { return SubNodes == 0; }

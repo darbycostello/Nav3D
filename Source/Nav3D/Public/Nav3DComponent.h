@@ -17,6 +17,10 @@ class NAV3D_API UNav3DComponent final : public UActorComponent
 
 public:
 
+	// The heuristic to use for scoring during pathfinding
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Pathfinding")
+    ENav3DHeuristic Heuristic = ENav3DHeuristic::Euclidean;
+	
 	// Making this value greater than 1 will make the algorithm "greedy"
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Pathfinding")
 	float HeuristicWeight = 5.0f;

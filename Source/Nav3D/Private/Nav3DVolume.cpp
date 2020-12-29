@@ -333,7 +333,7 @@ bool ANav3DVolume::GetEdgeLocation(const FNav3DOctreeEdge& Edge, FVector& Locati
 		morton3D_64_decode(Edge.GetSubNodeIndex(), X, Y, Z);
 		const float Scale = GetVoxelScale(0);
 		Location += FVector(X * Scale * 0.25f, Y * Scale * 0.25f, Z * Scale * 0.25f) - FVector(Scale * 0.375);
-		const FNav3DOctreeLeaf& Leaf = GetLeaf(Node.FirstChild.NodeIndex);
+		const FNav3DOctreeLeaf& Leaf = Octree.Leafs[Node.FirstChild.NodeIndex];
 		return !Leaf.GetSubNode(Edge.GetSubNodeIndex());
 	}
 	return true;
@@ -362,17 +362,12 @@ bool ANav3DVolume::EdgeNodeIsValid(const FNav3DOctreeEdge& Edge) const {
 	return Edge.IsValid() && static_cast<int32>(Edge.NodeIndex) < Octree.Layers[Edge.LayerIndex].Num();
 }
 
-const FNav3DOctreeLeaf& ANav3DVolume::GetLeaf(const int32 LeafIndex) const
-{
-	return Octree.Leafs[LeafIndex];
-}
-
 void ANav3DVolume::GetAdjacentLeafs(const FNav3DOctreeEdge& Edge, TArray<FNav3DOctreeEdge>& AdjacentEdges) const
 {
 	const uint_fast64_t LeafIndex = Edge.SubNodeIndex;
 	if (EdgeNodeIsValid(Edge)) {
 		const FNav3DOctreeNode& Node = GetNode(Edge);
-		const FNav3DOctreeLeaf& FirstLeaf = GetLeaf(Node.FirstChild.NodeIndex);
+		const FNav3DOctreeLeaf& FirstLeaf = Octree.Leafs[Node.FirstChild.NodeIndex];
 
 		uint_fast32_t X = 0, Y = 0, Z = 0;
 		morton3D_64_decode(LeafIndex, X, Y, Z);
@@ -402,7 +397,7 @@ void ANav3DVolume::GetAdjacentLeafs(const FNav3DOctreeEdge& Edge, TArray<FNav3DO
 					continue;
 				}
 
-				const FNav3DOctreeLeaf& Leaf = GetLeaf(AdjacentNode.FirstChild.NodeIndex);
+				const FNav3DOctreeLeaf& Leaf = Octree.Leafs[AdjacentNode.FirstChild.NodeIndex];
 
 				if (!Leaf.IsOccluded()) {
 					if (SignedX < 0) SignedX = 3;
@@ -438,7 +433,7 @@ void ANav3DVolume::GetAdjacentEdges(const FNav3DOctreeEdge& Edge, TArray<FNav3DO
 			FNav3DOctreeEdge CurrentEdge = Edges.Pop();
 			const FNav3DOctreeNode& CurrentNode = GetNode(CurrentEdge);
 			if (!CurrentNode.HasChildren()) {
-				AdjacentEdges.Add(AdjacentEdge);
+				AdjacentEdges.Add(CurrentEdge);
 				continue;
 			}
 			if (CurrentEdge.GetLayerIndex() > 0) {
@@ -452,7 +447,7 @@ void ANav3DVolume::GetAdjacentEdges(const FNav3DOctreeEdge& Edge, TArray<FNav3DO
 			} else {
 				for (const int32& LeafIndex : LeafOffsets[I]) {
 					FNav3DOctreeEdge EdgeChild = AdjacentNode.FirstChild;
-					const FNav3DOctreeLeaf& Leaf = GetLeaf(EdgeChild.NodeIndex);
+					const FNav3DOctreeLeaf& Leaf = Octree.Leafs[EdgeChild.NodeIndex];
 					EdgeChild.SubNodeIndex = LeafIndex;
 					if (!Leaf.GetSubNode(LeafIndex)) {
 						AdjacentEdges.Emplace(EdgeChild);
@@ -557,11 +552,12 @@ bool ANav3DVolume::FindEdge(const uint8 LayerIndex, const int32 NodeIndex, const
 	morton3D_64_decode(TargetNode.MortonCode, X, Y, Z);
 	
 	// Create a signed vector from the X Y and Z values
-	FIntVector S = FIntVector( static_cast<int32>(X), static_cast<int32>(Y), static_cast<int32>(Z) );
+	FIntVector S( static_cast<int32>(X), static_cast<int32>(Y), static_cast<int32>(Z) );
 	S += Directions[Direction];
 	if (S.X < 0 || S.X >= MaxCoordinate || S.Y < 0 || S.Y >= MaxCoordinate || S.Z < 0 || S.Z >= MaxCoordinate)
 	{
 		Edge.Invalidate();
+		return true;
 	}
 	X = S.X;
 	Y = S.Y;
@@ -583,12 +579,13 @@ bool ANav3DVolume::FindEdge(const uint8 LayerIndex, const int32 NodeIndex, const
 			if (LayerIndex == 0 && 
                 Node.HasChildren() && 
                 Octree.Leafs[Node.FirstChild.NodeIndex].IsOccluded()) {
+				
 				Edge.Invalidate();
 				return true;
 			}
 
 			Edge.SetLayerIndex(LayerIndex);
-			if (I >= Layer.Num() || I < 0) continue; 
+			if (I >= Layer.Num() || I < 0) break; 
 			Edge.SetNodeIndex(I);
 
 			FVector AdjacentLocation;

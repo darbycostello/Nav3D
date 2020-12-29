@@ -86,6 +86,7 @@ void UNav3DComponent::FindPath(
 	}
 
 	FNav3DPathFindingConfig Config;
+	Config.Heuristic = Heuristic;
 	Config.EstimateWeight = HeuristicWeight;
 	Config.NodeSizePreference = NodeSizePreference;
 	Config.PathSmoothing = PathSmoothing;
@@ -220,11 +221,14 @@ float UNav3DComponent::HeuristicScore(const FNav3DOctreeEdge StartEdge, const FN
 
 void UNav3DComponent::DebugDrawNavPath(const FNav3DPath& Path) const {
 	if (!GetWorld() || Path.Points.Num() < 2) return;
+	Volume->FlushDebugDraw();
 	DrawDebugSphere(GetWorld(), Path.Points[0].PointLocation,DebugPathLineScale * 2.f, 12, DebugPathColour,true,-1.f,0, DebugPathLineScale);
 	for (int32 I = 1; I < Path.Points.Num(); I++) {
 		DrawDebugLine(GetWorld(), Path.Points[I - 1].PointLocation, Path.Points[I].PointLocation, DebugPathColour, true, -1.f, 0, DebugPathLineScale);
 		DrawDebugSphere( GetWorld(), Path.Points[I].PointLocation, DebugPathLineScale * 2.f, 12, DebugPathColour, true, -1.f, 0, DebugPathLineScale);		
 	}
+	// Refresh the octree
+	Volume->DebugDrawOctree();
 }
 
 // Apply Catmull-Rom smoothing to the path
