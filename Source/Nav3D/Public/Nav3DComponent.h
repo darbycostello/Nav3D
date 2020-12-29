@@ -8,7 +8,7 @@ class ANav3DVolume;
 struct FNavigationPath;
 struct FNav3DOctreeEdge;
 
-DECLARE_DYNAMIC_DELEGATE(FFindPathTaskCompleteDynamicDelegate);
+DECLARE_DYNAMIC_DELEGATE_OneParam(FFindPathTaskCompleteDynamicDelegate, bool, bPathFound);
 
 UCLASS(BlueprintType, Blueprintable, meta=(BlueprintSpawnableComponent, DisplayName="Nav3D Component"))
 class NAV3D_API UNav3DComponent final : public UActorComponent
@@ -29,9 +29,6 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Pathfinding")
     int32 PathSmoothing = 3;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging")
-    bool bDebugCurrentPosition;
-
 	// Whether to debug draw the path from a pathfinding task 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging")
     bool bDebugDrawNavPath;
@@ -45,17 +42,21 @@ public:
 	float DebugPathLineScale = 10.0f;
 	
 	UNav3DComponent(const FObjectInitializer& ObjectInitializer);
-
+	FNav3DPathSharedPtr Nav3DPath;
+	
 	const ANav3DVolume* GetCurrentVolume() const { return Volume; }
-	FNav3DOctreeEdge GetEdgeAtLocation() const;
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
-	void ExecutePathFinding(const FNav3DOctreeEdge& StartEdge, const FNav3DOctreeEdge& TargetEdge, const FVector& StartLocation, const FVector& TargetLocation, FNav3DPathFindingConfig Config, FNav3DPathSharedPtr* Path);
+	void ExecutePathFinding(const FNav3DOctreeEdge& StartEdge, const FNav3DOctreeEdge& TargetEdge, const FVector& StartLocation, const FVector& TargetLocation, FNav3DPathFindingConfig Config, FNav3DPath& Path);
 	float HeuristicScore(FNav3DOctreeEdge StartEdge, FNav3DOctreeEdge TargetEdge, FNav3DPathFindingConfig Config) const;
-	void ApplyPathSmoothing(FNav3DPathSharedPtr* Path) const;
-	void DebugDrawNavPath(FNav3DPathSharedPtr* Path) const;
+	void ApplyPathSmoothing(FNav3DPath& Path) const;
+	void DebugDrawNavPath(const FNav3DPath& Path) const;	
 	
 	UFUNCTION(BlueprintCallable, Category = "Nav3D")
-	void FindPath(const FVector& StartLocation, const FVector& TargetLocation, FFindPathTaskCompleteDynamicDelegate OnComplete, bool &bSuccess);
+	void FindPath(
+		const FVector& StartLocation,
+		const FVector& TargetLocation,
+		FFindPathTaskCompleteDynamicDelegate OnComplete,
+		ENav3DPathFindingCallResult &Result);
 	
 	UFUNCTION(BlueprintCallable, Category = "Nav3D")
 	void GetPath(TArray<FVector> &Path) const { Nav3DPath->GetPath(Path); }
@@ -64,8 +65,6 @@ protected:
 	virtual void BeginPlay() override;
 	ANav3DVolume* Volume;
 	bool VolumeContainsOctree() const;
+	bool VolumeContainsOwner() const;
 	bool FindVolume();
-	void DebugLocalPosition() const;
-	FNav3DPathSharedPtr Nav3DPath;
-	mutable FNav3DOctreeEdge LastLocation;
 };

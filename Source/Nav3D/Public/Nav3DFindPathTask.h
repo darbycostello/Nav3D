@@ -2,6 +2,7 @@
 
 #include "Nav3DComponent.h"
 #include "Nav3DStructs.h"
+#include "Async/Async.h"
 #include "Async/AsyncWork.h"
 
 class FNav3DFindPathTask : public FNonAbandonableTask
@@ -16,7 +17,7 @@ public:
 		const FVector& StartLocation,
 		const FVector& TargetLocation,
 		FNav3DPathFindingConfig& Config,
-		FNav3DPathSharedPtr* Path,
+		FNav3DPath& Path,
 		const FFindPathTaskCompleteDynamicDelegate Complete) :
 	
 		Nav3DComponent(Nav3DComponent),
@@ -36,14 +37,18 @@ protected:
 	FVector StartLocation;
 	FVector TargetLocation;
 	FNav3DPathFindingConfig Config;
-	FNav3DPathSharedPtr* Path;
+	FNav3DPath& Path;
 	FFindPathTaskCompleteDynamicDelegate TaskComplete;
 
 	void DoWork() const {
 		Nav3DComponent->ExecutePathFinding(Start, Target, StartLocation, TargetLocation, Config, Path);
 		Nav3DComponent->ApplyPathSmoothing(Path);
-		//Nav3DComponent->DebugDrawNavPath(Path);
-		TaskComplete.Execute();
+
+		// Run the debug draw back on the game thread
+		AsyncTask(ENamedThreads::GameThread, [=]() {
+			Nav3DComponent->DebugDrawNavPath(Path);	
+		});
+		TaskComplete.Execute(Path.Points.Num() > 0);
 	}
 
 	FORCEINLINE TStatId GetStatId() const

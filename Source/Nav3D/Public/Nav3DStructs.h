@@ -2,8 +2,84 @@
 
 #include "CoreMinimal.h"
 #include "Nav3D/Private/libmorton/morton.h"
+#include "Nav3DStructs.generated.h"
 
-enum NAV3D_API EPathFindingHeuristic { Manhattan, Euclidean };
+USTRUCT(BlueprintType)
+struct NAV3D_API FNav3DPathPoint {
+	
+	GENERATED_BODY()
+
+    UPROPERTY(BlueprintReadWrite)
+    FVector PointLocation;
+
+	UPROPERTY(BlueprintReadWrite)
+    int32 PointLayer;
+	
+	FNav3DPathPoint() :
+        PointLocation(FVector()),
+        PointLayer(-1)
+	{}
+	FNav3DPathPoint(const FVector& Location, const int32 LayerIndex):
+        PointLocation(Location),
+        PointLayer(LayerIndex)
+	{}
+};
+
+USTRUCT(BlueprintType)
+struct NAV3D_API FNav3DPath {
+
+	GENERATED_BODY()
+	
+	UPROPERTY(BlueprintReadWrite)
+    TArray<FNav3DPathPoint> Points;
+	
+	void Add(const FNav3DPathPoint& Point) { Points.Add(Point); }
+	void Empty() { Points.Empty(); }
+	TArray<FNav3DPathPoint> GetPoints() const { return Points; }
+	void SetPoints(const TArray<FNav3DPathPoint> NewPoints) { Points = NewPoints; }
+	void GetPath(TArray<FVector> &Path) { for (const auto& Point: Points) { Path.Add(Point.PointLocation); } }
+};
+typedef TSharedPtr<FNav3DPath, ESPMode::ThreadSafe> FNav3DPathSharedPtr;
+
+UENUM()
+enum class ENav3DHeuristic: uint8 {
+	Manhattan UMETA(DisplayName="Manhattan"),
+    Euclidean UMETA(DisplayName="Euclidean")
+};
+
+UENUM()
+enum class ENav3DPathFindingCallResult: uint8 {
+	Success UMETA(DisplayName="Call Success", ToolTip="Pathfinding task was called successfully."),
+	NoVolume UMETA(DisplayName="Volume not found", ToolTip="Nav3D component owner is not inside a Nav3D volume."),
+    NoOctree UMETA(DisplayName="Octree not found", ToolTip="Nav3D octree has not been built."),
+	NoStart UMETA(DisplayName="Start edge not found", ToolTip="Failed to find start edge."),
+	NoTarget UMETA(DisplayName="Target edge not found", ToolTip="Failed to find target edge.")
+};
+
+USTRUCT(BlueprintType)
+struct NAV3D_API FNav3DPathFindingConfig
+{
+	GENERATED_BODY()
+
+    UPROPERTY(BlueprintReadWrite)
+    float EstimateWeight;
+
+	UPROPERTY(BlueprintReadWrite)
+    float NodeSizePreference;
+
+	UPROPERTY(BlueprintReadWrite)
+    ENav3DHeuristic Heuristic;
+
+	UPROPERTY(BlueprintReadWrite)
+    int32 PathSmoothing;
+
+	FNav3DPathFindingConfig() :
+        EstimateWeight(5.0f),
+        NodeSizePreference(1.0f),
+        Heuristic(ENav3DHeuristic::Euclidean),
+        PathSmoothing(3) {
+	}
+};
 
 struct NAV3D_API FNav3DOctreeEdge {
 	uint8 LayerIndex:4;
@@ -130,50 +206,3 @@ FORCEINLINE FArchive& operator<<(FArchive& Ar, FNav3DOctree& Octree) {
 	Ar << Octree.Leafs;
 	return Ar;
 }
-
-struct NAV3D_API FNav3DPathPoint {
-    FVector PointLocation;
-    int32 PointLayer;
-	
-	FNav3DPathPoint() :
-		PointLocation(FVector()),
-		PointLayer(-1)
-	{}
-	FNav3DPathPoint(const FVector& Location, const uint8 LayerIndex) :
-		PointLocation(Location),
-		PointLayer(LayerIndex)
-	{}
-};
-
-typedef TSharedPtr<struct FNav3DPath, ESPMode::ThreadSafe> FNav3DPathSharedPtr;
-struct NAV3D_API FNav3DPath {	
-	bool bIsReady = false;
-	TArray<FNav3DPathPoint> PathPoints;
-	
-	void AddPoint(const FNav3DPathPoint& PathPoint) { PathPoints.Add(PathPoint); }
-	void Reset() { PathPoints.Empty(); }
-	TArray<FNav3DPathPoint>& GetPathPoints() { return PathPoints; }
-	void SetPathPoints(const TArray<FNav3DPathPoint> NewPoints) { PathPoints = NewPoints; }
-	bool IsReady() const { return bIsReady; }
-	void SetIsReady(const bool bEnabled) { bIsReady = bEnabled; }
-	void GetPath(TArray<FVector> &Path) {
-		for (const auto& Point: PathPoints) {
-			Path.Add(Point.PointLocation);
-		}
-	}
-};
-
-struct NAV3D_API FNav3DPathFindingConfig
-{
-	float EstimateWeight;
-	float NodeSizeCompensation;
-	EPathFindingHeuristic Heuristic;
-	int32 PathSmoothing;
-
-	FNav3DPathFindingConfig() :
-		EstimateWeight(5.0f),
-		NodeSizeCompensation(1.0f),
-		Heuristic(Euclidean),
-		PathSmoothing(3) {
-	}
-};
