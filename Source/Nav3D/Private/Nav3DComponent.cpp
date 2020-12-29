@@ -218,38 +218,6 @@ float UNav3DComponent::HeuristicScore(const FNav3DOctreeEdge StartEdge, const FN
 	return (StartLocation - TargetLocation).Size() * (1.0f - (static_cast<float>(TargetEdge.LayerIndex) / static_cast<float>(Volume->NumLayers)) * Config.NodeSizePreference);	
 }
 
-// Apply Catmull-Rom smoothing to the Nav3DPath shared path
-void UNav3DComponent::ApplyPathSmoothing(FNav3DPath& Path) const {
-	if (PathSmoothing < 1 || Path.Points.Num() < 3) return;
-	const FNav3DPathPoint Start = FNav3DPathPoint(
-		Path.Points[1].PointLocation - Path.Points[0].PointLocation,
-		Path.Points[0].PointLayer);
-
-	Path.Points.Insert(FNav3DPathPoint(Path.Points[0].PointLocation - Start.PointLocation, Path.Points[0].PointLayer), 0);  
-
-	const FNav3DPathPoint End = FNav3DPathPoint(
-		Path.Points[Path.Points.Num() - 1].PointLocation - Path.Points[Path.Points.Num() - 2].PointLocation,
-		Path.Points[Path.Points.Num() - 1].PointLayer);
-
-	Path.Points.Add(
-		FNav3DPathPoint(
-			Path.Points[Path.Points.Num() - 1].PointLocation + End.PointLocation,
-			Path.Points[Path.Points.Num() - 1].PointLayer));
-
-	TArray<FNav3DPathPoint> SplinePoints;
-	for (int32 I = 0; I < Path.Points.Num() - 3; I++) {
-		for (int32 J = 0; J < PathSmoothing; J++) {
-			const float T = 1 / PathSmoothing * J;
-			SplinePoints.Add(FNav3DPathPoint(0.5f * (2.f * Path.Points[I+1].PointLocation + (-1.f * Path.Points[I].PointLocation + Path.Points[I+2].PointLocation) * T
-                + (2.0f * Path.Points[I].PointLocation - 5.f * Path.Points[I+1].PointLocation + 4.f * Path.Points[I+2].PointLocation - Path.Points[I+3].PointLocation) * FMath::Pow(T, 2.f)
-                + (-1.f * Path.Points[I].PointLocation + 3.f * Path.Points[I+1].PointLocation - 3.f * Path.Points[I+2].PointLocation + Path.Points[I+3].PointLocation) * FMath::Pow(T, 3.f)
-            ), Path.Points[I].PointLayer));
-		}
-	}
-	SplinePoints.Add(Path.Points[Path.Points.Num() - 2]);
-	Path.SetPoints(SplinePoints);
-}
-
 void UNav3DComponent::DebugDrawNavPath(const FNav3DPath& Path) const {
 	if (!GetWorld() || Path.Points.Num() < 2) return;
 	DrawDebugSphere(GetWorld(), Path.Points[0].PointLocation,DebugPathLineScale * 2.f, 12, DebugPathColour,true,-1.f,0, DebugPathLineScale);
@@ -257,4 +225,38 @@ void UNav3DComponent::DebugDrawNavPath(const FNav3DPath& Path) const {
 		DrawDebugLine(GetWorld(), Path.Points[I - 1].PointLocation, Path.Points[I].PointLocation, DebugPathColour, true, -1.f, 0, DebugPathLineScale);
 		DrawDebugSphere( GetWorld(), Path.Points[I].PointLocation, DebugPathLineScale * 2.f, 12, DebugPathColour, true, -1.f, 0, DebugPathLineScale);		
 	}
+}
+
+// Apply Catmull-Rom smoothing to the path
+void UNav3DComponent::ApplyPathSmoothing(FNav3DPath& Path, const FNav3DPathFindingConfig Config) {
+	if (Config.PathSmoothing < 1 || Path.Points.Num() < 3) return;
+	TArray<FVector> PathPoints;
+	Path.GetPath(PathPoints);
+	
+	// Duplicate the start and end points to ensure a smooth curve
+	PathPoints.Insert(Path.Points[0].PointLocation, 0);
+	PathPoints.Add(Path.Points[Path.Points.Num() - 1].PointLocation);
+	FNav3DPath SplinePoints;
+
+	// Add the first path point to the spline
+	SplinePoints.Add(Path.Points[0]);
+	for (int32 Index = 0; Index < PathPoints.Num(); Index++) {
+		if (Index == 0 || Index == PathPoints.Num() - 2 || Index == PathPoints.Num() - 1) continue;
+		FVector P0 = PathPoints[Index - 1];
+		FVector P1 = PathPoints[Index];
+		FVector P2 = PathPoints[Index + 1];
+		FVector P3 = PathPoints[Index + 2];
+		for (int I = 1; I <= Config.PathSmoothing; I++) {
+			const float T = I * (1.f / Config.PathSmoothing);
+			const FVector A = 2.f * P1;
+			const FVector B = P2 - P0;
+			const FVector C = 2.f * P0 - 5.f * P1 + 4.f * P2 - P3;
+			const FVector D = -P0 + 3.f * P1 - 3.f * P2 + P3;
+			SplinePoints.Add(FNav3DPathPoint(0.5f * (A + (B * T) + (C * T * T) + (D * T * T * T)), Path.GetPoints()[Index - 1].PointLayer));
+		}
+	}
+
+	// Add the final path point to the spline
+	SplinePoints.Add(Path.Points[Path.Points.Num()-1]);
+	Path = SplinePoints;
 }

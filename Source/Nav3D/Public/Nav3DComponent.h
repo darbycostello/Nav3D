@@ -48,7 +48,7 @@ public:
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 	void ExecutePathFinding(const FNav3DOctreeEdge& StartEdge, const FNav3DOctreeEdge& TargetEdge, const FVector& StartLocation, const FVector& TargetLocation, FNav3DPathFindingConfig Config, FNav3DPath& Path);
 	float HeuristicScore(FNav3DOctreeEdge StartEdge, FNav3DOctreeEdge TargetEdge, FNav3DPathFindingConfig Config) const;
-	void ApplyPathSmoothing(FNav3DPath& Path) const;
+	static void ApplyPathSmoothing(FNav3DPath& Path, FNav3DPathFindingConfig Config);
 	void DebugDrawNavPath(const FNav3DPath& Path) const;	
 	
 	UFUNCTION(BlueprintCallable, Category = "Nav3D")

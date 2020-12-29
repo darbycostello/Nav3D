@@ -42,7 +42,7 @@ protected:
 
 	void DoWork() const {
 		Nav3DComponent->ExecutePathFinding(Start, Target, StartLocation, TargetLocation, Config, Path);
-		Nav3DComponent->ApplyPathSmoothing(Path);
+		Nav3DComponent->ApplyPathSmoothing(Path, Config);
 
 		// Run the debug draw back on the game thread
 		AsyncTask(ENamedThreads::GameThread, [=]() {
