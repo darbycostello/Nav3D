@@ -18,8 +18,8 @@ public:
 
 	ANav3DVolume(const FObjectInitializer& ObjectInitializer);
 
-	// The size of the volume. Voxel exponent will be calculated based on this and the voxel size
-	UPROPERTY(EditAnywhere, meta=(ClampMin = "0.000001"), DisplayName = "Volume Size", Category = "Nav3D|Volume")
+	// The size of the volume. This will be approximated in order to support the requested voxel size
+	UPROPERTY(EditAnywhere, meta=(ClampMin = "0.000001"), DisplayName = "Desired Volume Size", Category = "Nav3D|Volume")
     float VolumeSize = 200.0f;
 
 	// The minimum size of a leaf voxel in the X, Y and Z dimensions. Nav3D LOD volumes can quantize this value
@@ -40,7 +40,7 @@ public:
 
 	// Draw distance for debug lines
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging")
-    float DebugDistance = 10000.f;
+    float DebugDistance = 50000.f;
 
 	// Show all debug messages in console
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging")
@@ -74,9 +74,9 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging|Voxels")
     bool bDisplayEdgeAdjacency = false;
 
-	// The scaling factor for debug line drawing
+	// The scaling factor for debug line drawing. Set to zero for fastest performance
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging|Voxels")	
-    float LineScale = 1.0f;
+    float LineScale = 0.0f;
 
 	// The colours for debug drawing each layer
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging|Voxels|Colours")
@@ -89,10 +89,6 @@ public:
 	// The colour for dynamic occlusion debug drawing
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging|Voxels|Colours")
     FColor DynamicOcclusionColour = FColor::Red;
-
-	// The colour for edge adjacency debug line drawing
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging|Voxels|Colours")
-    FColor EdgeAdjacencyColour = FColor::White;
 	
 	// Show the morton codes within each voxel
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging|Morton Codes")
@@ -108,7 +104,11 @@ public:
 
 	// The number of voxel subdivisions calculated to meet the desired voxel size. Read-only
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Nav3D|Info")
-    float VoxelExponent = 3.0f;
+    int32 VoxelExponent = 6;
+
+	// The actual volume size calculated to meet the desired volume size and voxel size. Read-only
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Nav3D|Info")
+	float ActualVolumeSize = 200.0f;
 
 	// The number of layers created by the octree generation. Read-only
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Nav3D|Info")
@@ -119,8 +119,8 @@ public:
     int32 NumBytes = 0;
 
 #if WITH_EDITOR
-	void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
-	void PostEditUndo() override;
+	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
+	virtual void PostEditUndo() override;
 #endif 
 
 	virtual void BeginPlay() override;
@@ -131,9 +131,9 @@ public:
 	virtual void EditorApplyTranslation(const FVector& DeltaTranslation, bool bAltDown, bool bShiftDown, bool bCtrlDown) override;
 	virtual void EditorApplyRotation(const FRotator& DeltaRotation, bool bAltDown, bool bShiftDown, bool bCtrlDown) override;
 	virtual void EditorApplyScale( const FVector& DeltaScale, const FVector* PivotLocation, bool bAltDown, bool bShiftDown, bool bCtrlDown ) override;
+	virtual bool ShouldTickIfViewportsOnly() const override { return true; }
+	virtual void Serialize(FArchive& Ar) override;
 	void Initialise();
-	bool ShouldTickIfViewportsOnly() const override { return true; }
-	void Serialize(FArchive& Ar) override;
 	bool BuildOctree();
 	void DebugDrawOctree();
 	FBox GetBoundingBox() const;
@@ -148,7 +148,7 @@ public:
 	bool GetEdgeLocation(const FNav3DOctreeEdge& Edge, FVector& Location) const;
 	bool GetNodeLocation(uint8 LayerIndex, uint_fast64_t MortonCode, FVector& Location) const;
 	bool GetNodeLocation(FNav3DOctreeEdge Edge, FVector& Location);
-	bool GetNodeLocation(FNav3DOctreeEdge Edge, uint8 LOD, FVector& Location);
+	bool GetQuantizedLocation(FNav3DOctreeEdge Edge, uint8 LOD, FVector& Location);
 	void GetAdjacentLeafs(const FNav3DOctreeEdge& Edge, TArray<FNav3DOctreeEdge>& AdjacentEdges) const;
 	void GetAdjacentEdges(const FNav3DOctreeEdge& Edge, TArray<FNav3DOctreeEdge>& AdjacentEdges) const;
 	float GetVoxelScale(uint8 LayerIndex) const;
@@ -159,7 +159,7 @@ public:
 private:
 	FNav3DOctree Octree;
 	TArray<float> VoxelHalfSizes;
-	TArray<TPair<FVector, FVector>> DebugEdges;
+	TArray<FNav3DDebugEdge> DebugEdges;
 	
 	UPROPERTY()
     TArray<UNav3DOcclusionComponent*> DirtyOcclusionComponents;
@@ -177,21 +177,19 @@ private:
 		{0, 1, 8, 9, 2, 3, 10, 11, 16, 17, 24, 25, 18, 19, 26, 27}, {36, 37, 44, 45, 38, 39, 46, 47, 52, 53, 60, 61, 54, 55, 62, 63}};
 
 	TArray<FNav3DOctreeNode>& GetLayer(const uint8 LayerIndex) { return Octree.Layers[LayerIndex]; };
-	void UpdateBounds();
-	void UpdateVoxelSize();
-	void UpdateVolumeExtents();
+	void UpdateVolume();
 	void RasterizeInitial();
 	void RasterizeLayer(uint8 LayerIndex);
 	void RasterizeLeaf(FVector NodeLocation, int32 LeafIndex, uint8 LOD);
 	void BuildEdges(uint8 LayerIndex);
 	bool FindEdge(uint8 LayerIndex, int32 NodeIndex, uint8 Direction, FNav3DOctreeEdge& Edge, const FVector& NodeLocation);
-	bool GetMortonCodeIndex(uint8 LayerIndex, uint_fast64_t MortonCode, int32& CodeIndex) const;
 	bool IsOccluded(const FVector& Location, float Size) const;
 	int32 GetLayerNodeCount(uint8 LayerIndex) const;
 	int32 GetSegmentNodeCount(uint8 LayerIndex) const;
 	bool InDebugRange(FVector Location) const;
 	bool GetNodeIndex(uint8 LayerIndex, uint_fast64_t NodeMortonCode, int32& NodeIndex) const;
 	int32 GetInsertIndex(uint8 LayerIndex, uint_fast64_t MortonCode) const;
+	float GetActualVolumeSize() const { return FMath::Pow(2, VoxelExponent) * (VoxelSize * 4); }
 	void UpdateOctree();
 	void UpdateNode(FNav3DOctreeEdge Edge);
 	void UpdateLeaf(const FVector& Location, int32 LeafIndex);

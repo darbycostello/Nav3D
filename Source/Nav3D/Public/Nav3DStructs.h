@@ -206,3 +206,22 @@ FORCEINLINE FArchive& operator<<(FArchive& Ar, FNav3DOctree& Octree) {
 	Ar << Octree.Leafs;
 	return Ar;
 }
+
+struct NAV3D_API FNav3DDebugEdge {
+
+	FVector Start;
+	FVector End;
+	uint8 LayerIndex;
+
+	FNav3DDebugEdge() :
+        Start(FVector::ZeroVector),
+		End(FVector::ZeroVector),
+        LayerIndex(0)
+	{}
+
+	FNav3DDebugEdge(const FVector Start, const FVector End, const uint8 LayerIndex) :
+        Start(Start),
+        End(End),
+        LayerIndex(LayerIndex)
+	{}
+};
