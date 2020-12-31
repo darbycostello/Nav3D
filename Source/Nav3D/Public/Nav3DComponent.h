@@ -29,6 +29,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Pathfinding")
 	float NodeSizePreference = 1.0f;
 
+	// The heuristic to use for scoring during pathfinding
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Pathfinding")
+	ENav3DPathPruning PathPruning = ENav3DPathPruning::None;
+
 	// Number of times to iterate Catmull-Rom smoothing on navigation paths 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Pathfinding")
     int32 PathSmoothing = 3;
@@ -52,6 +56,7 @@ public:
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 	void ExecutePathFinding(const FNav3DOctreeEdge& StartEdge, const FNav3DOctreeEdge& TargetEdge, const FVector& StartLocation, const FVector& TargetLocation, FNav3DPathFindingConfig Config, FNav3DPath& Path);
 	float HeuristicScore(FNav3DOctreeEdge StartEdge, FNav3DOctreeEdge TargetEdge, FNav3DPathFindingConfig Config) const;
+	void ApplyPathPruning(FNav3DPath& Path, const FNav3DPathFindingConfig Config) const;
 	static void ApplyPathSmoothing(FNav3DPath& Path, FNav3DPathFindingConfig Config);
 	void DebugDrawNavPath(const FNav3DPath& Path) const;	
 	

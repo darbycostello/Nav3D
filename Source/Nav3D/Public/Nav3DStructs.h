@@ -17,12 +17,10 @@ struct NAV3D_API FNav3DPathPoint {
 	
 	FNav3DPathPoint() :
         PointLocation(FVector()),
-        PointLayer(-1)
-	{}
+        PointLayer(-1) {}
 	FNav3DPathPoint(const FVector& Location, const int32 LayerIndex):
         PointLocation(Location),
-        PointLayer(LayerIndex)
-	{}
+        PointLayer(LayerIndex) {}
 };
 
 USTRUCT(BlueprintType)
@@ -56,6 +54,13 @@ enum class ENav3DPathFindingCallResult: uint8 {
 	NoTarget UMETA(DisplayName="Target edge not found", ToolTip="Failed to find target edge.")
 };
 
+UENUM()
+enum class ENav3DPathPruning: uint8 {
+	None UMETA(DisplayName="None", ToolTip="Do not use path pruning."),
+    WithClearance UMETA(DisplayName="With clearance", ToolTip="Use path pruning with actor radius as clearance."),
+    WithoutClearance UMETA(DisplayName="Without clearance", ToolTip="Use path pruning without clearance.")
+};
+
 USTRUCT(BlueprintType)
 struct NAV3D_API FNav3DPathFindingConfig
 {
@@ -71,14 +76,17 @@ struct NAV3D_API FNav3DPathFindingConfig
     ENav3DHeuristic Heuristic;
 
 	UPROPERTY(BlueprintReadWrite)
+	ENav3DPathPruning PathPruning;
+	
+	UPROPERTY(BlueprintReadWrite)
     int32 PathSmoothing;
 
 	FNav3DPathFindingConfig() :
-        EstimateWeight(5.0f),
-        NodeSizePreference(1.0f),
-        Heuristic(ENav3DHeuristic::Euclidean),
-        PathSmoothing(3) {
-	}
+		EstimateWeight(5.0f),
+		NodeSizePreference(1.0f),
+		Heuristic(ENav3DHeuristic::Euclidean),
+		PathPruning(ENav3DPathPruning::None),
+		PathSmoothing(3) {}
 };
 
 struct NAV3D_API FNav3DOctreeEdge {
@@ -89,14 +97,12 @@ struct NAV3D_API FNav3DOctreeEdge {
 	FNav3DOctreeEdge() :
 		LayerIndex(15),
 		NodeIndex(0),
-		SubNodeIndex(0)
-	{}
+		SubNodeIndex(0) {}
 
 	FNav3DOctreeEdge(const uint8 LayerIndex, const uint_fast32_t NodeIndex, const uint8 SubNodeIndex) :
 		LayerIndex(LayerIndex),
 		NodeIndex(NodeIndex),
-		SubNodeIndex(SubNodeIndex)
-	{}
+		SubNodeIndex(SubNodeIndex) {}
 
 	uint8 GetLayerIndex() const { return LayerIndex; }
 	void SetLayerIndex(const uint8 NewLayerIndex) { LayerIndex = NewLayerIndex; }
@@ -163,8 +169,7 @@ struct NAV3D_API FNav3DOctreeNode
 	FNav3DOctreeNode() :
 		MortonCode(0),
 		Parent(FNav3DOctreeEdge::GetInvalidEdge()),
-		FirstChild(FNav3DOctreeEdge::GetInvalidEdge())
-	{}
+		FirstChild(FNav3DOctreeEdge::GetInvalidEdge()) {}
 
 	bool IsDefault() const { return MortonCode == 0; }
 	bool HasChildren() const { return FirstChild.IsValid(); }
@@ -216,12 +221,10 @@ struct NAV3D_API FNav3DDebugEdge {
 	FNav3DDebugEdge() :
         Start(FVector::ZeroVector),
 		End(FVector::ZeroVector),
-        LayerIndex(0)
-	{}
+        LayerIndex(0) {}
 
 	FNav3DDebugEdge(const FVector Start, const FVector End, const uint8 LayerIndex) :
         Start(Start),
         End(End),
-        LayerIndex(LayerIndex)
-	{}
+        LayerIndex(LayerIndex) {}
 };

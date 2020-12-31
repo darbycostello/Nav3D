@@ -89,6 +89,7 @@ void UNav3DComponent::FindPath(
 	Config.Heuristic = Heuristic;
 	Config.EstimateWeight = HeuristicWeight;
 	Config.NodeSizePreference = NodeSizePreference;
+	Config.PathPruning = PathPruning;
 	Config.PathSmoothing = PathSmoothing;
 
 	FNav3DPath& Path = *Nav3DPath;
@@ -229,6 +230,63 @@ void UNav3DComponent::DebugDrawNavPath(const FNav3DPath& Path) const {
 	}
 	// Refresh the octree
 	Volume->DebugDrawOctree();
+}
+
+void UNav3DComponent::ApplyPathPruning(FNav3DPath& Path, const FNav3DPathFindingConfig Config) const {
+	if (!GetWorld() || Config.PathPruning == ENav3DPathPruning::None || Path.Points.Num() < 3) return;
+	FNav3DPath PrunedPath;
+	PrunedPath.Add(Path.Points[0]);
+	int32 CurrentPoint = 0;
+	float Radius = 0;
+	if (Config.PathPruning == ENav3DPathPruning::WithClearance) {
+		Radius = FMath::Max(50.f ,GetOwner()->GetComponentsBoundingBox(true).GetExtent().GetMax());
+	}
+	while (CurrentPoint < Path.Points.Num()) {
+
+		for (int32 I = CurrentPoint; I < Path.Points.Num(); I++) {
+			if (I == Path.Points.Num() - 2) {
+				CurrentPoint = Path.Points.Num();
+				break;
+			}
+
+			FCollisionQueryParams CollisionQueryParams;
+			CollisionQueryParams.bTraceComplex = true;
+			CollisionQueryParams.TraceTag = "Nav3DPathPrune";
+			FHitResult HitResult;
+			FVector Start = Path.Points[CurrentPoint].PointLocation;
+			FVector End = Path.Points[I+2].PointLocation;
+
+			if (Config.PathPruning == ENav3DPathPruning::WithClearance) {
+				GetWorld()->SweepSingleByChannel(
+	                HitResult,
+	                Start,
+	                End,
+	                FQuat::Identity,
+	                Volume->CollisionChannel,
+	                FCollisionShape::MakeSphere(Radius),
+	                CollisionQueryParams
+	            );
+			} else {
+				GetWorld()->LineTraceSingleByChannel(
+					HitResult,
+	                Start,
+	                End,
+	                Volume->CollisionChannel,
+	                CollisionQueryParams
+				);
+			}
+			
+			if (HitResult.bBlockingHit) {
+				if (I == Path.Points.Num()-3) PrunedPath.Add(Path.Points[I+2]);
+				else PrunedPath.Add(Path.Points[I]);
+				CurrentPoint = I + 1;
+				break;
+			}
+			I++;
+		}
+	}
+	Path = PrunedPath;
+
 }
 
 // Apply Catmull-Rom smoothing to the path
