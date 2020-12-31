@@ -244,7 +244,8 @@ void UNav3DComponent::ApplyPathPruning(FNav3DPath& Path, const FNav3DPathFinding
 	while (CurrentPoint < Path.Points.Num()) {
 
 		for (int32 I = CurrentPoint; I < Path.Points.Num(); I++) {
-			if (I == Path.Points.Num() - 2) {
+			if (I >= Path.Points.Num() - 2) {
+				PrunedPath.Add(Path.Points[Path.Points.Num() - 1]);
 				CurrentPoint = Path.Points.Num();
 				break;
 			}
@@ -277,14 +278,13 @@ void UNav3DComponent::ApplyPathPruning(FNav3DPath& Path, const FNav3DPathFinding
 			}
 			
 			if (HitResult.bBlockingHit) {
-				if (I == Path.Points.Num()-3) PrunedPath.Add(Path.Points[I+2]);
-				else PrunedPath.Add(Path.Points[I]);
+				PrunedPath.Add(Path.Points[I + 1]);
 				CurrentPoint = I + 1;
 				break;
 			}
-			I++;
 		}
 	}
+	
 	Path = PrunedPath;
 
 }
