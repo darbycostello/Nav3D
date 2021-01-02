@@ -88,18 +88,15 @@ void FNav3DVolumeProperties::CustomizeDetails( IDetailLayoutBuilder& DetailBuild
 		];
 }
 
-FReply FNav3DVolumeProperties::OnBuildOctree()
-{
+FReply FNav3DVolumeProperties::OnBuildOctree() const {
 	if (Volume.IsValid())
 	{		
 		Volume->BuildOctree();
-		Volume->DebugDrawOctree();
 	}
 	return FReply::Handled();
 }
 
-FReply FNav3DVolumeProperties::OnClearOctree()
-{
+FReply FNav3DVolumeProperties::OnClearOctree() const {
 	if (Volume.IsValid())
 	{
 		Volume->Initialise();

@@ -3,7 +3,7 @@
 #include "Nav3DModifierVolume.generated.h"
 
 /**
-*  Volume used to modify the leaf quantization level in an overlapping Nav3D Volume
+*  Volume used to modify the properties of an overlapping Nav3D Volume
 */
 UCLASS(Blueprintable, meta=(DisplayName = "Nav3D Modifier Volume"))
 class NAV3D_API ANav3DModifierVolume : public AVolume
@@ -15,10 +15,6 @@ class NAV3D_API ANav3DModifierVolume : public AVolume
 public:
 
     ANav3DModifierVolume(const FObjectInitializer& ObjectInitializer);
-
-	// This value is used to override the leaf voxel quantization in the overlapping Nav3D volume
-	UPROPERTY(EditAnywhere, meta=(ClampMin = "0", ClampMax = "2"), DisplayName = "Leaf LOD", Category = "Nav3D")
-    int32 LeafLOD = 0;
 
 	// If two Nav3D Modifier volumes overlap, the one with the highest priority will be used  
 	UPROPERTY(EditAnywhere, meta=(ClampMin = "0", ClampMax = "100"), DisplayName = "Priority", Category = "Nav3D")
@@ -55,7 +51,6 @@ public:
 	virtual void EditorApplyScale( const FVector& DeltaScale, const FVector* PivotLocation, bool bAltDown, bool bShiftDown, bool bCtrlDown ) override;
 	bool GetEnabled() const { return bEnabled; }
 	int32 GetPriority() const { return Priority; }
-	uint8 GetLOD() const { return LeafLOD; }
 	FBox GetBoundingBox() const;
 
 private:

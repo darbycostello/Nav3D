@@ -5,14 +5,14 @@
 #include "Components/ActorComponent.h"
 #include "Nav3DOcclusionComponent.generated.h"
 
-class ANav3DVolume;
-
 /**
 *  This component will consider the owner for dynamic octree occlusion
 */
 UCLASS( ClassGroup=(Custom), meta=(BlueprintSpawnableComponent, DisplayName="Nav3D Occlusion"))
 class NAV3D_API UNav3DOcclusionComponent final : public UActorComponent
 {
+	friend class ANav3DVolume;
+	
 	GENERATED_BODY()
 
 public:	

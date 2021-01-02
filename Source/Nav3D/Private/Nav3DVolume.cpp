@@ -30,7 +30,11 @@ ANav3DVolume::ANav3DVolume(const FObjectInitializer& ObjectInitializer)
 void ANav3DVolume::OnConstruction(const FTransform &Transform)
 {
 	Super::OnConstruction(Transform);
+
+#if WITH_EDITOR
 	DebugDrawOctree();
+#endif
+
 }
 
 void ANav3DVolume::Initialise()
@@ -44,7 +48,7 @@ void ANav3DVolume::Initialise()
 #endif
 
 	UpdateVolume();
-	UpdateModifierVolumes();
+	GatherModifierVolumes();
 }
 
 void ANav3DVolume::UpdateTaskComplete() {
@@ -74,6 +78,7 @@ void ANav3DVolume::PostEditChangeProperty(struct FPropertyChangedEvent& Property
 		"VolumeBoundsColor",
 		"bDisplayLayers",
 		"bDisplayLeafs",
+		"bDisplayLeafOcclusion",
 		"bDisplayEdgeAdjacency",
 		"LineScale",
 		"LayerColours",
@@ -87,7 +92,6 @@ void ANav3DVolume::PostEditChangeProperty(struct FPropertyChangedEvent& Property
 	} else if (DebugProperties.Contains(PropertyName)) {
 		DebugDrawOctree();
 	}
-	UpdateModifierVolumes();
 }
 
 void ANav3DVolume::PostEditUndo() {
@@ -124,10 +128,9 @@ void ANav3DVolume::DebugDrawOctree() {
 			for (int32 I = NumLayers - 2; I >= 0; I--) BuildEdges(I);
 			DebugDrawEdgeAdjacency();
 		}
-		
 		if (bDisplayLeafOcclusion) DebugDrawLeafOcclusion();
-		
 		DebugDrawNavPaths();
+		DebugDrawModifierVolumes();
 	}
 }
 
@@ -235,12 +238,16 @@ TArray<AActor*> ANav3DVolume::GatherOcclusionActors() {
 
 // Regenerate the entire sparse voxel octree
 bool ANav3DVolume::BuildOctree() {
-	
+
 	// Initial setup
 	Initialise();
 
 	// Gather any occlusion component owners and add them to the collision ignore list
 	CollisionQueryParams.AddIgnoredActors(GatherOcclusionActors());
+
+#if WITH_EDITOR
+	const auto StartTime = high_resolution_clock::now();
+#endif
 
 	// Build the octree
 	RasterizeInitial();
@@ -251,12 +258,6 @@ bool ANav3DVolume::BuildOctree() {
 	// Clean up and cache the octree
 	NumBytes = Octree.GetSize();
 	CollisionQueryParams.ClearIgnoredActors();
-
-	
-#if WITH_EDITOR
-	const auto StartTime = high_resolution_clock::now();
-#endif
-
 	CachedOctree = Octree;
 	
 #if WITH_EDITOR
@@ -278,7 +279,7 @@ bool ANav3DVolume::BuildOctree() {
 	return true;
 }
 
-void ANav3DVolume::UpdateModifierVolumes()
+void ANav3DVolume::GatherModifierVolumes()
 {
 	ModifierVolumes.Empty();
 	TArray<AActor*> ModifierVolumeActors;
@@ -286,18 +287,7 @@ void ANav3DVolume::UpdateModifierVolumes()
 	for (auto& Actor: ModifierVolumeActors)
 	{
 		ANav3DModifierVolume* ModiferVolume = Cast<ANav3DModifierVolume>(Actor);
-
-#if WITH_EDITOR		
-		// Initialise each modifier volume in editor, to perform persistent line debug drawing
-		ModiferVolume->Initialise();
-#endif
-		
-		if (ModiferVolume->GetEnabled()) {
-			if (ModiferVolume->GetBoundingBox().Intersect(GetBoundingBox()))
-			{
-				ModifierVolumes.Add(ModiferVolume);
-			}
-		}
+		if (ModiferVolume) ModifierVolumes.Add(ModiferVolume);
 	}
 }
 
@@ -1172,5 +1162,11 @@ void ANav3DVolume::DebugDrawMortonCode(const FVector Location, const FString Str
             End = End * Scale + FVector(0, YOffset, 0) + Location;
 			DrawDebugLine(GetWorld(), Start, End, Colour, true, -1.0f, 0, ScaleFactor);	
 		}
+	}
+}
+
+void ANav3DVolume::DebugDrawModifierVolumes() const {
+	for (auto& ModiferVolume: ModifierVolumes) {
+		ModiferVolume->DebugDrawModifierVolume();
 	}
 }

@@ -54,6 +54,7 @@ void UNav3DComponent::TickComponent(const float DeltaTime, const ELevelTick Tick
 void UNav3DComponent::FindPath(
 	const FVector& StartLocation,
 	const FVector& TargetLocation,
+	const bool bCheckLineOfSight,
 	FFindPathTaskCompleteDynamicDelegate OnComplete,
 	ENav3DPathFindingCallResult &Result) {
 	
@@ -67,29 +68,31 @@ void UNav3DComponent::FindPath(
 		UE_LOG(LogTemp, Error, TEXT("Pathfinding cannot initialise. Nav3D component owner is not inside a Nav3D volume"));
 		return;
 	}
-	
-	// If there is a line of sight plus clearance with the target then no path finding is required
-	FCollisionQueryParams CollisionQueryParams;
-	CollisionQueryParams.bTraceComplex = true;
-	CollisionQueryParams.TraceTag = "Nav3DLineOfSightCheck";
-	FHitResult HitResult;
-	float Radius = FMath::Max(50.f ,GetOwner()->GetComponentsBoundingBox(true).GetExtent().GetMax());
-	GetWorld()->SweepSingleByChannel(
-        HitResult,
-        StartLocation,
-        TargetLocation,
-        FQuat::Identity,
-        Volume->CollisionChannel,
-        FCollisionShape::MakeSphere(Radius),
-        CollisionQueryParams
-    );
 
-	if (!HitResult.bBlockingHit) {
-		Result = ENav3DPathFindingCallResult::Reachable;
-		UE_LOG(LogTemp, Error, TEXT("Pathfinding unnecessary. Nav3D component owner has a clear line of sight to target"));
-		return;
+	if (bCheckLineOfSight) {
+		// If there is a line of sight plus clearance with the target then no path finding is required
+		FCollisionQueryParams CollisionQueryParams;
+		CollisionQueryParams.bTraceComplex = true;
+		CollisionQueryParams.TraceTag = "Nav3DLineOfSightCheck";
+		FHitResult HitResult;
+		float Radius = FMath::Max(50.f ,GetOwner()->GetComponentsBoundingBox(true).GetExtent().GetMax());
+		GetWorld()->SweepSingleByChannel(
+            HitResult,
+            StartLocation,
+            TargetLocation,
+            FQuat::Identity,
+            Volume->CollisionChannel,
+            FCollisionShape::MakeSphere(Radius),
+            CollisionQueryParams
+        );
+
+		if (!HitResult.bBlockingHit) {
+			Result = ENav3DPathFindingCallResult::Reachable;
+			UE_LOG(LogTemp, Error, TEXT("Pathfinding unnecessary. Nav3D component owner has a clear line of sight to target"));
+			return;
+		}	
 	}
-
+	
 	// Check that an octree has been found
 	if (!VolumeContainsOctree()) {
 		Result = ENav3DPathFindingCallResult::NoOctree;

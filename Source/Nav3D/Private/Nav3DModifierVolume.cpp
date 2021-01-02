@@ -43,7 +43,6 @@ void ANav3DModifierVolume::PostEditChangeProperty(struct FPropertyChangedEvent& 
 
 	const TSet<FString> CriticalProperties = {
 		"Scale",
-        "LeafLOD",
 		"Priority",
 		"Enabled"};
 	const TSet<FString> DebugProperties = {
@@ -70,16 +69,12 @@ void ANav3DModifierVolume::PostEditUndo() {
 	Initialise();
 }
 
-void ANav3DModifierVolume::FlushDebugDraw() const {
-	if (!GetWorld()) return;
-	FlushPersistentDebugLines(GetWorld());
-}
-
 void ANav3DModifierVolume::DebugDrawModifierVolume() const
 {
 	if (!GetWorld() || !bDisplayVolumeBounds) return;
 	const FBox Box = GetBoundingBox();
 	DebugDrawBoundsMesh(Box, VolumeBoundsColour);
+	if (bDisplayOverlaps) DebugDrawOverlaps();
 }
 
 void ANav3DModifierVolume::DebugDrawOverlaps() const
@@ -99,14 +94,6 @@ void ANav3DModifierVolume::DebugDrawOverlaps() const
 
 void ANav3DModifierVolume::Initialise() const
 {
-	
-#if WITH_EDITOR
-	FlushDebugDraw();
-	DebugDrawModifierVolume();
-	DebugDrawOverlaps();
-#endif
-	
-	// Update any overlapping Nav3D volumes by firing a debug draw
 	TArray<ANav3DVolume*> Volumes;
 	TArray<FBox> Overlaps;
 	GetOverlappingVolumes(Volumes, Overlaps);
@@ -129,11 +116,6 @@ void ANav3DModifierVolume::GetOverlappingVolumes(TArray<ANav3DVolume*> &Volumes,
 	{
 		ANav3DVolume* Nav3DVolumeActor = Cast<ANav3DVolume>(Actor);
 		if (Nav3DVolumeActor) {
-
-#if WITH_EDITOR
-			Nav3DVolumeActor->DebugDrawOctree();
-#endif
-			
 			const FBox Bounds = GetBoundingBox();
 			const FBox VolumeBounds = Nav3DVolumeActor->GetBoundingBox();
 			if (VolumeBounds.Intersect(Bounds))

@@ -128,7 +128,6 @@ public:
 	void Initialise();
 	bool BuildOctree();
 	void UpdateOctree();
-	void DebugDrawOctree();
 	void AddDebugNavPath(const FNav3DDebugPath DebugPath);
 	void LockOctree() { bOctreeLocked = true; }
 	void UnlockOctree() { bOctreeLocked = false; }
@@ -196,6 +195,7 @@ private:
 	float GetActualVolumeSize() const { return FMath::Pow(2, VoxelExponent) * (VoxelSize * 4); }
 	void UpdateNode(FNav3DOctreeEdge Edge);
 	void UpdateLeaf(const FVector& Location, int32 LeafIndex);
+	void DebugDrawOctree();
 	void DebugDrawVolume() const;
 	void DebugDrawVoxel(FVector Location, FVector Extent, FColor Colour) const;
 	void DebugDrawSphere(const FVector Location, const float Radius, const FColor Colour) const;
@@ -204,7 +204,8 @@ private:
 	void DebugDrawEdgeAdjacency() const;
 	void DebugDrawBoundsMesh(FBox Box, FColor Colour) const;
 	void DebugDrawNavPaths();
-	void UpdateModifierVolumes();
+	void DebugDrawModifierVolumes() const;
+	void GatherModifierVolumes();
 	FColor GetLayerColour(const int32 LayerIndex) const;
 	TArray<AActor*> GatherOcclusionActors();
 };

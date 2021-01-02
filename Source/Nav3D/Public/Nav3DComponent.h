@@ -4,15 +4,13 @@
 #include "Components/ActorComponent.h"
 #include "Nav3DComponent.generated.h"
 
-class ANav3DVolume;
-struct FNavigationPath;
-struct FNav3DOctreeEdge;
-
 DECLARE_DYNAMIC_DELEGATE_OneParam(FFindPathTaskCompleteDynamicDelegate, bool, bPathFound);
 
 UCLASS(BlueprintType, Blueprintable, meta=(BlueprintSpawnableComponent, DisplayName="Nav3D Component"))
 class NAV3D_API UNav3DComponent final : public UActorComponent
 {
+	friend class ANav3DVolume;
+	
 	GENERATED_BODY()
 
 public:
@@ -64,6 +62,7 @@ public:
 	void FindPath(
 		const FVector& StartLocation,
 		const FVector& TargetLocation,
+		const bool bCheckLineOfSight,
 		FFindPathTaskCompleteDynamicDelegate OnComplete,
 		ENav3DPathFindingCallResult &Result);
 	
