@@ -16,9 +16,9 @@ public:
 
     ANav3DModifierVolume(const FObjectInitializer& ObjectInitializer);
 
-	// If two Nav3D Modifier volumes overlap, the one with the highest priority will be used  
-	UPROPERTY(EditAnywhere, meta=(ClampMin = "0", ClampMax = "100"), DisplayName = "Priority", Category = "Nav3D")
-    int32 Priority = 0;
+	// This value will be added to the calculated path cost for any points that lie within the modifier boundary  
+	UPROPERTY(EditAnywhere, meta=(ClampMin = "0", ClampMax = "100"), Category = "Nav3D")
+    float PathCostModifier = 1;
 
 	// Whether to use this volume to modify overlapping Nav3D volumes  
 	UPROPERTY(EditAnywhere, DisplayName = "Enabled", Category = "Nav3D")
@@ -50,14 +50,13 @@ public:
 	virtual void EditorApplyRotation(const FRotator& DeltaRotation, bool bAltDown, bool bShiftDown, bool bCtrlDown) override;
 	virtual void EditorApplyScale( const FVector& DeltaScale, const FVector* PivotLocation, bool bAltDown, bool bShiftDown, bool bCtrlDown ) override;
 	bool GetEnabled() const { return bEnabled; }
-	int32 GetPriority() const { return Priority; }
+	float GetPathCost() const { return bEnabled ? PathCostModifier : 0.f; }
 	FBox GetBoundingBox() const;
 
 private:
-	void Initialise() const;
+	void Initialise();
 	void GetOverlappingVolumes(TArray<ANav3DVolume*> &Volumes, TArray<FBox> &Overlaps) const;
 	void DebugDrawModifierVolume() const;
 	void DebugDrawOverlaps() const;
-	void FlushDebugDraw() const;
 	void DebugDrawBoundsMesh(FBox Box, FColor Colour) const;
 };

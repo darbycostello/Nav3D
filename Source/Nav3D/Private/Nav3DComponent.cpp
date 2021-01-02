@@ -67,9 +67,11 @@ void UNav3DComponent::FindPath(
 	if (!VolumeContainsOctree() || !VolumeContainsOwner()) FindVolume();
 	if (!VolumeContainsOwner()) {
 		Result = ENav3DPathFindingCallResult::NoVolume;
+		
 #if WITH_EDITOR
 		if (bDebugLogPathfinding) UE_LOG(LogTemp, Error, TEXT("%s: Pathfinding cannot initialise. Nav3D component owner is not inside a Nav3D volume"), *GetOwner()->GetName());
 #endif
+
 		return;
 	}
 
@@ -260,7 +262,9 @@ void UNav3DComponent::ExecutePathFinding(
 					FVector CurrentLocation(0.f), AdjacentLocation(0.f);
 					Volume->GetEdgeLocation(CurrentEdge, CurrentLocation);
 					Volume->GetEdgeLocation(AdjacentEdge, AdjacentLocation);
-					float Cost = 1.0f - static_cast<float>(TargetEdge.GetLayerIndex()) / static_cast<float>(Volume->NumLayers) * Config.NodeSizePreference;
+					float Cost;
+					Volume->GetPathCost(AdjacentLocation, Cost);
+					Cost -= static_cast<float>(TargetEdge.GetLayerIndex()) / static_cast<float>(Volume->NumLayers) * Config.NodeSizePreference;
 					if (Config.Heuristic == ENav3DHeuristic::Euclidean) {
 						Cost *= (CurrentLocation - AdjacentLocation).Size();
 					}
@@ -396,7 +400,7 @@ void UNav3DComponent::ApplyPathSmoothing(FNav3DPath& Path, const FNav3DPathFindi
 
 #if WITH_EDITOR
 
-void UNav3DComponent::RequestNavPathDebugDraw(const FNav3DPath& Path) const {
+void UNav3DComponent::RequestNavPathDebugDraw(const FNav3DPath Path) const {
 	if (!GetWorld() || !Volume || Path.Points.Num() < 2 || !bDebugDrawNavPath) return;
 	FNav3DDebugPath DebugPath;
 	for (auto& Point: Path.Points) DebugPath.Points.Add(Point.PointLocation);

@@ -129,12 +129,15 @@ public:
 	bool BuildOctree();
 	void UpdateOctree();
 	void AddDebugNavPath(const FNav3DDebugPath DebugPath);
+	void AddModifierVolume(ANav3DModifierVolume* ModifierVolume);
 	void LockOctree() { bOctreeLocked = true; }
 	void UnlockOctree() { bOctreeLocked = false; }
 	FBox GetBoundingBox() const;
 	bool GetEdge(const FVector& Location, FNav3DOctreeEdge& Edge);
 	bool FindAccessibleEdge(FVector& Location, FNav3DOctreeEdge& Edge);
+	void GetPathCost(FVector& Location, float& Cost);
 	void FlushDebugDraw() const;
+	void RequestOctreeDebugDraw();
 	void GetVolumeExtents(const FVector& Location, int32 LayerIndex, FIntVector& Extents) const;
 	void GetMortonVoxel(const FVector& Location, int32 LayerIndex, FIntVector& MortonLocation) const;
 	bool OctreeValid() const { return NumLayers > 0; }
@@ -150,7 +153,7 @@ public:
 	bool IsWithinBounds(const FVector Location) const { return GetBoundingBox().IsInside(Location); }
 	TArray<FNav3DOctreeEdge> CalculateVolatileEdges(const AActor* Actor) const;
 	void RequestOctreeUpdate(UNav3DOcclusionComponent* OcclusionComponent);
-		
+	
 private:
 	FNav3DOctree Octree;
 	FNav3DOctree CachedOctree;
@@ -159,6 +162,7 @@ private:
 	FNav3DUpdateOctreeDelegate OnUpdateComplete;
 	
 #if WITH_EDITOR
+	bool bDebugDrawRequested;
 	TArray<FNav3DDebugEdge> DebugEdges;
 	TArray<FNav3DDebugPath> DebugPaths;
 #endif
@@ -206,7 +210,6 @@ private:
 	void DebugDrawBoundsMesh(FBox Box, FColor Colour) const;
 	void DebugDrawNavPaths();
 	void DebugDrawModifierVolumes() const;
-	void GatherModifierVolumes();
 	FColor GetLayerColour(const int32 LayerIndex) const;
 	TArray<AActor*> GatherOcclusionActors();
 };

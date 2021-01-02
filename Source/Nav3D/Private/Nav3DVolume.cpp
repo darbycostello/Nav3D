@@ -48,7 +48,6 @@ void ANav3DVolume::Initialise()
 #endif
 
 	UpdateVolume();
-	GatherModifierVolumes();
 }
 
 void ANav3DVolume::UpdateTaskComplete() {
@@ -106,6 +105,14 @@ void ANav3DVolume::FlushDebugDraw() const {
 	FlushDebugStrings(GetWorld());
 }
 
+void ANav3DVolume::RequestOctreeDebugDraw() {
+	bDebugDrawRequested = true;
+	if (!bOctreeLocked) {
+		DebugDrawOctree();
+		bDebugDrawRequested = false;
+	}
+}
+
 void ANav3DVolume::DebugDrawOctree() {
 	GetWorld()->PersistentLineBatcher->SetComponentTickEnabled(false);
 	FlushDebugDraw();
@@ -144,6 +151,7 @@ void ANav3DVolume::DebugDrawVolume() const
 		DebugDrawBoundsMesh(Box, VolumeBoundsColour);
 	}
 }
+
 
 void ANav3DVolume::DebugDrawEdgeAdjacency() const {
 	if (!GetWorld()) return;
@@ -278,18 +286,6 @@ bool ANav3DVolume::BuildOctree() {
 #endif
 
 	return true;
-}
-
-void ANav3DVolume::GatherModifierVolumes()
-{
-	ModifierVolumes.Empty();
-	TArray<AActor*> ModifierVolumeActors;
-	UGameplayStatics::GetAllActorsOfClass(GetWorld(), ANav3DModifierVolume::StaticClass(), ModifierVolumeActors);
-	for (auto& Actor: ModifierVolumeActors)
-	{
-		ANav3DModifierVolume* ModiferVolume = Cast<ANav3DModifierVolume>(Actor);
-		if (ModiferVolume) ModifierVolumes.Add(ModiferVolume);
-	}
 }
 
 FColor ANav3DVolume::GetLayerColour(const int32 LayerIndex) const {
@@ -473,16 +469,25 @@ void ANav3DVolume::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
 
-	if (bUpdateRequested && !bOctreeLocked) {
+	if (!bOctreeLocked) {
+		if (bUpdateRequested) {
 
-		// Prevent any further requests until update task is complete
-		LockOctree();
+			// Prevent any further requests until update task is complete
+			LockOctree();
 
-		// Execute UpdateOctree as background task
-		(new FAutoDeleteAsyncTask<FNav3DUpdateOctreeTask>(this, OnUpdateComplete))->StartBackgroundTask();
+			// Execute UpdateOctree as background task
+			(new FAutoDeleteAsyncTask<FNav3DUpdateOctreeTask>(this, OnUpdateComplete))->StartBackgroundTask();
 		
-		// Update complete
-		bUpdateRequested = false;
+			// Update complete
+			bUpdateRequested = false;
+
+#if WITH_EDITOR		
+		} else if (bDebugDrawRequested) {
+			DebugDrawOctree();
+			bDebugDrawRequested = false;
+#endif
+
+		}
 	}
 }
 
@@ -758,6 +763,17 @@ bool ANav3DVolume::FindAccessibleEdge(FVector& Location, FNav3DOctreeEdge& Edge)
 		}
 	}
 	return false;
+}
+
+void ANav3DVolume::GetPathCost(FVector& Location, float& Cost) {
+	Cost = 1.f;
+	if (ModifierVolumes.Num() == 0) return;
+	for (auto& ModifierVolume: ModifierVolumes) {
+		if (ModifierVolume->GetBoundingBox().IsInside(Location))
+		{
+			Cost += ModifierVolume->GetPathCost();
+		}
+	}
 }
 
 bool ANav3DVolume::GetEdge(const FVector& Location, FNav3DOctreeEdge& Edge)
@@ -1166,5 +1182,11 @@ void ANav3DVolume::DebugDrawMortonCode(const FVector Location, const FString Str
 void ANav3DVolume::DebugDrawModifierVolumes() const {
 	for (auto& ModiferVolume: ModifierVolumes) {
 		ModiferVolume->DebugDrawModifierVolume();
+	}
+}
+
+void ANav3DVolume::AddModifierVolume(ANav3DModifierVolume* ModifierVolume) {
+	if (!ModifierVolumes.Contains(ModifierVolume)) {
+		ModifierVolumes.Add(ModifierVolume);
 	}
 }

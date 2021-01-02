@@ -63,7 +63,7 @@ public:
 	void AddPathStartLocation(FNav3DPath& Path) const;
 	void ApplyPathPruning(FNav3DPath& Path, const FNav3DPathFindingConfig Config) const;
 	static void ApplyPathSmoothing(FNav3DPath& Path, FNav3DPathFindingConfig Config);
-	void RequestNavPathDebugDraw(const FNav3DPath& Path) const;	
+	void RequestNavPathDebugDraw(const FNav3DPath Path) const;	
 	
 	UFUNCTION(BlueprintCallable, Category = "Nav3D")
 	void FindPath(

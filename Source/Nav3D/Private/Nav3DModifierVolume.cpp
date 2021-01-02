@@ -35,31 +35,17 @@ void ANav3DModifierVolume::EditorApplyScale( const FVector& DeltaScale, const FV
 }
 
 #if WITH_EDITOR
-
 void ANav3DModifierVolume::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) {
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 	FProperty* Property = PropertyChangedEvent.Property;
 	const FString PropertyName = Property != nullptr ? Property->GetFName().ToString() : "";
 
-	const TSet<FString> CriticalProperties = {
-		"Scale",
-		"Priority",
-		"Enabled"};
-	const TSet<FString> DebugProperties = {
-		"bDisplayVolumeBounds",
-		"bDisplayOverlaps",
-		"VolumeBoundsColor",
-		"OverlapColor"};
-	if (CriticalProperties.Contains(PropertyName)) {
-
-		// Update any overlapping Nav3D volumes
-		TArray<ANav3DVolume*> Volumes;
-		TArray<FBox> Overlaps;
-		GetOverlappingVolumes(Volumes, Overlaps);
-		for (auto& Volume: Volumes)
-		{
-			if (Volume->IsValidLowLevel()) Volume->Initialise();
-		}
+	TArray<ANav3DVolume*> Volumes;
+	TArray<FBox> Overlaps;
+	GetOverlappingVolumes(Volumes, Overlaps);
+	if (Volumes.Num() == 0) {
+		UE_LOG(LogTemp, Warning, TEXT("No Nav3D volumes found."));
+		return;
 	}
 	Initialise();
 }
@@ -88,17 +74,21 @@ void ANav3DModifierVolume::DebugDrawOverlaps() const
 		DebugDrawBoundsMesh(Box, OverlapColour);
 	}
 }
-
 #endif
 
-
-void ANav3DModifierVolume::Initialise() const
+void ANav3DModifierVolume::Initialise()
 {
 	TArray<ANav3DVolume*> Volumes;
 	TArray<FBox> Overlaps;
 	GetOverlappingVolumes(Volumes, Overlaps);
+	for (auto& Volume: Volumes)
+	{
+		if (Volume) {
+			Volume->AddModifierVolume(this);
+			Volume->RequestOctreeDebugDraw();
+		}
+	}
 }
-
 
 void ANav3DModifierVolume::DebugDrawBoundsMesh(const FBox Box, const FColor Colour) const { 
 	const TArray<FVector> Vertices = {
