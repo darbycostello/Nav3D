@@ -36,6 +36,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Generation")
     float Clearance = 0.f;
 
+	// How often to tick this actor to perform dynamic updates
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Generation")
+	float TickInterval = 0.1f;
+	
 	// Draw distance for debug lines
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging")
     float DebugDistance = 50000.f;
@@ -105,10 +109,7 @@ public:
     int32 NumBytes = 0;
 
 	UFUNCTION()
-	void LockOctree() { bOctreeLocked = true; }
-
-	UFUNCTION()
-	void UnlockOctree() { bOctreeLocked = false; }
+	void UpdateTaskComplete();
 
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
@@ -128,6 +129,8 @@ public:
 	bool BuildOctree();
 	void UpdateOctree();
 	void DebugDrawOctree();
+	void LockOctree() { bOctreeLocked = true; }
+	void UnlockOctree() { bOctreeLocked = false; }
 	FBox GetBoundingBox() const;
 	bool GetEdge(const FVector& Location, FNav3DOctreeEdge& Edge);
 	void FlushDebugDraw() const;

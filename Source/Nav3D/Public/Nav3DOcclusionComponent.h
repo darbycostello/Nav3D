@@ -10,7 +10,7 @@ class ANav3DVolume;
 /**
 *  This component will consider the owner for dynamic octree occlusion
 */
-UCLASS( ClassGroup=(Custom), meta=(BlueprintSpawnableComponent, DisplayName="Nav3D Dynamic Occlusion"))
+UCLASS( ClassGroup=(Custom), meta=(BlueprintSpawnableComponent, DisplayName="Nav3D Occlusion"))
 class NAV3D_API UNav3DOcclusionComponent final : public UActorComponent
 {
 	GENERATED_BODY()
@@ -18,12 +18,8 @@ class NAV3D_API UNav3DOcclusionComponent final : public UActorComponent
 public:	
     UNav3DOcclusionComponent();
 
-	// How often to tick this component 
-	UPROPERTY(BlueprintReadWrite, Category = "Nav3D Occlusion Component")
-    float TickInterval = 0.5f;
-
 	// The minimum owner transform delta to trigger an octree update 
-	UPROPERTY(BlueprintReadWrite, Category = "Nav3D Occlusion Component")
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Nav3D")
 	float TransformTriggerTolerance = 1.0f;
 
 	// Toggle whether this component should be considered for octree occlusion 

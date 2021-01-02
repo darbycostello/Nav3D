@@ -21,7 +21,6 @@ TArray<FNav3DOctreeEdge>& UNav3DOcclusionComponent::GetVolatileEdges() {
 
 void UNav3DOcclusionComponent::BeginPlay() {
 	Super::BeginPlay();
-	SetComponentTickInterval(TickInterval);
 	CachedTransform = GetOwner()->GetActorTransform();
 	if (bEnabled) RequestUpdate();
 }

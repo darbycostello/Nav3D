@@ -48,6 +48,21 @@ void ANav3DVolume::Initialise()
 
 }
 
+void ANav3DVolume::UpdateTaskComplete() {
+	UnlockOctree();
+
+#if WITH_EDITOR
+	// Run the debug draw on the game thread
+	AsyncTask(ENamedThreads::GameThread, [=]() {
+		FlushDebugDraw();
+	    DebugEdges.Empty();
+	    for (int32 I = NumLayers - 2; I >= 0; I--) BuildEdges(I);
+	    DebugDrawOctree();
+    });	
+#endif
+	
+}
+
 #if WITH_EDITOR
 
 void ANav3DVolume::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) {
@@ -95,7 +110,7 @@ void ANav3DVolume::FlushDebugDraw() const {
 void ANav3DVolume::DebugDrawOctree() {
 	GetWorld()->PersistentLineBatcher->SetComponentTickEnabled(false);
 	DebugDrawVolume();
-	if (OctreeValid() && !bOctreeLocked) {
+	if (OctreeValid()) {
 		for (int32 I = 0; I < Octree.Layers.Num(); I++) {
 			for (int32 J = 0; J < Octree.Layers[I].Num(); J++) {
 				FVector NodeLocation;
@@ -440,7 +455,8 @@ int32 ANav3DVolume::GetSegmentNodeCount(const uint8 LayerIndex) const {
 
 void ANav3DVolume::BeginPlay() {
 	CachedOctree = Octree;
-	OnUpdateComplete.BindUFunction(this, FName("UnlockOctree"));
+	OnUpdateComplete.BindUFunction(this, FName("UpdateTaskComplete"));
+	SetActorTickInterval(TickInterval);
 }
 
 void ANav3DVolume::Tick(float DeltaTime)
@@ -458,16 +474,6 @@ void ANav3DVolume::Tick(float DeltaTime)
 		// Update complete
 		bUpdateRequested = false;
 	}
-				
-#if WITH_EDITOR
-	if (!bOctreeLocked) {
-		FlushDebugDraw();
-		DebugEdges.Empty();
-		for (int32 I = NumLayers - 2; I >= 0; I--) BuildEdges(I);
-		DebugDrawOctree();
-	}
-#endif
-
 }
 
 void ANav3DVolume::PostRegisterAllComponents() {
@@ -851,7 +857,9 @@ void ANav3DVolume::UpdateOctree()
 
 	Octree = CachedOctree;
 
+	// Gather the volatile edges from each Occlusion component
 	TSet<FNav3DOctreeEdge> UpdateEdges;
+	// Update resets octree to the baked state, so edges from all of the components are required
 	for (const auto OcclusionComponent : OcclusionComponents)
 	{
 		if (!IsValid(OcclusionComponent)) continue;
@@ -859,7 +867,8 @@ void ANav3DVolume::UpdateOctree()
 			UpdateEdges.Append(OcclusionComponent->GetVolatileEdges());
 		}
 	}
-	
+
+	// Gather the morton codes for each updated edge
 	TArray<TPair<uint8, uint_fast64_t>> LayerMortonCodes;
 	LayerMortonCodes.Reserve(UpdateEdges.Num());
 	for (const auto& Edge : UpdateEdges) {
@@ -867,6 +876,7 @@ void ANav3DVolume::UpdateOctree()
 		LayerMortonCodes.Emplace(Edge.LayerIndex, Node.MortonCode);
 	}
 
+	// Update each node
 	for (const auto& LayerMortonCode : LayerMortonCodes) {
 		int32 NodeIndex;
 		if (GetNodeIndex(LayerMortonCode.Key, LayerMortonCode.Value, NodeIndex)) {
@@ -874,7 +884,7 @@ void ANav3DVolume::UpdateOctree()
 		}
 	}
 
-	// Find any orphaned nodes
+	// Find any nodes that have become isolated
 	LayerMortonCodes.Reset();
 	for (int32 I = NumLayers - 2; I >= 0; I--) {
 		for (int32 J = 0; J < Octree.Layers[I].Num(); J++) {
@@ -887,7 +897,7 @@ void ANav3DVolume::UpdateOctree()
 		}
 	}
 
-	// Remove the orphaned nodes found
+	// Remove the isolated nodes that were found
 	for (auto& LayerMortonCode : LayerMortonCodes) {
 		int32 NodeIndex;
 		if (GetNodeIndex(LayerMortonCode.Key, LayerMortonCode.Value, NodeIndex)) {
@@ -897,7 +907,7 @@ void ANav3DVolume::UpdateOctree()
 		}
 	}
 	
-	// Repair the node parents
+	// Repair the node parent edges
 	for (int32 I = NumLayers - 2; I >= 0; I--) {
 		for (int32 J = 0; J < Octree.Layers[I].Num(); J++) {
 			FNav3DOctreeNode& Node = Octree.Layers[I][J];
@@ -908,7 +918,7 @@ void ANav3DVolume::UpdateOctree()
 		}
 	}
 
-	// Repair the edges
+	// Repair the node child edges
 	for (int32 I = 0; I < Octree.Layers[0].Num(); I++) {
 		FNav3DOctreeEdge& Child = Octree.Layers[0][I].FirstChild;
 		Child.SetLayerIndex(0);
