@@ -35,7 +35,8 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Pathfinding")
     int32 PathSmoothing = 5;
 
-	// Whether to debug draw the path from a pathfinding task 
+#if WITH_EDITOR
+	// Whether to debug draw the path from a pathfinding task. 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging")
     bool bDebugDrawNavPath;
 
@@ -46,6 +47,11 @@ public:
 	// The navigation path thickness
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging")
 	float DebugPathLineScale = 10.0f;
+
+	// Whether to log the pathfinding task process in the console. 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging")
+	bool bDebugLogPathfinding;
+#endif
 	
 	UNav3DComponent(const FObjectInitializer& ObjectInitializer);
 	FNav3DPathSharedPtr Nav3DPath;

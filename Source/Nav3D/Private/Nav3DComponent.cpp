@@ -67,7 +67,9 @@ void UNav3DComponent::FindPath(
 	if (!VolumeContainsOctree() || !VolumeContainsOwner()) FindVolume();
 	if (!VolumeContainsOwner()) {
 		Result = ENav3DPathFindingCallResult::NoVolume;
-		UE_LOG(LogTemp, Error, TEXT("Pathfinding cannot initialise. Nav3D component owner is not inside a Nav3D volume"));
+#if WITH_EDITOR
+		if (bDebugLogPathfinding) UE_LOG(LogTemp, Error, TEXT("%s: Pathfinding cannot initialise. Nav3D component owner is not inside a Nav3D volume"), *GetOwner()->GetName());
+#endif
 		return;
 	}
 
@@ -90,7 +92,11 @@ void UNav3DComponent::FindPath(
 
 		if (!HitResult.bBlockingHit) {
 			Result = ENav3DPathFindingCallResult::Reachable;
-			UE_LOG(LogTemp, Error, TEXT("Pathfinding unnecessary. Nav3D component owner has a clear line of sight to target"));
+			
+#if WITH_EDITOR
+			if (bDebugLogPathfinding) UE_LOG(LogTemp, Error, TEXT("%s: Pathfinding unnecessary. Nav3D component owner has a clear line of sight to target"), *GetOwner()->GetName());
+#endif
+			
 			return;
 		}	
 	}
@@ -98,32 +104,58 @@ void UNav3DComponent::FindPath(
 	// Check that an octree has been found
 	if (!VolumeContainsOctree()) {
 		Result = ENav3DPathFindingCallResult::NoOctree;
-		UE_LOG(LogTemp, Error, TEXT("Pathfinding cannot initialise. Nav3D octree has not been built"));
+		
+#if WITH_EDITOR
+		if (bDebugLogPathfinding) UE_LOG(LogTemp, Error, TEXT("%s: Pathfinding cannot initialise. Nav3D octree has not been built"), *GetOwner()->GetName());
+#endif
+		
 		return;
 	}
 	
 	if (!Volume->GetEdge(StartLocation, StartEdge))
 	{
 		Result = ENav3DPathFindingCallResult::NoStart;
-		UE_LOG(LogTemp, Error, TEXT("Failed to find start edge"));
 
+#if WITH_EDITOR
+		if (bDebugLogPathfinding) UE_LOG(LogTemp, Warning, TEXT("%s: Failed to find start edge. Searching nearby..."), *GetOwner()->GetName());
+#endif
+		
 		if (!Volume->FindAccessibleEdge(LegalStart, StartEdge)) {
-			UE_LOG(LogTemp, Error, TEXT("Get Start Edge: No accessible adjacent edge found"));
+
+#if WITH_EDITOR
+			if (bDebugLogPathfinding) UE_LOG(LogTemp, Error, TEXT("%s: No accessible adjacent edge found"), *GetOwner()->GetName());
+#endif
+			
 			return;	
 		}
-		UE_LOG(LogTemp, Display, TEXT("Found Legal Start Location"));
+
+#if WITH_EDITOR
+		if (bDebugLogPathfinding) UE_LOG(LogTemp, Display, TEXT("%s: Found legal start location"), *GetOwner()->GetName());
+#endif
+		
 	}
 
 	if (!Volume->GetEdge(TargetLocation, TargetEdge))
 	{
 		Result = ENav3DPathFindingCallResult::NoTarget;
-		UE_LOG(LogTemp, Error, TEXT("Failed to find target edge"));
 
+#if WITH_EDITOR
+		if (bDebugLogPathfinding) UE_LOG(LogTemp, Warning, TEXT("%s: Failed to find target edge. Searching nearby..."), *GetOwner()->GetName());
+#endif
+		
 		if (!Volume->FindAccessibleEdge(LegalTarget, TargetEdge)) {
-			UE_LOG(LogTemp, Error, TEXT("Get Target Edge: No accessible adjacent edge found"));
+
+#if WITH_EDITOR
+			if (bDebugLogPathfinding) UE_LOG(LogTemp, Error, TEXT("%s: No accessible edges found near target"), *GetOwner()->GetName());
+#endif
+			
 			return;	
 		}
-		UE_LOG(LogTemp, Display, TEXT("Found Legal Target Location"));
+
+#if WITH_EDITOR
+		if (bDebugLogPathfinding) UE_LOG(LogTemp, Display, TEXT("%s: Found accessible target location"), *GetOwner()->GetName());
+#endif
+		
 	}
 
 	FNav3DPathFindingConfig Config;
@@ -136,7 +168,11 @@ void UNav3DComponent::FindPath(
 
 	(new FAutoDeleteAsyncTask<FNav3DFindPathTask>(this, StartEdge, TargetEdge, LegalStart, LegalTarget, Config, Path, OnComplete))->StartBackgroundTask();
 	Result = ENav3DPathFindingCallResult::Success;
-	UE_LOG(LogTemp, Display, TEXT("Pathfinding task called successfully"));
+
+#if WITH_EDITOR
+	if (bDebugLogPathfinding) UE_LOG(LogTemp, Display, TEXT("%s: Pathfinding task called successfully"), *GetOwner()->GetName());
+#endif
+
 }
 
 void UNav3DComponent::ExecutePathFinding(
@@ -243,7 +279,11 @@ void UNav3DComponent::ExecutePathFinding(
 		}
 		I++;
 	}
-	UE_LOG(LogTemp, Display, TEXT("Pathfinding failed, iterations : %i"), I);
+	
+#if WITH_EDITOR
+	if (bDebugLogPathfinding) UE_LOG(LogTemp, Error, TEXT("%s: Pathfinding failed after %i iterations"), *GetOwner()->GetName(), I);
+#endif
+
 }
 
 float UNav3DComponent::HeuristicScore(const FNav3DOctreeEdge StartEdge, const FNav3DOctreeEdge TargetEdge, const FNav3DPathFindingConfig Config) const

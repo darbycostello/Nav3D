@@ -762,12 +762,9 @@ bool ANav3DVolume::FindAccessibleEdge(FVector& Location, FNav3DOctreeEdge& Edge)
 
 bool ANav3DVolume::GetEdge(const FVector& Location, FNav3DOctreeEdge& Edge)
 {
-	if (!IsWithinBounds(Location)) {
-		UE_LOG(LogTemp, Warning, TEXT("Get Edge: location is not within bounds"));
-		return false;
-	}
+	if (!IsWithinBounds(Location)) return false;
+	
 	int32 LayerIndex = NumLayers - 1;
-
 	while (LayerIndex >= 0)
 	{
 		const TArray<FNav3DOctreeNode>& Layer = GetLayer(LayerIndex);
@@ -812,21 +809,10 @@ bool ANav3DVolume::GetEdge(const FVector& Location, FNav3DOctreeEdge& Edge)
 					}
 				}
 
-				if (!bFound)
-				{
-					UE_LOG(LogTemp, Warning, TEXT("Get Edge: could not find node"));
-					return false;
-				}
-
+				if (!bFound) return false;
 				Edge.SetLayerIndex(LayerIndex);
 				Edge.SetNodeIndex(NodeIndex);
-
-				if (Leaf.GetSubNode(LeafIndex))
-				{
-					UE_LOG(LogTemp, Warning, TEXT("Get Edge: Node at location %s is occluded."), *Location.ToString());
-					return false;
-				}
-
+				if (Leaf.GetSubNode(LeafIndex)) return false;
 				Edge.SetSubNodeIndex(LeafIndex);
 				return true;
 			} 
@@ -835,9 +821,6 @@ bool ANav3DVolume::GetEdge(const FVector& Location, FNav3DOctreeEdge& Edge)
 			break;
 		}	
 	}
-
-	UE_LOG(LogTemp, Warning, TEXT("Get Edge: could not find a node for the provided edge"));
-
 	return false;
 }
 
