@@ -27,9 +27,7 @@ void UNav3DOcclusionComponent::BeginPlay() {
 
 void UNav3DOcclusionComponent::RequestUpdate() {
 	if (!Volume) FindVolume(Volume);
-	if (Volume) {
-		Volume->RequestOctreeUpdate(this);
-	}
+	if (Volume) Volume->RequestOctreeUpdate(this);
 }
 
 bool UNav3DOcclusionComponent::FindVolume(ANav3DVolume*& CurrentVolume) const {

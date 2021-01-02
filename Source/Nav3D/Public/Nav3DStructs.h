@@ -39,6 +39,23 @@ struct NAV3D_API FNav3DPath {
 };
 typedef TSharedPtr<FNav3DPath, ESPMode::ThreadSafe> FNav3DPathSharedPtr;
 
+USTRUCT(BlueprintType)
+struct NAV3D_API FNav3DDebugPath {
+
+	GENERATED_BODY()
+	
+	UPROPERTY(BlueprintReadWrite)
+	TArray<FVector> Points;
+
+	UPROPERTY(BlueprintReadWrite)
+	FColor Colour;
+
+	UPROPERTY(BlueprintReadWrite)
+	float LineScale;
+
+	FNav3DDebugPath(): LineScale(0) {}
+};
+
 UENUM()
 enum class ENav3DHeuristic: uint8 {
 	Manhattan UMETA(DisplayName="Manhattan"),
@@ -48,6 +65,7 @@ enum class ENav3DHeuristic: uint8 {
 UENUM()
 enum class ENav3DPathFindingCallResult: uint8 {
 	Success UMETA(DisplayName="Call Success", ToolTip="Pathfinding task was called successfully."),
+	Reachable UMETA(DisplayName="Target in line of sight", ToolTip="Pathfinding unnecessary. Target is already reachable."),
 	NoVolume UMETA(DisplayName="Volume not found", ToolTip="Nav3D component owner is not inside a Nav3D volume."),
     NoOctree UMETA(DisplayName="Octree not found", ToolTip="Nav3D octree has not been built."),
 	NoStart UMETA(DisplayName="Start edge not found", ToolTip="Failed to find start edge."),

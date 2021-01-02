@@ -43,15 +43,16 @@ protected:
 	void DoWork() const {
 		Nav3DComponent->ExecutePathFinding(Start, Target, StartLocation, TargetLocation, Config, Path);
 		
-
-		// Run the debug draw back on the game thread
+		// Run the path pruning, smoothing and debug draw back on the game thread
 		AsyncTask(ENamedThreads::GameThread, [=]() {
 			Nav3DComponent->ApplyPathPruning(Path, Config);
 			Nav3DComponent->ApplyPathSmoothing(Path, Config);
-			Nav3DComponent->DebugDrawNavPath(Path);	
+
+#if WITH_EDITOR
+			Nav3DComponent->RequestNavPathDebugDraw(Path);
+#endif
 		});
 
-		
 		TaskComplete.Execute(Path.Points.Num() > 0);
 	}
 

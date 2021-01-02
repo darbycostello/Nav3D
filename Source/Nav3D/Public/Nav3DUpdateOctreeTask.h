@@ -1,7 +1,5 @@
 #pragma once
 
-#include "Nav3DComponent.h"
-#include "Nav3DStructs.h"
 #include "Nav3DVolume.h"
 #include "Async/Async.h"
 #include "Async/AsyncWork.h"

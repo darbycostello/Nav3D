@@ -19,7 +19,7 @@ public:
 
 	// The heuristic to use for scoring during pathfinding
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Pathfinding")
-    ENav3DHeuristic Heuristic = ENav3DHeuristic::Euclidean;
+    ENav3DHeuristic Heuristic = ENav3DHeuristic::Manhattan;
 	
 	// Making this value greater than 1 will make the algorithm "greedy"
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Pathfinding")
@@ -31,11 +31,11 @@ public:
 
 	// The heuristic to use for scoring during pathfinding
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Pathfinding")
-	ENav3DPathPruning PathPruning = ENav3DPathPruning::None;
+	ENav3DPathPruning PathPruning = ENav3DPathPruning::WithClearance;
 
 	// Number of times to iterate Catmull-Rom smoothing on navigation paths 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Pathfinding")
-    int32 PathSmoothing = 3;
+    int32 PathSmoothing = 5;
 
 	// Whether to debug draw the path from a pathfinding task 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging")
@@ -46,7 +46,7 @@ public:
     FColor DebugPathColour = FColor(0, 255, 255);
 
 	// The navigation path thickness
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Pathfinding")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging")
 	float DebugPathLineScale = 10.0f;
 	
 	UNav3DComponent(const FObjectInitializer& ObjectInitializer);
@@ -58,7 +58,7 @@ public:
 	float HeuristicScore(FNav3DOctreeEdge StartEdge, FNav3DOctreeEdge TargetEdge, FNav3DPathFindingConfig Config) const;
 	void ApplyPathPruning(FNav3DPath& Path, const FNav3DPathFindingConfig Config) const;
 	static void ApplyPathSmoothing(FNav3DPath& Path, FNav3DPathFindingConfig Config);
-	void DebugDrawNavPath(const FNav3DPath& Path) const;	
+	void RequestNavPathDebugDraw(const FNav3DPath& Path) const;	
 	
 	UFUNCTION(BlueprintCallable, Category = "Nav3D")
 	void FindPath(
@@ -72,7 +72,10 @@ public:
 
 protected:
 	virtual void BeginPlay() override;
+
+	UPROPERTY()
 	ANav3DVolume* Volume;
+	
 	bool VolumeContainsOctree() const;
 	bool VolumeContainsOwner() const;
 	bool FindVolume();

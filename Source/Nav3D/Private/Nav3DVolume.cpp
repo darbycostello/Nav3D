@@ -45,7 +45,6 @@ void ANav3DVolume::Initialise()
 
 	UpdateVolume();
 	UpdateModifierVolumes();
-
 }
 
 void ANav3DVolume::UpdateTaskComplete() {
@@ -54,9 +53,6 @@ void ANav3DVolume::UpdateTaskComplete() {
 #if WITH_EDITOR
 	// Run the debug draw on the game thread
 	AsyncTask(ENamedThreads::GameThread, [=]() {
-		FlushDebugDraw();
-	    DebugEdges.Empty();
-	    for (int32 I = NumLayers - 2; I >= 0; I--) BuildEdges(I);
 	    DebugDrawOctree();
     });	
 #endif
@@ -90,7 +86,6 @@ void ANav3DVolume::PostEditChangeProperty(struct FPropertyChangedEvent& Property
 	if (CriticalProperties.Contains(PropertyName)) {
 		Initialise();
 	} else if (DebugProperties.Contains(PropertyName)) {
-		FlushDebugDraw();
 		DebugDrawOctree();
 	}
 	UpdateModifierVolumes();
@@ -109,7 +104,7 @@ void ANav3DVolume::FlushDebugDraw() const {
 
 void ANav3DVolume::DebugDrawOctree() {
 	GetWorld()->PersistentLineBatcher->SetComponentTickEnabled(false);
-	DebugDrawVolume();
+	FlushDebugDraw();
 	if (OctreeValid()) {
 		for (int32 I = 0; I < Octree.Layers.Num(); I++) {
 			for (int32 J = 0; J < Octree.Layers[I].Num(); J++) {
@@ -123,8 +118,17 @@ void ANav3DVolume::DebugDrawOctree() {
 				}
 			}	
 		}
-		if (bDisplayLeafOcclusion) DebugDrawOccludedLeafs();
-		if (bDisplayEdgeAdjacency) DebugDrawEdgeAdjacency();
+		
+		// Edges must be rebuilt to draw edge adjacency
+		if (bDisplayEdgeAdjacency) {
+			DebugEdges.Empty();
+			for (int32 I = NumLayers - 2; I >= 0; I--) BuildEdges(I);
+			DebugDrawEdgeAdjacency();
+		}
+		
+		if (bDisplayLeafOcclusion) DebugDrawLeafOcclusion();
+		
+		DebugDrawNavPaths();
 	}
 }
 
@@ -155,6 +159,23 @@ void ANav3DVolume::DebugDrawOccludedLeafs() {
 				DebugDrawVoxel(NodeLocation, FVector(VoxelHalfSizes[0] * 0.25f), LeafOcclusionColour);
 			}
 		}
+	}
+}
+
+void ANav3DVolume::DebugDrawNavPaths() {
+	for (auto& DebugPath: DebugPaths) {
+		DrawDebugSphere(GetWorld(), DebugPath.Points[0],DebugPath.LineScale * 2.f, 12, DebugPath.Colour,true,-1.f,0, DebugPath.LineScale);
+		for (int32 I = 1; I < DebugPath.Points.Num(); I++) {
+			DrawDebugLine(GetWorld(), DebugPath.Points[I - 1], DebugPath.Points[I], DebugPath.Colour, true, -1.f, 0, DebugPath.LineScale);
+			DrawDebugSphere(GetWorld(), DebugPath.Points[I], DebugPath.LineScale * 2.f, 12, DebugPath.Colour, true, -1.f, 0, DebugPath.LineScale);		
+		}
+	}
+}
+
+void ANav3DVolume::AddDebugNavPath(const FNav3DDebugPath DebugPath) {
+	DebugPaths.Add(DebugPath);
+	if (!bOctreeLocked) {
+		DebugDrawOctree();
 	}
 }
 
@@ -216,7 +237,6 @@ TArray<AActor*> ANav3DVolume::GatherOcclusionActors() {
 // Regenerate the entire sparse voxel octree
 bool ANav3DVolume::BuildOctree() {
 	
-
 	// Initial setup
 	Initialise();
 
@@ -435,9 +455,6 @@ void ANav3DVolume::Serialize(FArchive& Ar) {
 	Ar << Octree;
 	Ar << VoxelHalfSizes;
 	Ar << VolumeExtent;
-#if WITH_EDITOR
-	Ar << DebugEdges;
-#endif
 	NumBytes = Octree.GetSize();
 }
 

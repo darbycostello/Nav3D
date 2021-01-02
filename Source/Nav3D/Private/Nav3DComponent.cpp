@@ -2,7 +2,6 @@
 #include "Nav3DFindPathTask.h"
 #include "Nav3DStructs.h"
 #include "Nav3DVolume.h"
-#include "DrawDebugHelpers.h"
 #include "GameFramework/Actor.h"
 #include "Kismet/GameplayStatics.h"
 
@@ -11,7 +10,6 @@ UNav3DComponent::UNav3DComponent(const FObjectInitializer& ObjectInitializer)
 	PrimaryComponentTick.bCanEverTick = true;
 	Nav3DPath = MakeShareable<FNav3DPath>(new FNav3DPath());
 	bWantsInitializeComponent = true;
-	
 }
 
 void UNav3DComponent::BeginPlay()
@@ -69,17 +67,43 @@ void UNav3DComponent::FindPath(
 		UE_LOG(LogTemp, Error, TEXT("Pathfinding cannot initialise. Nav3D component owner is not inside a Nav3D volume"));
 		return;
 	}
+	
+	// If there is a line of sight plus clearance with the target then no path finding is required
+	FCollisionQueryParams CollisionQueryParams;
+	CollisionQueryParams.bTraceComplex = true;
+	CollisionQueryParams.TraceTag = "Nav3DLineOfSightCheck";
+	FHitResult HitResult;
+	float Radius = FMath::Max(50.f ,GetOwner()->GetComponentsBoundingBox(true).GetExtent().GetMax());
+	GetWorld()->SweepSingleByChannel(
+        HitResult,
+        StartLocation,
+        TargetLocation,
+        FQuat::Identity,
+        Volume->CollisionChannel,
+        FCollisionShape::MakeSphere(Radius),
+        CollisionQueryParams
+    );
+
+	if (!HitResult.bBlockingHit) {
+		Result = ENav3DPathFindingCallResult::Reachable;
+		UE_LOG(LogTemp, Error, TEXT("Pathfinding unnecessary. Nav3D component owner has a clear line of sight to target"));
+		return;
+	}
+
+	// Check that an octree has been found
 	if (!VolumeContainsOctree()) {
 		Result = ENav3DPathFindingCallResult::NoOctree;
 		UE_LOG(LogTemp, Error, TEXT("Pathfinding cannot initialise. Nav3D octree has not been built"));
 		return;
 	}
+
 	if (!Volume->GetEdge(StartLocation, StartEdge))
 	{
 		Result = ENav3DPathFindingCallResult::NoStart;
 		UE_LOG(LogTemp, Error, TEXT("Failed to find start edge"));
 		return;
 	}
+	
 	if (!Volume->GetEdge(TargetLocation, TargetEdge))
 	{
 		Result = ENav3DPathFindingCallResult::NoTarget;
@@ -219,18 +243,6 @@ float UNav3DComponent::HeuristicScore(const FNav3DOctreeEdge StartEdge, const FN
 	return (StartLocation - TargetLocation).Size() * (1.0f - (static_cast<float>(TargetEdge.LayerIndex) / static_cast<float>(Volume->NumLayers)) * Config.NodeSizePreference);	
 }
 
-void UNav3DComponent::DebugDrawNavPath(const FNav3DPath& Path) const {
-	if (!GetWorld() || Path.Points.Num() < 2) return;
-	Volume->FlushDebugDraw();
-	DrawDebugSphere(GetWorld(), Path.Points[0].PointLocation,DebugPathLineScale * 2.f, 12, DebugPathColour,true,-1.f,0, DebugPathLineScale);
-	for (int32 I = 1; I < Path.Points.Num(); I++) {
-		DrawDebugLine(GetWorld(), Path.Points[I - 1].PointLocation, Path.Points[I].PointLocation, DebugPathColour, true, -1.f, 0, DebugPathLineScale);
-		DrawDebugSphere( GetWorld(), Path.Points[I].PointLocation, DebugPathLineScale * 2.f, 12, DebugPathColour, true, -1.f, 0, DebugPathLineScale);		
-	}
-	// Refresh the octree
-	Volume->DebugDrawOctree();
-}
-
 void UNav3DComponent::ApplyPathPruning(FNav3DPath& Path, const FNav3DPathFindingConfig Config) const {
 	if (!GetWorld() || Config.PathPruning == ENav3DPathPruning::None || Path.Points.Num() < 3) return;
 	FNav3DPath PrunedPath;
@@ -318,3 +330,16 @@ void UNav3DComponent::ApplyPathSmoothing(FNav3DPath& Path, const FNav3DPathFindi
 	SplinePoints.Add(Path.Points[Path.Points.Num()-1]);
 	Path = SplinePoints;
 }
+
+#if WITH_EDITOR
+
+void UNav3DComponent::RequestNavPathDebugDraw(const FNav3DPath& Path) const {
+	if (!GetWorld() || !Volume || Path.Points.Num() < 2 || !bDebugDrawNavPath) return;
+	FNav3DDebugPath DebugPath;
+	for (auto& Point: Path.Points) DebugPath.Points.Add(Point.PointLocation);
+	DebugPath.Colour = DebugPathColour;
+	DebugPath.LineScale = DebugPathLineScale;
+	Volume->AddDebugNavPath(DebugPath);
+}
+
+#endif

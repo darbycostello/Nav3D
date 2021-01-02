@@ -129,6 +129,7 @@ public:
 	bool BuildOctree();
 	void UpdateOctree();
 	void DebugDrawOctree();
+	void AddDebugNavPath(const FNav3DDebugPath DebugPath);
 	void LockOctree() { bOctreeLocked = true; }
 	void UnlockOctree() { bOctreeLocked = false; }
 	FBox GetBoundingBox() const;
@@ -159,6 +160,7 @@ private:
 	
 #if WITH_EDITOR
 	TArray<FNav3DDebugEdge> DebugEdges;
+	TArray<FNav3DDebugPath> DebugPaths;
 #endif
 
 	UPROPERTY()
@@ -198,9 +200,10 @@ private:
 	void DebugDrawVoxel(FVector Location, FVector Extent, FColor Colour) const;
 	void DebugDrawSphere(const FVector Location, const float Radius, const FColor Colour) const;
 	void DebugDrawMortonCode(FVector Location, FString String, FColor Colour) const;
-	void DebugDrawOccludedLeafs();
+	void DebugDrawLeafOcclusion();
 	void DebugDrawEdgeAdjacency() const;
 	void DebugDrawBoundsMesh(FBox Box, FColor Colour) const;
+	void DebugDrawNavPaths();
 	void UpdateModifierVolumes();
 	FColor GetLayerColour(const int32 LayerIndex) const;
 	TArray<AActor*> GatherOcclusionActors();
