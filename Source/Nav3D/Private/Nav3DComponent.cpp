@@ -216,23 +216,23 @@ void UNav3DComponent::ExecutePathFinding(
 
 			while (Parent.Contains(CurrentEdge) && !(CurrentEdge == Parent[CurrentEdge])) {
 				CurrentEdge = Parent[CurrentEdge];
-				Volume->GetEdgeLocation(CurrentEdge, PathPoint.PointLocation);
+				Volume->GetEdgeLocation(CurrentEdge, PathPoint.Location);
 				Path.Points.Add(PathPoint);
 				const FNav3DOctreeNode& Node = Volume->GetNode(CurrentEdge);
 				if (CurrentEdge.GetLayerIndex() == 0) {
-					if (!Node.HasChildren()) Path.Points[Path.Points.Num() - 1].PointLayer = 1;
-					else Path.Points[Path.Points.Num() - 1].PointLayer = 0;
+					if (!Node.HasChildren()) Path.Points[Path.Points.Num() - 1].Layer = 1;
+					else Path.Points[Path.Points.Num() - 1].Layer = 0;
 				} else {
-					Path.Points[Path.Points.Num() - 1].PointLayer = CurrentEdge.GetLayerIndex() + 1;
+					Path.Points[Path.Points.Num() - 1].Layer = CurrentEdge.GetLayerIndex() + 1;
 				}
 			}
 
 			if (Path.Points.Num() > 1) {
-				Path.Points[0].PointLocation = TargetLocation;
-				Path.Points[Path.Points.Num() - 1].PointLocation = StartLocation;
+				Path.Points[0].Location = TargetLocation;
+				Path.Points[Path.Points.Num() - 1].Location = StartLocation;
 			} else {
 				if (Path.Points.Num() == 0) Path.Points.Emplace();
-				Path.Points[0].PointLocation = TargetLocation;
+				Path.Points[0].Location = TargetLocation;
 				Path.Points.Emplace(StartLocation, StartEdge.GetLayerIndex());
 			}
 			return;
@@ -295,18 +295,30 @@ float UNav3DComponent::HeuristicScore(const FNav3DOctreeEdge StartEdge, const FN
 	FVector StartLocation, TargetLocation;
 	Volume->GetEdgeLocation(StartEdge, StartLocation);
 	Volume->GetEdgeLocation(TargetEdge, TargetLocation);
-	if (Config.Heuristic == ENav3DHeuristic::Manhattan) {
-		return FMath::Abs(TargetLocation.X - StartLocation.X) + FMath::Abs(TargetLocation.Y - StartLocation.Y) + FMath::Abs(TargetLocation.Z - StartLocation.Z);	
+
+	// Divide euclidean distance into ten steps then sample points for modifier volume path cost updates
+	const FVector UnitStep = (TargetLocation - StartLocation).GetSafeNormal() * (StartLocation - TargetLocation).Size() * 0.1;
+	float Cost = 0.f;
+	for (int32 I = 0; I < 10; I++) {
+		FVector Point = StartLocation + UnitStep * I;
+		for (auto& Modifier: Volume->GetModifierVolumes()) {
+			if (!Modifier) continue; 
+			if (Modifier->GetBoundingBox().IsInside(Point)) {
+				Cost += Modifier->GetPathCost() * UnitStep.Size();
+			} 
+		}
 	}
-	
-	return (StartLocation - TargetLocation).Size() * (1.0f - (static_cast<float>(TargetEdge.LayerIndex) / static_cast<float>(Volume->NumLayers)) * Config.NodeSizePreference);	
+	if (Config.Heuristic == ENav3DHeuristic::Manhattan) {
+		return Cost + FMath::Abs(TargetLocation.X - StartLocation.X) + FMath::Abs(TargetLocation.Y - StartLocation.Y) + FMath::Abs(TargetLocation.Z - StartLocation.Z);	
+	}
+	return ((StartLocation - TargetLocation).Size() + Cost) * (1.0f - (static_cast<float>(TargetEdge.LayerIndex) / static_cast<float>(Volume->NumLayers)) * Config.NodeSizePreference);	
 }
 
 void UNav3DComponent::AddPathStartLocation(FNav3DPath& Path) const {
 	if (Path.Points.Num() == 0) return;
 	const FVector Location = GetOwner()->GetActorLocation();
-	if (!Location.Equals(Path.Points[Path.Points.Num() - 1].PointLocation), 50.0f) {
-		Path.Points.Add(FNav3DPathPoint(Location, Path.Points[Path.Points.Num() - 1].PointLayer));
+	if (!Location.Equals(Path.Points[Path.Points.Num() - 1].Location), 50.0f) {
+		Path.Points.Add(FNav3DPathPoint(Location, Path.Points[Path.Points.Num() - 1].Layer));
 	}
 }
 
@@ -331,8 +343,8 @@ void UNav3DComponent::ApplyPathPruning(FNav3DPath& Path, const FNav3DPathFinding
 			CollisionQueryParams.bTraceComplex = true;
 			CollisionQueryParams.TraceTag = "Nav3DPathPrune";
 			FHitResult HitResult;
-			FVector Start = Path.Points[CurrentPoint].PointLocation;
-			FVector End = Path.Points[I+2].PointLocation;
+			FVector Start = Path.Points[CurrentPoint].Location;
+			FVector End = Path.Points[I+2].Location;
 
 			if (Config.PathPruning == ENav3DPathPruning::WithClearance) {
 				GetWorld()->SweepSingleByChannel(
@@ -371,8 +383,8 @@ void UNav3DComponent::ApplyPathSmoothing(FNav3DPath& Path, const FNav3DPathFindi
 	Path.GetPath(PathPoints);
 	
 	// Duplicate the start and end points to ensure a smooth curve
-	PathPoints.Insert(Path.Points[0].PointLocation, 0);
-	PathPoints.Add(Path.Points[Path.Points.Num() - 1].PointLocation);
+	PathPoints.Insert(Path.Points[0].Location, 0);
+	PathPoints.Add(Path.Points[Path.Points.Num() - 1].Location);
 	FNav3DPath SplinePoints;
 
 	// Add the first path point to the spline
@@ -389,7 +401,7 @@ void UNav3DComponent::ApplyPathSmoothing(FNav3DPath& Path, const FNav3DPathFindi
 			const FVector B = P2 - P0;
 			const FVector C = 2.f * P0 - 5.f * P1 + 4.f * P2 - P3;
 			const FVector D = -P0 + 3.f * P1 - 3.f * P2 + P3;
-			SplinePoints.Add(FNav3DPathPoint(0.5f * (A + (B * T) + (C * T * T) + (D * T * T * T)), Path.GetPoints()[Index - 1].PointLayer));
+			SplinePoints.Add(FNav3DPathPoint(0.5f * (A + (B * T) + (C * T * T) + (D * T * T * T)), Path.GetPoints()[Index - 1].Layer));
 		}
 	}
 
@@ -403,7 +415,7 @@ void UNav3DComponent::ApplyPathSmoothing(FNav3DPath& Path, const FNav3DPathFindi
 void UNav3DComponent::RequestNavPathDebugDraw(const FNav3DPath Path) const {
 	if (!GetWorld() || !Volume || Path.Points.Num() < 2 || !bDebugDrawNavPath) return;
 	FNav3DDebugPath DebugPath;
-	for (auto& Point: Path.Points) DebugPath.Points.Add(Point.PointLocation);
+	for (auto& Point: Path.Points) DebugPath.Points.Add(Point.Location);
 	DebugPath.Colour = DebugPathColour;
 	DebugPath.LineScale = DebugPathLineScale;
 	Volume->AddDebugNavPath(DebugPath);

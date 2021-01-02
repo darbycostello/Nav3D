@@ -10,17 +10,17 @@ struct NAV3D_API FNav3DPathPoint {
 	GENERATED_BODY()
 
     UPROPERTY(BlueprintReadWrite)
-    FVector PointLocation;
+    FVector Location;
 
 	UPROPERTY(BlueprintReadWrite)
-    int32 PointLayer;
+    int32 Layer;
 	
 	FNav3DPathPoint() :
-        PointLocation(FVector()),
-        PointLayer(-1) {}
+        Location(FVector::ZeroVector),
+        Layer(-1) {}
 	FNav3DPathPoint(const FVector& Location, const int32 LayerIndex):
-        PointLocation(Location),
-        PointLayer(LayerIndex) {}
+        Location(Location),
+        Layer(LayerIndex) {}
 };
 
 USTRUCT(BlueprintType)
@@ -35,7 +35,7 @@ struct NAV3D_API FNav3DPath {
 	void Empty() { Points.Empty(); }
 	TArray<FNav3DPathPoint> GetPoints() const { return Points; }
 	void SetPoints(const TArray<FNav3DPathPoint> NewPoints) { Points = NewPoints; }
-	void GetPath(TArray<FVector> &Path) { for (const auto& Point: Points) { Path.Add(Point.PointLocation); } }
+	void GetPath(TArray<FVector> &Path) { for (const auto& Point: Points) { Path.Add(Point.Location); } }
 };
 typedef TSharedPtr<FNav3DPath, ESPMode::ThreadSafe> FNav3DPathSharedPtr;
 
@@ -53,7 +53,7 @@ struct NAV3D_API FNav3DDebugPath {
 	UPROPERTY(BlueprintReadWrite)
 	float LineScale;
 
-	FNav3DDebugPath(): LineScale(0) {}
+	FNav3DDebugPath(): Colour(FColor::Black), LineScale(0) {}
 };
 
 UENUM()

@@ -149,6 +149,7 @@ public:
 	bool GetNodeLocation(FNav3DOctreeEdge Edge, FVector& Location);
 	void GetAdjacentLeafs(const FNav3DOctreeEdge& Edge, TArray<FNav3DOctreeEdge>& AdjacentEdges) const;
 	void GetAdjacentEdges(const FNav3DOctreeEdge& Edge, TArray<FNav3DOctreeEdge>& AdjacentEdges) const;
+	TArray<ANav3DModifierVolume*> GetModifierVolumes() const { return ModifierVolumes; }
 	float GetVoxelScale(uint8 LayerIndex) const;
 	bool IsWithinBounds(const FVector Location) const { return GetBoundingBox().IsInside(Location); }
 	TArray<FNav3DOctreeEdge> CalculateVolatileEdges(const AActor* Actor) const;

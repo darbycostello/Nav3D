@@ -346,6 +346,7 @@ void ANav3DVolume::GetAdjacentLeafs(const FNav3DOctreeEdge& Edge, TArray<FNav3DO
 	const uint_fast64_t LeafIndex = Edge.SubNodeIndex;
 	if (EdgeNodeIsValid(Edge)) {
 		const FNav3DOctreeNode& Node = GetNode(Edge);
+		if (static_cast<int32>(Node.FirstChild.NodeIndex) >= Octree.Leafs.Num()) return;
 		const FNav3DOctreeLeaf& FirstLeaf = Octree.Leafs[Node.FirstChild.NodeIndex];
 
 		uint_fast32_t X = 0, Y = 0, Z = 0;
