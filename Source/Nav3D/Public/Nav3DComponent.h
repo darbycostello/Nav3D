@@ -54,6 +54,7 @@ public:
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 	void ExecutePathFinding(const FNav3DOctreeEdge& StartEdge, const FNav3DOctreeEdge& TargetEdge, const FVector& StartLocation, const FVector& TargetLocation, FNav3DPathFindingConfig Config, FNav3DPath& Path);
 	float HeuristicScore(FNav3DOctreeEdge StartEdge, FNav3DOctreeEdge TargetEdge, FNav3DPathFindingConfig Config) const;
+	void AddPathStartLocation(FNav3DPath& Path) const;
 	void ApplyPathPruning(FNav3DPath& Path, const FNav3DPathFindingConfig Config) const;
 	static void ApplyPathSmoothing(FNav3DPath& Path, FNav3DPathFindingConfig Config);
 	void RequestNavPathDebugDraw(const FNav3DPath& Path) const;	

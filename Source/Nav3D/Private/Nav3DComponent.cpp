@@ -60,6 +60,8 @@ void UNav3DComponent::FindPath(
 	
 	FNav3DOctreeEdge StartEdge;
 	FNav3DOctreeEdge TargetEdge;
+	FVector LegalStart = StartLocation;
+	FVector LegalTarget = TargetLocation;
 
 	// Error checking before task start
 	if (!VolumeContainsOctree() || !VolumeContainsOwner()) FindVolume();
@@ -99,19 +101,29 @@ void UNav3DComponent::FindPath(
 		UE_LOG(LogTemp, Error, TEXT("Pathfinding cannot initialise. Nav3D octree has not been built"));
 		return;
 	}
-
+	
 	if (!Volume->GetEdge(StartLocation, StartEdge))
 	{
 		Result = ENav3DPathFindingCallResult::NoStart;
 		UE_LOG(LogTemp, Error, TEXT("Failed to find start edge"));
-		return;
+
+		if (!Volume->FindAccessibleEdge(LegalStart, StartEdge)) {
+			UE_LOG(LogTemp, Error, TEXT("Get Start Edge: No accessible adjacent edge found"));
+			return;	
+		}
+		UE_LOG(LogTemp, Display, TEXT("Found Legal Start Location"));
 	}
-	
+
 	if (!Volume->GetEdge(TargetLocation, TargetEdge))
 	{
 		Result = ENav3DPathFindingCallResult::NoTarget;
 		UE_LOG(LogTemp, Error, TEXT("Failed to find target edge"));
-		return;
+
+		if (!Volume->FindAccessibleEdge(LegalTarget, TargetEdge)) {
+			UE_LOG(LogTemp, Error, TEXT("Get Target Edge: No accessible adjacent edge found"));
+			return;	
+		}
+		UE_LOG(LogTemp, Display, TEXT("Found Legal Target Location"));
 	}
 
 	FNav3DPathFindingConfig Config;
@@ -122,7 +134,7 @@ void UNav3DComponent::FindPath(
 	Config.PathSmoothing = PathSmoothing;
 	FNav3DPath& Path = *Nav3DPath;
 
-	(new FAutoDeleteAsyncTask<FNav3DFindPathTask>(this, StartEdge, TargetEdge, StartLocation, TargetLocation, Config, Path, OnComplete))->StartBackgroundTask();
+	(new FAutoDeleteAsyncTask<FNav3DFindPathTask>(this, StartEdge, TargetEdge, LegalStart, LegalTarget, Config, Path, OnComplete))->StartBackgroundTask();
 	Result = ENav3DPathFindingCallResult::Success;
 	UE_LOG(LogTemp, Display, TEXT("Pathfinding task called successfully"));
 }
@@ -244,6 +256,14 @@ float UNav3DComponent::HeuristicScore(const FNav3DOctreeEdge StartEdge, const FN
 	}
 	
 	return (StartLocation - TargetLocation).Size() * (1.0f - (static_cast<float>(TargetEdge.LayerIndex) / static_cast<float>(Volume->NumLayers)) * Config.NodeSizePreference);	
+}
+
+void UNav3DComponent::AddPathStartLocation(FNav3DPath& Path) const {
+	if (Path.Points.Num() == 0) return;
+	const FVector Location = GetOwner()->GetActorLocation();
+	if (!Location.Equals(Path.Points[Path.Points.Num() - 1].PointLocation), 50.0f) {
+		Path.Points.Add(FNav3DPathPoint(Location, Path.Points[Path.Points.Num() - 1].PointLayer));
+	}
 }
 
 void UNav3DComponent::ApplyPathPruning(FNav3DPath& Path, const FNav3DPathFindingConfig Config) const {

@@ -133,6 +133,7 @@ public:
 	void UnlockOctree() { bOctreeLocked = false; }
 	FBox GetBoundingBox() const;
 	bool GetEdge(const FVector& Location, FNav3DOctreeEdge& Edge);
+	bool FindAccessibleEdge(FVector& Location, FNav3DOctreeEdge& Edge);
 	void FlushDebugDraw() const;
 	void GetVolumeExtents(const FVector& Location, int32 LayerIndex, FIntVector& Extents) const;
 	void GetMortonVoxel(const FVector& Location, int32 LayerIndex, FIntVector& MortonLocation) const;

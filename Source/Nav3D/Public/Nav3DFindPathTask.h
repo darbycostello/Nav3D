@@ -21,8 +21,8 @@ public:
 		const FFindPathTaskCompleteDynamicDelegate Complete) :
 	
 		Nav3DComponent(Nav3DComponent),
-		Start(StartEdge),
-		Target(TargetEdge),
+		StartEdge(StartEdge),
+		TargetEdge(TargetEdge),
 		StartLocation(StartLocation),
 		TargetLocation(TargetLocation),
 		Config(Config),
@@ -32,8 +32,8 @@ public:
 
 protected:
 	UNav3DComponent* Nav3DComponent;
-	FNav3DOctreeEdge Start;
-	FNav3DOctreeEdge Target;
+	FNav3DOctreeEdge StartEdge;
+	FNav3DOctreeEdge TargetEdge;
 	FVector StartLocation;
 	FVector TargetLocation;
 	FNav3DPathFindingConfig Config;
@@ -41,10 +41,11 @@ protected:
 	FFindPathTaskCompleteDynamicDelegate TaskComplete;
 
 	void DoWork() const {
-		Nav3DComponent->ExecutePathFinding(Start, Target, StartLocation, TargetLocation, Config, Path);
+		Nav3DComponent->ExecutePathFinding(StartEdge, TargetEdge, StartLocation, TargetLocation, Config, Path);
 		
 		// Run the path pruning, smoothing and debug draw back on the game thread
 		AsyncTask(ENamedThreads::GameThread, [=]() {
+			Nav3DComponent->AddPathStartLocation(Path);
 			Nav3DComponent->ApplyPathPruning(Path, Config);
 			Nav3DComponent->ApplyPathSmoothing(Path, Config);
 
