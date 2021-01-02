@@ -4,6 +4,7 @@
 
 UNav3DOcclusionComponent::UNav3DOcclusionComponent() {
 	PrimaryComponentTick.bCanEverTick = true;
+	bWantsInitializeComponent = true;
 }
 
 bool UNav3DOcclusionComponent::UpdateVolatileEdges() {
@@ -28,7 +29,7 @@ void UNav3DOcclusionComponent::BeginPlay() {
 void UNav3DOcclusionComponent::RequestUpdate() {
 	if (!Volume) FindVolume(Volume);
 	if (Volume) {
-		Volume->AddDirtyOcclusionComponent(this);
+		Volume->RequestOctreeUpdate(this);
 	}
 }
 
@@ -55,7 +56,8 @@ void UNav3DOcclusionComponent::SetOcclusionEnabled(const bool bOcclusionEnabled)
 void UNav3DOcclusionComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 	if (bEnabled) {
-		if (GetOwner()->GetActorTransform().Equals(CachedTransform, TransformTriggerTolerance)) {
+		
+		if (!GetOwner()->GetActorTransform().Equals(CachedTransform, TransformTriggerTolerance)) {
 			RequestUpdate();
 			CachedTransform = GetOwner()->GetActorTransform();
 		}

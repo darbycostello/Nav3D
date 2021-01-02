@@ -10,6 +10,8 @@ UNav3DComponent::UNav3DComponent(const FObjectInitializer& ObjectInitializer)
 {
 	PrimaryComponentTick.bCanEverTick = true;
 	Nav3DPath = MakeShareable<FNav3DPath>(new FNav3DPath());
+	bWantsInitializeComponent = true;
+	
 }
 
 void UNav3DComponent::BeginPlay()
@@ -55,8 +57,8 @@ void UNav3DComponent::FindPath(
 	const FVector& StartLocation,
 	const FVector& TargetLocation,
 	FFindPathTaskCompleteDynamicDelegate OnComplete,
-	ENav3DPathFindingCallResult &Result)
-{
+	ENav3DPathFindingCallResult &Result) {
+	
 	FNav3DOctreeEdge StartEdge;
 	FNav3DOctreeEdge TargetEdge;
 
@@ -91,7 +93,6 @@ void UNav3DComponent::FindPath(
 	Config.NodeSizePreference = NodeSizePreference;
 	Config.PathPruning = PathPruning;
 	Config.PathSmoothing = PathSmoothing;
-
 	FNav3DPath& Path = *Nav3DPath;
 
 	(new FAutoDeleteAsyncTask<FNav3DFindPathTask>(this, StartEdge, TargetEdge, StartLocation, TargetLocation, Config, Path, OnComplete))->StartBackgroundTask();
@@ -201,7 +202,6 @@ void UNav3DComponent::ExecutePathFinding(
 				F.Add(AdjacentEdge, G[AdjacentEdge] + Config.EstimateWeight * HeuristicScore(AdjacentEdge, TargetEdge, Config));
 			}
 		}
-
 		I++;
 	}
 	UE_LOG(LogTemp, Display, TEXT("Pathfinding failed, iterations : %i"), I);
@@ -212,7 +212,6 @@ float UNav3DComponent::HeuristicScore(const FNav3DOctreeEdge StartEdge, const FN
 	FVector StartLocation, TargetLocation;
 	Volume->GetEdgeLocation(StartEdge, StartLocation);
 	Volume->GetEdgeLocation(TargetEdge, TargetLocation);
-
 	if (Config.Heuristic == ENav3DHeuristic::Manhattan) {
 		return FMath::Abs(TargetLocation.X - StartLocation.X) + FMath::Abs(TargetLocation.Y - StartLocation.Y) + FMath::Abs(TargetLocation.Z - StartLocation.Z);	
 	}
@@ -249,7 +248,6 @@ void UNav3DComponent::ApplyPathPruning(FNav3DPath& Path, const FNav3DPathFinding
 				CurrentPoint = Path.Points.Num();
 				break;
 			}
-
 			FCollisionQueryParams CollisionQueryParams;
 			CollisionQueryParams.bTraceComplex = true;
 			CollisionQueryParams.TraceTag = "Nav3DPathPrune";
@@ -284,9 +282,7 @@ void UNav3DComponent::ApplyPathPruning(FNav3DPath& Path, const FNav3DPathFinding
 			}
 		}
 	}
-	
 	Path = PrunedPath;
-
 }
 
 // Apply Catmull-Rom smoothing to the path

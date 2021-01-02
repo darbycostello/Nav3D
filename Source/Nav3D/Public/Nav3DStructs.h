@@ -130,7 +130,6 @@ FORCEINLINE FArchive& operator <<(FArchive& Archive, FNav3DOctreeEdge& Edge) {
 
 struct NAV3D_API FNav3DOctreeLeaf {
 	uint_fast64_t SubNodes = 0;
-	uint8 LOD = 0;
 	
 	bool GetSubNodeAt(uint_fast32_t X, uint_fast32_t Y, uint_fast32_t Z) const {
 		const uint_fast64_t MortonCode = 0;
@@ -143,8 +142,6 @@ struct NAV3D_API FNav3DOctreeLeaf {
 		morton3D_64_decode(MortonCode, X, Y, Z);
 		SubNodes |= 1ULL << morton3D_64_encode(X, Y, Z);
 	}
-	void SetLOD(const int32 NewLOD) { LOD = FMath::Clamp(NewLOD, 0, 2); }
-	uint8 GetLOD() const { return LOD; } 
 	void SetSubNode(const uint8 Index) { SubNodes |= 1ULL << Index; }
 	bool GetSubNode(const uint_fast64_t MortonCode) const { return (SubNodes & 1ULL << MortonCode) != 0; }
 	void ClearSubNode(const uint8 Index) { SubNodes &= !(1ULL << Index); }
@@ -155,7 +152,6 @@ struct NAV3D_API FNav3DOctreeLeaf {
 FORCEINLINE FArchive& operator<<(FArchive& Archive, FNav3DOctreeLeaf& Leaf)
 {
 	Archive << Leaf.SubNodes;
-	Archive << Leaf.LOD;
 	return Archive;
 }
 
@@ -171,7 +167,6 @@ struct NAV3D_API FNav3DOctreeNode
 		Parent(FNav3DOctreeEdge::GetInvalidEdge()),
 		FirstChild(FNav3DOctreeEdge::GetInvalidEdge()) {}
 
-	bool IsDefault() const { return MortonCode == 0; }
 	bool HasChildren() const { return FirstChild.IsValid(); }
 };
 
@@ -228,3 +223,10 @@ struct NAV3D_API FNav3DDebugEdge {
         End(End),
         LayerIndex(LayerIndex) {}
 };
+
+FORCEINLINE FArchive& operator<<(FArchive& Ar, FNav3DDebugEdge& DebugEdge) {
+	Ar << DebugEdge.Start;
+	Ar << DebugEdge.End;
+	Ar << DebugEdge.LayerIndex;
+	return Ar;
+}

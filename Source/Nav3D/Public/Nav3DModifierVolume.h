@@ -45,8 +45,8 @@ public:
     FColor OverlapColour = FColor(255, 0, 0, 64);
 
 #if WITH_EDITOR
-	void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
-	void PostEditUndo() override;
+	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
+	virtual void PostEditUndo() override;
 #endif
 	
 	virtual void OnConstruction(const FTransform &Transform) override;

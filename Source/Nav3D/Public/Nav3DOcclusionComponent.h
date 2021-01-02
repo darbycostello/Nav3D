@@ -38,7 +38,10 @@ protected:
     virtual void BeginPlay() override;
 	void RequestUpdate();
 	bool FindVolume(ANav3DVolume*& CurrentVolume) const;
-    ANav3DVolume* Volume = nullptr;
+
+	UPROPERTY()
+	ANav3DVolume* Volume = nullptr;
+
 	TArray<FNav3DOctreeEdge> VolatileEdges;
 
 private:

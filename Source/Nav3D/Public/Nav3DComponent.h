@@ -51,7 +51,7 @@ public:
 	
 	UNav3DComponent(const FObjectInitializer& ObjectInitializer);
 	FNav3DPathSharedPtr Nav3DPath;
-	
+
 	const ANav3DVolume* GetCurrentVolume() const { return Volume; }
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 	void ExecutePathFinding(const FNav3DOctreeEdge& StartEdge, const FNav3DOctreeEdge& TargetEdge, const FVector& StartLocation, const FVector& TargetLocation, FNav3DPathFindingConfig Config, FNav3DPath& Path);

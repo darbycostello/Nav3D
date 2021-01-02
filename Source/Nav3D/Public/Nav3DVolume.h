@@ -6,6 +6,8 @@
 #include "GameFramework/Volume.h"
 #include "Nav3DVolume.generated.h"
 
+DECLARE_DELEGATE(FNav3DUpdateOctreeDelegate);
+
 /**
  *  Volume contains the octree and methods required for 3D navigation
  */
@@ -22,7 +24,7 @@ public:
 	UPROPERTY(EditAnywhere, meta=(ClampMin = "0.000001"), DisplayName = "Desired Volume Size", Category = "Nav3D|Volume")
     float VolumeSize = 200.0f;
 
-	// The minimum size of a leaf voxel in the X, Y and Z dimensions. Nav3D LOD volumes can quantize this value
+	// The minimum size of a leaf voxel in the X, Y and Z dimensions.
 	UPROPERTY(EditAnywhere, meta=(ClampMin = "0.000001"), DisplayName = "Minimum Voxel Size", Category = "Nav3D|Volume")
     float VoxelSize = 200.0f;
 
@@ -34,17 +36,9 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Generation")
     float Clearance = 0.f;
 
-	// This value is used to quantize leaf voxels. Nav3D LOD volumes will override the default set here 
-	UPROPERTY(EditAnywhere, meta=(ClampMin = "0", ClampMax = "2"), DisplayName = "Default Leaf LOD", Category = "Nav3D|Generation")
-    int32 DefaultLeafLOD = 0;
-
 	// Draw distance for debug lines
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging")
     float DebugDistance = 50000.f;
-
-	// Show all debug messages in console
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging")
-    bool bDebugLogging = false;
 
 	// Show the entire volume bounds
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging")
@@ -65,10 +59,6 @@ public:
 	// Show the occluded octree voxel sub-leaf bounds
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging|Voxels")
     bool bDisplayLeafOcclusion = false;
-	
-	// Show voxels with intersections or volatile interactions with Nav3D Occlusion components
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging|Voxels")
-    bool bDisplayDynamicOcclusion = false;
 
 	// Show adjacency edges between each node
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging|Voxels")
@@ -78,18 +68,14 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging|Voxels")	
     float LineScale = 0.0f;
 
-	// The colours for debug drawing each layer
+	// The colours for debug drawing each layer. Colours added will be spread across a gradient
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging|Voxels|Colours")
-    TArray<FColor> LayerColours = { FColor::Blue, FColor::Black, FColor::Cyan, FColor::Green, FColor::Magenta };
+    TArray<FColor> LayerColours = { FColor::Magenta, FColor::Blue, FColor::Cyan, FColor::Green };
 
 	// The colour for leaf occlusion debug drawing
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging|Voxels|Colours")
     FColor LeafOcclusionColour = FColor::Yellow;
 
-	// The colour for dynamic occlusion debug drawing
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging|Voxels|Colours")
-    FColor DynamicOcclusionColour = FColor::Red;
-	
 	// Show the morton codes within each voxel
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging|Morton Codes")
     bool bDisplayMortonCodes = false;
@@ -118,6 +104,12 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Nav3D|Info")
     int32 NumBytes = 0;
 
+	UFUNCTION()
+	void LockOctree() { bOctreeLocked = true; }
+
+	UFUNCTION()
+	void UnlockOctree() { bOctreeLocked = false; }
+
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual void PostEditUndo() override;
@@ -131,10 +123,10 @@ public:
 	virtual void EditorApplyTranslation(const FVector& DeltaTranslation, bool bAltDown, bool bShiftDown, bool bCtrlDown) override;
 	virtual void EditorApplyRotation(const FRotator& DeltaRotation, bool bAltDown, bool bShiftDown, bool bCtrlDown) override;
 	virtual void EditorApplyScale( const FVector& DeltaScale, const FVector* PivotLocation, bool bAltDown, bool bShiftDown, bool bCtrlDown ) override;
-	virtual bool ShouldTickIfViewportsOnly() const override { return true; }
 	virtual void Serialize(FArchive& Ar) override;
 	void Initialise();
 	bool BuildOctree();
+	void UpdateOctree();
 	void DebugDrawOctree();
 	FBox GetBoundingBox() const;
 	bool GetEdge(const FVector& Location, FNav3DOctreeEdge& Edge);
@@ -148,21 +140,26 @@ public:
 	bool GetEdgeLocation(const FNav3DOctreeEdge& Edge, FVector& Location) const;
 	bool GetNodeLocation(uint8 LayerIndex, uint_fast64_t MortonCode, FVector& Location) const;
 	bool GetNodeLocation(FNav3DOctreeEdge Edge, FVector& Location);
-	bool GetQuantizedLocation(FNav3DOctreeEdge Edge, uint8 LOD, FVector& Location);
 	void GetAdjacentLeafs(const FNav3DOctreeEdge& Edge, TArray<FNav3DOctreeEdge>& AdjacentEdges) const;
 	void GetAdjacentEdges(const FNav3DOctreeEdge& Edge, TArray<FNav3DOctreeEdge>& AdjacentEdges) const;
 	float GetVoxelScale(uint8 LayerIndex) const;
 	bool IsWithinBounds(const FVector Location) const { return GetBoundingBox().IsInside(Location); }
 	TArray<FNav3DOctreeEdge> CalculateVolatileEdges(const AActor* Actor) const;
-	void AddDirtyOcclusionComponent(UNav3DOcclusionComponent* OcclusionComponent);
+	void RequestOctreeUpdate(UNav3DOcclusionComponent* OcclusionComponent);
 		
 private:
 	FNav3DOctree Octree;
+	FNav3DOctree CachedOctree;
 	TArray<float> VoxelHalfSizes;
-	TArray<FNav3DDebugEdge> DebugEdges;
+	bool bOctreeLocked = false;
+	FNav3DUpdateOctreeDelegate OnUpdateComplete;
 	
+#if WITH_EDITOR
+	TArray<FNav3DDebugEdge> DebugEdges;
+#endif
+
 	UPROPERTY()
-    TArray<UNav3DOcclusionComponent*> DirtyOcclusionComponents;
+	TArray<UNav3DOcclusionComponent*> OcclusionComponents;
 
 	UPROPERTY()
 	TArray<ANav3DModifierVolume*> ModifierVolumes;
@@ -170,6 +167,8 @@ private:
 	TArray<TSet<uint_fast64_t>> Occluded;
 	FVector VolumeOrigin;
 	FVector VolumeExtent;
+	FCollisionQueryParams CollisionQueryParams;
+	bool bUpdateRequested;
 	const FIntVector Directions[6] = {{1, 0, 0}, {-1,0,0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
 	const int32 NodeOffsets[6][4] = {{0, 4, 2, 6}, {1, 3, 5, 7}, {0, 1, 4, 5}, {2, 3, 6, 7}, {0, 1, 2, 3}, {4, 5, 6, 7}};
 	const int32 LeafOffsets[6][16] = {{0, 2, 16, 18, 4, 6, 20, 22, 32, 34, 48, 50, 36, 38, 52, 54}, {9, 11, 25, 27, 13, 15, 29, 31, 41, 43, 57, 59, 45, 47, 61, 63},
@@ -180,7 +179,7 @@ private:
 	void UpdateVolume();
 	void RasterizeInitial();
 	void RasterizeLayer(uint8 LayerIndex);
-	void RasterizeLeaf(FVector NodeLocation, int32 LeafIndex, uint8 LOD);
+	void RasterizeLeaf(FVector NodeLocation, int32 LeafIndex);
 	void BuildEdges(uint8 LayerIndex);
 	bool FindEdge(uint8 LayerIndex, int32 NodeIndex, uint8 Direction, FNav3DOctreeEdge& Edge, const FVector& NodeLocation);
 	bool IsOccluded(const FVector& Location, float Size) const;
@@ -190,17 +189,16 @@ private:
 	bool GetNodeIndex(uint8 LayerIndex, uint_fast64_t NodeMortonCode, int32& NodeIndex) const;
 	int32 GetInsertIndex(uint8 LayerIndex, uint_fast64_t MortonCode) const;
 	float GetActualVolumeSize() const { return FMath::Pow(2, VoxelExponent) * (VoxelSize * 4); }
-	void UpdateOctree();
 	void UpdateNode(FNav3DOctreeEdge Edge);
 	void UpdateLeaf(const FVector& Location, int32 LeafIndex);
 	void DebugDrawVolume() const;
 	void DebugDrawVoxel(FVector Location, FVector Extent, FColor Colour) const;
+	void DebugDrawSphere(const FVector Location, const float Radius, const FColor Colour) const;
 	void DebugDrawMortonCode(FVector Location, FString String, FColor Colour) const;
 	void DebugDrawOccludedLeafs();
-	void DebugDrawVolatileNodes();
 	void DebugDrawEdgeAdjacency() const;
 	void DebugDrawBoundsMesh(FBox Box, FColor Colour) const;
 	void UpdateModifierVolumes();
-	FColor GetLayerColour(const int32 LayerIndex) const { return LayerColours[FMath::Clamp(LayerIndex, 0, LayerColours.Num()-1)]; }
-	uint8 GetLocationLOD(FVector WorldLocation);
+	FColor GetLayerColour(const int32 LayerIndex) const;
+	TArray<AActor*> GatherOcclusionActors();
 };
