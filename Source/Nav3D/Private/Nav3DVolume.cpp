@@ -74,7 +74,6 @@ void ANav3DVolume::PostEditChangeProperty(struct FPropertyChangedEvent& Property
 		"VolumeBoundsColor",
 		"bDisplayLayers",
 		"bDisplayLeafs",
-		"bDisplayDynamicOcclusion",
 		"bDisplayEdgeAdjacency",
 		"LineScale",
 		"LayerColours",
@@ -149,7 +148,7 @@ void ANav3DVolume::DebugDrawEdgeAdjacency() const {
 	}
 }
 
-void ANav3DVolume::DebugDrawOccludedLeafs() {
+void ANav3DVolume::DebugDrawLeafOcclusion() {
 	for (uint_fast32_t I = 0; I < static_cast<uint_fast32_t>(Octree.Leafs.Num()); I++) {
 		for (uint8 J = 0; J < 64; J++) {
 			if (Octree.Leafs[I].GetSubNode(J)) {
