@@ -92,6 +92,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging|Morton Codes")
     float MortonCodeScale = 1.0f;
 
+	// Show the cover map locations and direction normals
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging|Cover Map")
+	bool bDisplayCoverMap = false;
+	
 	// The number of voxel subdivisions calculated to meet the desired voxel size. Read-only
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Nav3D|Info")
     int32 VoxelExponent = 6;
@@ -136,6 +140,7 @@ public:
 	bool GetEdge(const FVector& Location, FNav3DOctreeEdge& Edge);
 	bool FindAccessibleEdge(FVector& Location, FNav3DOctreeEdge& Edge);
 	void GetPathCost(FVector& Location, float& Cost);
+	int32 GetCoverNormalIndex(FVector Normal) const;
 	void FlushDebugDraw() const;
 	void RequestOctreeDebugDraw();
 	void GetVolumeExtents(const FVector& Location, int32 LayerIndex, FIntVector& Extents) const;
@@ -161,6 +166,7 @@ private:
 	TArray<float> VoxelHalfSizes;
 	bool bOctreeLocked = false;
 	FNav3DUpdateOctreeDelegate OnUpdateComplete;
+	FNav3DCoverMap CoverMap;
 	
 #if WITH_EDITOR
 	bool bDebugDrawRequested;
@@ -184,7 +190,15 @@ private:
 	const int32 LeafOffsets[6][16] = {{0, 2, 16, 18, 4, 6, 20, 22, 32, 34, 48, 50, 36, 38, 52, 54}, {9, 11, 25, 27, 13, 15, 29, 31, 41, 43, 57, 59, 45, 47, 61, 63},
 		{0, 1, 8, 9, 4, 5, 12, 13, 32, 33, 40, 41, 36, 37, 44, 45}, {18, 19, 26, 27, 22, 23, 30, 31, 50, 51, 58, 59, 54, 55, 62, 63},
 		{0, 1, 8, 9, 2, 3, 10, 11, 16, 17, 24, 25, 18, 19, 26, 27}, {36, 37, 44, 45, 38, 39, 46, 47, 52, 53, 60, 61, 54, 55, 62, 63}};
-
+	const FVector CoverNormals[26] = {{-0.57735f, -0.57735f, -0.57735f}, {-0.7071f, 0.f, -0.7071f}, {-0.57735f, 0.57735f, -0.57735f},
+		{-0.7071f, -0.7071f, 0.f}, {-1.f, 0.f, 0.f}, {-0.7071f, 0.7071f, 0.f},
+		{-0.57735f, -0.57735f, 0.57735f}, {-0.7071f, 0.f, 0.7071f}, {-0.57735f, 0.57735f, 0.57735f},
+		{0.f, -0.7071f, -0.7071}, {0.f, 0.f, -1.f}, {0.f, 0.7071f, -0.7071f},
+		{0.f, -1.f, 0.f}, {0.f, 1.f, 0.f},
+		{0.f, -0.7071f, 0.7071f}, {0.f, 0.f, 1.f}, {0.f, 0.7071f, 0.7071f},
+		{0.57735f, -0.57735f, -0.57735f}, {0.7071f, 0.f, -0.7071f}, {0.57735f, 0.57735f, -0.57735f},
+		{0.7071f, -0.7071f, 0.f}, {1.f, 0.f, 0.f}, {0.7071f, 0.7071f, 0.f},
+		{0.57735f, -0.57735f, 0.57735f}, {0.7071f, 0.f, 0.7071f}, {0.57735f, 0.57735f, 0.57735f}};
 	TArray<FNav3DOctreeNode>& GetLayer(const uint8 LayerIndex) { return Octree.Layers[LayerIndex]; };
 	void UpdateVolume();
 	void RasterizeInitial();
@@ -193,6 +207,8 @@ private:
 	void BuildEdges(uint8 LayerIndex);
 	bool FindEdge(uint8 LayerIndex, int32 NodeIndex, uint8 Direction, FNav3DOctreeEdge& Edge, const FVector& NodeLocation);
 	bool IsOccluded(const FVector& Location, float Size) const;
+	bool IsOccluded(const FVector& Location, float Size, TArray<FOverlapResult>& OverlapResults) const;
+	void UpdateCoverMap(FVector Location, TArray<FOverlapResult>& Overlaps);
 	int32 GetLayerNodeCount(uint8 LayerIndex) const;
 	int32 GetSegmentNodeCount(uint8 LayerIndex) const;
 	bool InDebugRange(FVector Location) const;
@@ -211,6 +227,8 @@ private:
 	void DebugDrawBoundsMesh(FBox Box, FColor Colour) const;
 	void DebugDrawNavPaths();
 	void DebugDrawModifierVolumes() const;
+	void DebugDrawCoverMapLocations() const;
+	void VerifyModifierVolumes();
 	FColor GetLayerColour(const int32 LayerIndex) const;
 	TArray<AActor*> GatherOcclusionActors();
 };

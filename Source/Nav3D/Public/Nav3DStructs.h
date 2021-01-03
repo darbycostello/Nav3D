@@ -225,6 +225,34 @@ FORCEINLINE FArchive& operator<<(FArchive& Ar, FNav3DOctree& Octree) {
 	return Ar;
 }
 
+struct NAV3D_API FNav3DCoverMapNode {
+	TMap<int32, TArray<FVector>> Locations;
+	
+	FNav3DCoverMapNode() {}
+};
+
+FORCEINLINE FArchive& operator<<(FArchive& Ar, FNav3DCoverMapNode& Node) {
+	Ar << Node.Locations;
+	return Ar;
+}
+
+struct NAV3D_API FNav3DCoverMap {
+	TMap<FName, FNav3DCoverMapNode> Nodes;
+
+	void Reset() {
+		Nodes.Empty();
+	}
+
+	int32 GetSize() const {
+		return Nodes.Num() * sizeof(FNav3DCoverMapNode);
+	}
+};
+
+FORCEINLINE FArchive& operator<<(FArchive& Ar, FNav3DCoverMap& CoverMap) {
+	Ar << CoverMap.Nodes;
+	return Ar;
+}
+
 struct NAV3D_API FNav3DDebugEdge {
 
 	FVector Start;

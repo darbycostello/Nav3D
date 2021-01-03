@@ -85,7 +85,8 @@ void ANav3DVolume::PostEditChangeProperty(struct FPropertyChangedEvent& Property
 		"EdgeAdjacencyColour",
 		"bDisplayMortonCodes",
 		"MortonCodeColour",
-		"MortonCodeScale" };
+		"MortonCodeScale",
+		"bDisplayCoverMap"};
 	if (CriticalProperties.Contains(PropertyName)) {
 		Initialise();
 		DebugDrawOctree();
@@ -138,7 +139,9 @@ void ANav3DVolume::DebugDrawOctree() {
 		}
 		if (bDisplayLeafOcclusion) DebugDrawLeafOcclusion();
 		DebugDrawNavPaths();
+		VerifyModifierVolumes();
 		DebugDrawModifierVolumes();
+		if (bDisplayCoverMap) DebugDrawCoverMapLocations();
 	}
 }
 
@@ -151,7 +154,6 @@ void ANav3DVolume::DebugDrawVolume() const
 		DebugDrawBoundsMesh(Box, VolumeBoundsColour);
 	}
 }
-
 
 void ANav3DVolume::DebugDrawEdgeAdjacency() const {
 	if (!GetWorld()) return;
@@ -187,6 +189,21 @@ void ANav3DVolume::AddDebugNavPath(const FNav3DDebugPath DebugPath) {
 	DebugPaths.Add(DebugPath);
 	if (!bOctreeLocked) {
 		DebugDrawOctree();
+	}
+}
+
+void ANav3DVolume::DebugDrawCoverMapLocations() const {
+	for (auto& Node: CoverMap.Nodes) {
+		for (auto& Index : Node.Value.Locations) {
+			for (auto& Location: Index.Value) {
+				FColor Colour = FColor(
+				FMath::Max(255*CoverNormals[Index.Key].X, 64.f),
+				FMath::Max(255*CoverNormals[Index.Key].Y, 64.f),
+				FMath::Max(255*CoverNormals[Index.Key].Z, 64.f));
+				FVector End = Location + CoverNormals[Index.Key] * Clearance;
+				DrawDebugDirectionalArrow(GetWorld(), Location, End, 1000.0f, Colour, true, -1, 0, 20.f);		
+			}
+		}
 	}
 }
 
@@ -268,11 +285,27 @@ bool ANav3DVolume::BuildOctree() {
 	NumBytes = Octree.GetSize();
 	CollisionQueryParams.ClearIgnoredActors();
 	CachedOctree = Octree;
-	
+
 #if WITH_EDITOR
 	const float Duration = std::chrono::duration_cast<milliseconds>(high_resolution_clock::now() - StartTime).count() / 1000.0f;
+
+	// Octree info
 	int32 NumNodes = 0;
 	for (int32 I = 0; I < NumLayers; I++) NumNodes += Octree.Layers[I].Num();
+
+	// Cover map info
+	const int32 NumCoverMapBytes = CoverMap.GetSize();
+	int32 NumCoverActors = 0;
+	int32 NumCoverLocations = 0;
+	for (auto& Node: CoverMap.Nodes) {
+		NumCoverActors++;
+		for (auto& Index : Node.Value.Locations) {
+			for (auto& Location: Index.Value) {
+				NumCoverLocations++;
+			}
+		}
+	}
+
 	UE_LOG(LogTemp, Display, TEXT("Generation Time : %f seconds"), Duration);
 	UE_LOG(LogTemp, Display, TEXT("Desired Volume Size : %fcm"), VolumeSize);
 	UE_LOG(LogTemp, Display, TEXT("Actual Volume Size : %fcm"), ActualVolumeSize);
@@ -281,7 +314,10 @@ bool ANav3DVolume::BuildOctree() {
 	UE_LOG(LogTemp, Display, TEXT("Total Layers : %i"), NumLayers);
 	UE_LOG(LogTemp, Display, TEXT("Total Nodes : %i"), NumNodes);
 	UE_LOG(LogTemp, Display, TEXT("Total Leafs : %i"), Octree.Leafs.Num());
-	UE_LOG(LogTemp, Display, TEXT("Total Bytes : %i"), NumBytes);
+	UE_LOG(LogTemp, Display, TEXT("Total Octree Bytes : %i"), NumBytes);
+	UE_LOG(LogTemp, Display, TEXT("Total Cover Map Actors : %i"), NumCoverActors);
+	UE_LOG(LogTemp, Display, TEXT("Total Cover Map Locations : %i"), NumCoverLocations);
+	UE_LOG(LogTemp, Display, TEXT("Total Cover Map Bytes : %i"), NumCoverMapBytes);
 	DebugDrawOctree();
 #endif
 
@@ -589,8 +625,18 @@ bool ANav3DVolume::FindEdge(const uint8 LayerIndex, const int32 NodeIndex, const
 	return false;
 }
 
-bool ANav3DVolume::IsOccluded(const FVector& Location, const float Size) const
-{
+bool ANav3DVolume::IsOccluded(const FVector& Location, const float Size, TArray<FOverlapResult>& OverlapResults) const {
+	return GetWorld()->OverlapMultiByChannel(
+		OverlapResults,
+        Location,
+        FQuat::Identity,
+        CollisionChannel,
+        FCollisionShape::MakeBox(FVector(Size + Clearance)),
+        CollisionQueryParams
+    );
+}
+
+bool ANav3DVolume::IsOccluded(const FVector& Location, const float Size) const {
 	return GetWorld()->OverlapBlockingTestByChannel(
         Location,
         FQuat::Identity,
@@ -679,7 +725,6 @@ void ANav3DVolume::RasterizeLayer(const uint8 LayerIndex)
 				NewNode.MortonCode = I;
 				FVector NodeLocation;
 				GetNodeLocation(0, I, NodeLocation);
-
 				if (IsOccluded(NodeLocation, VoxelHalfSizes[0])) {
 					RasterizeLeaf(NodeLocation, LeafIndex);
 					NewNode.FirstChild.SetLayerIndex(0);
@@ -722,14 +767,55 @@ void ANav3DVolume::RasterizeLeaf(const FVector NodeLocation, const int32 LeafInd
 {
 	const FVector Location = NodeLocation - VoxelHalfSizes[0];
 	const float VoxelScale = VoxelHalfSizes[0] * 0.5f;
-	ParallelFor(64, [&](const int32 I) {
+	for (int32 I = 0; I < 64; I++) {
         uint_fast32_t X, Y, Z;
         morton3D_64_decode(I, X, Y, Z);
         const FVector VoxelLocation = Location + FVector(X * VoxelScale, Y * VoxelScale, Z * VoxelScale) + VoxelScale * 0.5f;
         if (LeafIndex >= Octree.Leafs.Num() - 1) Octree.Leafs.AddDefaulted(1);
-        if (IsOccluded(VoxelLocation, VoxelScale * 0.5f)) Octree.Leafs[LeafIndex].SetSubNode(I);
-    });
+
+		// In addition to blocking hit test, retrieve the results of any occlusion overlaps to determine leaf cell normals
+		TArray<FOverlapResult> Overlaps;
+		if (IsOccluded(VoxelLocation, VoxelScale * 0.5f, Overlaps)) Octree.Leafs[LeafIndex].SetSubNode(I);
+		UpdateCoverMap(VoxelLocation, Overlaps);
+    }
 }
+
+void ANav3DVolume::UpdateCoverMap(FVector Location, TArray<FOverlapResult>& Overlaps) {
+	if (Overlaps.Num() > 0) {
+		for (auto& Result: Overlaps) {
+			if (Result.bBlockingHit) {
+				FVector HitPoint;
+				Result.Component->GetClosestPointOnCollision(Location, HitPoint);
+				FVector Normal = (Location - HitPoint).GetSafeNormal();
+				if (Normal != FVector::ZeroVector) {
+					const int32 NormalIndex = GetCoverNormalIndex(Normal);
+					FNav3DCoverMapNode Node;
+					if (CoverMap.Nodes.Contains(Result.GetActor()->GetFName())) {
+						Node = CoverMap.Nodes[Result.GetActor()->GetFName()];
+					}
+					TArray<FVector> CoverLocations;
+					if (Node.Locations.Contains(NormalIndex)) {
+						CoverLocations = Node.Locations[NormalIndex];
+					}
+					CoverLocations.Add(Location);
+					Node.Locations.Add(NormalIndex, CoverLocations);
+					CoverMap.Nodes.Add(Result.GetActor()->GetFName(), Node);
+				}
+			}
+		}
+	}
+}
+
+int32 ANav3DVolume::GetCoverNormalIndex(const FVector Normal) const {
+	TArray<float> DotProducts;
+	for (int32 I = 0; I < 26; I++) {
+		DotProducts.Add(FVector::DotProduct(Normal, CoverNormals[I]));
+	}
+	int32 CoverNormalIndex;
+	float MaxDotProduct;
+	UKismetMathLibrary::MaxOfFloatArray(DotProducts, CoverNormalIndex, MaxDotProduct);
+	return CoverNormalIndex;
+} 
 
 void ANav3DVolume::GetVolumeExtents(const FVector& Location, const int32 LayerIndex, FIntVector& Extents) const
 {
@@ -770,6 +856,7 @@ void ANav3DVolume::GetPathCost(FVector& Location, float& Cost) {
 	Cost = 1.f;
 	if (ModifierVolumes.Num() == 0) return;
 	for (auto& ModifierVolume: ModifierVolumes) {
+		if (!ModifierVolume) return;
 		if (ModifierVolume->GetBoundingBox().IsInside(Location))
 		{
 			Cost += ModifierVolume->GetPathCost();
@@ -1180,9 +1267,22 @@ void ANav3DVolume::DebugDrawMortonCode(const FVector Location, const FString Str
 	}
 }
 
+void ANav3DVolume::VerifyModifierVolumes() {
+	TArray<int32> RemoveVolumes;
+	for (int32 I = 0; I < ModifierVolumes.Num(); I++) {
+		if (!ModifierVolumes[I]) RemoveVolumes.Add(I);
+	}
+	if (RemoveVolumes.Num() > 0) {
+		for (int32 J = RemoveVolumes.Num()-1; J >= 0; J--) {
+			ModifierVolumes.RemoveAt(RemoveVolumes[J]);
+        }
+	}
+}
+
 void ANav3DVolume::DebugDrawModifierVolumes() const {
-	for (auto& ModiferVolume: ModifierVolumes) {
-		ModiferVolume->DebugDrawModifierVolume();
+	for (auto& ModifierVolume: ModifierVolumes) {
+		if (!ModifierVolume) return;
+		ModifierVolume->DebugDrawModifierVolume();
 	}
 }
 
