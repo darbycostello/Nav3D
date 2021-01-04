@@ -41,6 +41,7 @@ void ANav3DVolume::Initialise()
 {
 	Octree.Reset();
 	Occluded.Empty();
+	CoverMap.Reset();
 	NumBytes = 0;
 
 #if WITH_EDITOR
@@ -71,7 +72,10 @@ void ANav3DVolume::PostEditChangeProperty(struct FPropertyChangedEvent& Property
 
 	const TSet<FString> CriticalProperties = {
 		"VolumeSize",
-        "VoxelSize"};
+        "VoxelSize",
+		"bEnableCoverMap",
+		"MinimumObjectRadius",
+		"MinimumDensity"};
 	const TSet<FString> DebugProperties = {
 		"bDisplayVolumeBounds",
 		"VolumeBoundsColor",
@@ -200,7 +204,7 @@ void ANav3DVolume::DebugDrawCoverMapLocations() const {
 				FMath::Max(255*CoverNormals[Index.Key].X, 64.f),
 				FMath::Max(255*CoverNormals[Index.Key].Y, 64.f),
 				FMath::Max(255*CoverNormals[Index.Key].Z, 64.f));
-				FVector End = Location + CoverNormals[Index.Key] * Clearance;
+				FVector End = Location + CoverNormals[Index.Key] * VoxelSize;
 				DrawDebugDirectionalArrow(GetWorld(), Location, End, 1000.0f, Colour, true, -1, 0, 20.f);		
 			}
 		}
@@ -481,6 +485,7 @@ void ANav3DVolume::Serialize(FArchive& Ar) {
 	Ar << Octree;
 	Ar << VoxelHalfSizes;
 	Ar << VolumeExtent;
+	Ar << CoverMap;
 	NumBytes = Octree.GetSize();
 }
 
@@ -773,34 +778,49 @@ void ANav3DVolume::RasterizeLeaf(const FVector NodeLocation, const int32 LeafInd
         const FVector VoxelLocation = Location + FVector(X * VoxelScale, Y * VoxelScale, Z * VoxelScale) + VoxelScale * 0.5f;
         if (LeafIndex >= Octree.Leafs.Num() - 1) Octree.Leafs.AddDefaulted(1);
 
-		// In addition to blocking hit test, retrieve the results of any occlusion overlaps to determine leaf cell normals
-		TArray<FOverlapResult> Overlaps;
-		if (IsOccluded(VoxelLocation, VoxelScale * 0.5f, Overlaps)) Octree.Leafs[LeafIndex].SetSubNode(I);
-		UpdateCoverMap(VoxelLocation, Overlaps);
+		if (bEnableCoverMap) {
+			// In addition to blocking hit test, retrieve the results of any occlusion overlaps to determine leaf cell normals
+			TArray<FOverlapResult> Overlaps;
+			if (IsOccluded(VoxelLocation, VoxelScale * 0.5f, Overlaps)) Octree.Leafs[LeafIndex].SetSubNode(I);
+			UpdateCoverMap(VoxelLocation, Overlaps);	
+		} else {
+			if (IsOccluded(VoxelLocation, VoxelScale * 0.5f)) Octree.Leafs[LeafIndex].SetSubNode(I);
+		}
     }
 }
 
 void ANav3DVolume::UpdateCoverMap(FVector Location, TArray<FOverlapResult>& Overlaps) {
+	if (!bEnableCoverMap) return;
 	if (Overlaps.Num() > 0) {
 		for (auto& Result: Overlaps) {
 			if (Result.bBlockingHit) {
+				if (Result.GetActor()->GetComponentsBoundingBox().GetExtent().GetMax() < MinimumObjectRadius) continue;
 				FVector HitPoint;
 				Result.Component->GetClosestPointOnCollision(Location, HitPoint);
 				FVector Normal = (Location - HitPoint).GetSafeNormal();
-				if (Normal != FVector::ZeroVector) {
-					const int32 NormalIndex = GetCoverNormalIndex(Normal);
-					FNav3DCoverMapNode Node;
-					if (CoverMap.Nodes.Contains(Result.GetActor()->GetFName())) {
-						Node = CoverMap.Nodes[Result.GetActor()->GetFName()];
-					}
-					TArray<FVector> CoverLocations;
-					if (Node.Locations.Contains(NormalIndex)) {
-						CoverLocations = Node.Locations[NormalIndex];
-					}
-					CoverLocations.Add(Location);
-					Node.Locations.Add(NormalIndex, CoverLocations);
-					CoverMap.Nodes.Add(Result.GetActor()->GetFName(), Node);
+				if (Normal == FVector::ZeroVector) continue;
+				const int32 NormalIndex = GetCoverNormalIndex(Normal);
+				
+				FNav3DCoverMapNode Node;
+				if (CoverMap.Nodes.Contains(Result.GetActor()->GetFName())) {
+					Node.Locations = CoverMap.Nodes[Result.GetActor()->GetFName()].Locations;
 				}
+				
+				TArray<FVector> CoverLocations;
+				bool bLocationLegal = true;
+				if (Node.Locations.Contains(NormalIndex)) {
+					CoverLocations = Node.Locations[NormalIndex];
+					for (auto& CoverLocation: CoverLocations) {
+						if (FVector::Dist(CoverLocation, Location) < MinimumDensity) {
+							bLocationLegal = false;
+							break;
+						}
+					}
+				}
+				if (!bLocationLegal) continue;
+				CoverLocations.Add(Location);
+				Node.Locations.Add(NormalIndex, CoverLocations);
+				CoverMap.Nodes.Add(Result.GetActor()->GetFName(), Node);
 			}
 		}
 	}

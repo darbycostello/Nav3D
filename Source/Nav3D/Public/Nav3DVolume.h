@@ -39,6 +39,18 @@ public:
 	// How often to tick this actor to perform dynamic updates
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Generation")
 	float TickInterval = 0.1f;
+
+	// Whether to use a cover map with this volume. Requires an octree rebuild after modifying
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Cover Map")
+	bool bEnableCoverMap = true;
+	
+	// The minimum object radius to be considered for cover
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Cover Map")
+	float MinimumObjectRadius = 500.0f;
+
+	// Cover points with the same normal must be at least this distance apart
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Cover Map")
+	float MinimumDensity = 500.0f;
 	
 	// Draw distance for debug lines
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging")
