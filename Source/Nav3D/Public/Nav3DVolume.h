@@ -48,7 +48,7 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Cover Map")
 	float MinimumObjectRadius = 500.0f;
 
-	// Cover points with the same normal must be at least this distance apart
+	// Cover locations with the same normal must be at least this distance apart
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Cover Map")
 	float MinimumDensity = 500.0f;
 	
@@ -104,7 +104,7 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging|Morton Codes")
     float MortonCodeScale = 1.0f;
 
-	// Show the cover map locations and direction normals
+	// Show the cover map locations and direction normals. Also applies to occlusion component cover
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging|Cover Map")
 	bool bDisplayCoverMap = false;
 	
@@ -172,6 +172,7 @@ public:
 	TArray<FNav3DOctreeEdge> CalculateVolatileEdges(const AActor* Actor) const;
 	void RequestOctreeUpdate(UNav3DOcclusionComponent* OcclusionComponent);
 	
+	
 private:
 	FNav3DOctree Octree;
 	FNav3DOctree CachedOctree;
@@ -221,6 +222,7 @@ private:
 	bool IsOccluded(const FVector& Location, float Size) const;
 	bool IsOccluded(const FVector& Location, float Size, TArray<FOverlapResult>& OverlapResults) const;
 	void UpdateCoverMap(FVector Location, TArray<FOverlapResult>& Overlaps);
+	void UpdateOcclusionComponentCover(FVector Location, TArray<FOverlapResult>& Overlaps) const;
 	int32 GetLayerNodeCount(uint8 LayerIndex) const;
 	int32 GetSegmentNodeCount(uint8 LayerIndex) const;
 	bool InDebugRange(FVector Location) const;
@@ -240,6 +242,7 @@ private:
 	void DebugDrawNavPaths();
 	void DebugDrawModifierVolumes() const;
 	void DebugDrawCoverMapLocations() const;
+	void DebugDrawOcclusionComponentCover() const;
 	void VerifyModifierVolumes();
 	FColor GetLayerColour(const int32 LayerIndex) const;
 	TArray<AActor*> GatherOcclusionActors();

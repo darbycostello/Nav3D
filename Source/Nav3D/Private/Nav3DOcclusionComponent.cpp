@@ -43,11 +43,22 @@ bool UNav3DOcclusionComponent::FindVolume(ANav3DVolume*& CurrentVolume) const {
 	return false;
 }
 
+bool UNav3DOcclusionComponent::GetCoverLocations(const int32 NormalIndex, TArray<FVector>& Locations) {
+	if (CoverLocations.Contains(NormalIndex)) {
+		Locations = CoverLocations[NormalIndex];
+		return true;
+	}
+	return false;
+}
+
 void UNav3DOcclusionComponent::SetOcclusionEnabled(const bool bOcclusionEnabled) {
 	if (bOcclusionEnabled && !bEnabled || !bOcclusionEnabled && bEnabled) {
 		RequestUpdate();
 	}
 	bEnabled = bOcclusionEnabled;
+	if (!bEnabled) {
+		bEnableCover = false;
+	}
 }
 
 void UNav3DOcclusionComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) {

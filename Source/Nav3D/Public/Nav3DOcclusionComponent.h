@@ -22,6 +22,10 @@ public:
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Nav3D")
 	float TransformTriggerTolerance = 1.0f;
 
+	// Allow this component's owner to be used with cover map queries
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Nav3D")
+	bool bEnableCover = true;
+
 	// Toggle whether this component should be considered for octree occlusion 
 	UFUNCTION(BlueprintCallable, Category = "Nav3D")
 	void SetOcclusionEnabled(bool bOcclusionEnabled);
@@ -34,13 +38,13 @@ protected:
     virtual void BeginPlay() override;
 	void RequestUpdate();
 	bool FindVolume(ANav3DVolume*& CurrentVolume) const;
+	void ResetCoverLocations() { CoverLocations.Reset(); }
+	bool GetCoverEnabled() const { return bEnableCover; }
+	bool GetCoverLocations(const int32 NormalIndex, TArray<FVector>& Locations);
+	void AddCoverLocations(const int32 NormalIndex, const TArray<FVector> Locations) { CoverLocations.Add(NormalIndex, Locations);}
 
 	UPROPERTY()
 	ANav3DVolume* Volume = nullptr;
-
-	TArray<FNav3DOctreeEdge> VolatileEdges;
-
-private:
 
 	// The stored transform of the owner, the delta is used to trigger updates
 	UPROPERTY()
@@ -48,5 +52,9 @@ private:
 
 	// Whether this component should be used to update the octree 
 	UPROPERTY()
-    bool bEnabled = true;
+	bool bEnabled = true;
+
+	TArray<FNav3DOctreeEdge> VolatileEdges;
+	TMap<int32, TArray<FVector>> CoverLocations;
+
 };

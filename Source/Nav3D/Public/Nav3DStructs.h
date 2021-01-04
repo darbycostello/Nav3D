@@ -244,7 +244,13 @@ struct NAV3D_API FNav3DCoverMap {
 	}
 
 	int32 GetSize() const {
-		return Nodes.Num() * sizeof(FNav3DCoverMapNode);
+		int32 Size = Nodes.Num() * sizeof(FNav3DCoverMapNode);
+		for (auto& Node: Nodes) {
+			for (auto& Index: Node.Value.Locations) {
+				Size += Node.Value.Locations[Index.Key].Num() * sizeof(FVector);
+			}
+		}
+		return Size;
 	}
 };
 
