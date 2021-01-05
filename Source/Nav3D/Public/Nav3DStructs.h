@@ -56,6 +56,23 @@ struct NAV3D_API FNav3DDebugPath {
 	FNav3DDebugPath(): Colour(FColor::Black), LineScale(0) {}
 };
 
+USTRUCT(BlueprintType)
+struct NAV3D_API FNav3DDebugLocation {
+
+	GENERATED_BODY()
+	
+	UPROPERTY(BlueprintReadWrite)
+	FVector Location;
+
+	UPROPERTY(BlueprintReadWrite)
+	FColor Colour;
+
+	UPROPERTY(BlueprintReadWrite)
+	float LineScale;
+
+	FNav3DDebugLocation(): Location(FVector::ZeroVector), Colour(FColor::Black), LineScale(0) {}
+};
+
 UENUM()
 enum class ENav3DHeuristic: uint8 {
 	Manhattan UMETA(DisplayName="Manhattan"),
@@ -64,12 +81,22 @@ enum class ENav3DHeuristic: uint8 {
 
 UENUM()
 enum class ENav3DPathFindingCallResult: uint8 {
-	Success UMETA(DisplayName="Call Success", ToolTip="Pathfinding task was called successfully."),
-	Reachable UMETA(DisplayName="Target in line of sight", ToolTip="Pathfinding unnecessary. Target is already reachable."),
+	Success UMETA(DisplayName="Call Success", ToolTip="Find path task was called successfully."),
+	Reachable UMETA(DisplayName="Target in line of sight", ToolTip="Find path unnecessary. Target is already reachable."),
 	NoVolume UMETA(DisplayName="Volume not found", ToolTip="Nav3D component owner is not inside a Nav3D volume."),
     NoOctree UMETA(DisplayName="Octree not found", ToolTip="Nav3D octree has not been built."),
 	NoStart UMETA(DisplayName="Start edge not found", ToolTip="Failed to find start edge."),
 	NoTarget UMETA(DisplayName="Target edge not found", ToolTip="Failed to find target edge.")
+};
+
+UENUM()
+enum class ENav3DFindLineOfSightCallResult: uint8 {
+	Success UMETA(DisplayName="Call Success", ToolTip="Line of sight task was called successfully."),
+    Visible UMETA(DisplayName="Target in line of sight", ToolTip="Find Line of sight unnecessary. Target is already visible."),
+    NoVolume UMETA(DisplayName="Volume not found", ToolTip="Nav3D component owner is not inside a Nav3D volume."),
+    NoOctree UMETA(DisplayName="Octree not found", ToolTip="Nav3D octree has not been built."),
+    NoStart UMETA(DisplayName="Start edge not found", ToolTip="Failed to find start edge."),
+    NoTarget UMETA(DisplayName="Target edge not found", ToolTip="Failed to find target edge.")
 };
 
 UENUM()
@@ -90,6 +117,7 @@ UENUM()
 enum class ENav3DFindCoverCallResult: uint8 {
 	Success UMETA(DisplayName="Call Success", ToolTip="Find cover task was called successfully."),
     NoVolume UMETA(DisplayName="Volume not found", ToolTip="Nav3D component owner is not inside a Nav3D volume."),
+	NoOctree UMETA(DisplayName="Octree not found", ToolTip="Nav3D octree has not been built."),
     CoverMapNotEnabled UMETA(DisplayName="Cover map not enabled", ToolTip="Nav3D cover map is not enabled for this volume."),
 	CoverMapInvalid UMETA(DisplayName="Cover map invald", ToolTip="Nav3D cover map has no entries or is not valid for this volume.")
 };

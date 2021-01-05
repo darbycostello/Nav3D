@@ -44,15 +44,15 @@ protected:
 
 	void DoWork() const {
 		Nav3DComponent->ExecuteFindCover(Location, Radius, Opponents, ObjectTypes, SearchType, bPerformLineTraces, CoverLocation);
-		
+
 		AsyncTask(ENamedThreads::GameThread, [=]() {
+
 #if WITH_EDITOR
-			/*
 			if (CoverLocation.Actor && CoverLocation.Location != FVector::ZeroVector) {
 				Nav3DComponent->RequestNavCoverLocationDebugDraw(CoverLocation);	
 			}
-			*/
 #endif
+
 		});
 
 		TaskComplete.Execute(CoverLocation.Location != FVector::ZeroVector);

@@ -144,6 +144,7 @@ void ANav3DVolume::DebugDrawOctree() {
 
 		if (bDisplayLeafOcclusion) DebugDrawLeafOcclusion();
 		DebugDrawNavPaths();
+		DebugDrawLocations();
 		VerifyModifierVolumes();
 		DebugDrawModifierVolumes();
 
@@ -184,7 +185,7 @@ void ANav3DVolume::DebugDrawLeafOcclusion() {
 	}
 }
 
-void ANav3DVolume::DebugDrawNavPaths() {
+void ANav3DVolume::DebugDrawNavPaths() const {
 	for (auto& DebugPath: DebugPaths) {
 		DrawDebugSphere(GetWorld(), DebugPath.Points[0],DebugPath.LineScale * 2.f, 12, DebugPath.Colour,true,-1.f,0, DebugPath.LineScale);
 		for (int32 I = 1; I < DebugPath.Points.Num(); I++) {
@@ -194,8 +195,19 @@ void ANav3DVolume::DebugDrawNavPaths() {
 	}
 }
 
+void ANav3DVolume::DebugDrawLocations() const {
+	for (auto& DebugLocation: DebugLocations) {
+		DrawDebugSphere(GetWorld(), DebugLocation.Location,DebugLocation.LineScale * 2.f, 12, DebugLocation.Colour,true,-1.f,0, DebugLocation.LineScale);
+	}
+}
+
 void ANav3DVolume::AddDebugNavPath(const FNav3DDebugPath DebugPath) {
 	DebugPaths.Add(DebugPath);
+	RequestOctreeDebugDraw();
+}
+
+void ANav3DVolume::AddDebugLocation(const FNav3DDebugLocation DebugLocation) {
+	DebugLocations.Add(DebugLocation);
 	RequestOctreeDebugDraw();
 }
 

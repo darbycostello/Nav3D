@@ -5,6 +5,7 @@
 #include "Nav3DComponent.generated.h"
 
 DECLARE_DYNAMIC_DELEGATE_OneParam(FFindPathTaskCompleteDynamicDelegate, bool, bPathFound);
+DECLARE_DYNAMIC_DELEGATE_OneParam(FFindLineOfSightTaskCompleteDynamicDelegate, bool, bLineOfSightFound);
 DECLARE_DYNAMIC_DELEGATE_OneParam(FFindCoverTaskCompleteDynamicDelegate, bool, bLocationFound);
 
 UCLASS(BlueprintType, Blueprintable, meta=(BlueprintSpawnableComponent, DisplayName="Nav3D Component"))
@@ -37,9 +38,9 @@ public:
     int32 PathSmoothing = 5;
 
 #if WITH_EDITOR
-	// Whether to debug draw the path from a pathfinding task. 
+	// Whether to debug draw the pathfinding paths and cover locations 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging")
-    bool bDebugDrawNavPath;
+    bool bDebugDrawEnabled;
 
 	// The navigation path debug colour
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging")
@@ -68,8 +69,10 @@ public:
 	float HeuristicScore(FNav3DOctreeEdge StartEdge, FNav3DOctreeEdge TargetEdge, FNav3DPathFindingConfig Config) const;
 	void AddPathStartLocation(FNav3DPath& Path) const;
 	void ApplyPathPruning(FNav3DPath& Path, const FNav3DPathFindingConfig Config) const;
+	void ApplyPathLineOfSight(FNav3DPath& Path, AActor* Target, float MinimumDistance) const;
 	static void ApplyPathSmoothing(FNav3DPath& Path, FNav3DPathFindingConfig Config);
 	void RequestNavPathDebugDraw(const FNav3DPath Path) const;
+	void RequestNavCoverLocationDebugDraw(const FNav3DCoverLocation CoverLocation) const;
 	void ExecuteFindCover(
 		const FVector Location,
 		const float Radius,
@@ -108,6 +111,15 @@ public:
         FFindCoverTaskCompleteDynamicDelegate OnComplete,
         ENav3DFindCoverCallResult& Result
     );
+
+	UFUNCTION(BlueprintCallable, Category = "Nav3D")
+    void FindLineOfSight(
+        const FVector& StartLocation,
+        AActor* TargetActor,
+        const float MinimumDistance,
+        const bool bCheckLineOfSight,
+        FFindLineOfSightTaskCompleteDynamicDelegate OnComplete,
+        ENav3DFindLineOfSightCallResult& Result);
 	
 	UFUNCTION(BlueprintCallable, Category = "Nav3D")
 	void GetPath(TArray<FVector>& Path) const { Nav3DPath->GetPath(Path); }

@@ -1,6 +1,7 @@
 #include "Nav3DComponent.h"
 #include "Nav3DFindCoverTask.h"
 #include "Nav3DFindPathTask.h"
+#include "Nav3DFindLineOfSightTask.h"
 #include "Nav3DStructs.h"
 #include "Nav3DVolume.h"
 #include "GameFramework/Actor.h"
@@ -68,7 +69,7 @@ void UNav3DComponent::FindPath(
 	const FVector& StartLocation,
 	const FVector& TargetLocation,
 	const bool bCheckLineOfSight,
-	FFindPathTaskCompleteDynamicDelegate OnComplete,
+	const FFindPathTaskCompleteDynamicDelegate OnComplete,
 	ENav3DPathFindingCallResult &Result) {
 	
 	FNav3DOctreeEdge StartEdge;
@@ -82,9 +83,19 @@ void UNav3DComponent::FindPath(
 		Result = ENav3DPathFindingCallResult::NoVolume;
 		
 #if WITH_EDITOR
-		if (bDebugLogPathfinding) UE_LOG(LogTemp, Error, TEXT("%s: Pathfinding cannot initialise. Nav3D component owner is not inside a Nav3D volume"), *GetOwner()->GetName());
+		if (bDebugLogPathfinding) UE_LOG(LogTemp, Error, TEXT("%s: Find path cannot initialise. Nav3D component owner is not inside a Nav3D volume"), *GetOwner()->GetName());
 #endif
 
+		return;
+	}	
+	// Check that an octree has been found
+	if (!VolumeContainsOctree()) {
+		Result = ENav3DPathFindingCallResult::NoOctree;
+		
+#if WITH_EDITOR
+		if (bDebugLogPathfinding) UE_LOG(LogTemp, Error, TEXT("%s: Find path cannot initialise. Nav3D octree has not been built"), *GetOwner()->GetName());
+#endif
+		
 		return;
 	}
 
@@ -109,22 +120,11 @@ void UNav3DComponent::FindPath(
 			Result = ENav3DPathFindingCallResult::Reachable;
 			
 #if WITH_EDITOR
-			if (bDebugLogPathfinding) UE_LOG(LogTemp, Error, TEXT("%s: Pathfinding unnecessary. Nav3D component owner has a clear line of sight to target"), *GetOwner()->GetName());
+			if (bDebugLogPathfinding) UE_LOG(LogTemp, Error, TEXT("%s: Find path unnecessary. Nav3D component owner has a clear line of sight to target"), *GetOwner()->GetName());
 #endif
 			
 			return;
 		}	
-	}
-	
-	// Check that an octree has been found
-	if (!VolumeContainsOctree()) {
-		Result = ENav3DPathFindingCallResult::NoOctree;
-		
-#if WITH_EDITOR
-		if (bDebugLogPathfinding) UE_LOG(LogTemp, Error, TEXT("%s: Pathfinding cannot initialise. Nav3D octree has not been built"), *GetOwner()->GetName());
-#endif
-		
-		return;
 	}
 	
 	if (!Volume->GetEdge(StartLocation, StartEdge))
@@ -193,7 +193,141 @@ void UNav3DComponent::FindPath(
 	Result = ENav3DPathFindingCallResult::Success;
 
 #if WITH_EDITOR
-	if (bDebugLogPathfinding) UE_LOG(LogTemp, Display, TEXT("%s: Pathfinding task called successfully"), *GetOwner()->GetName());
+	if (bDebugLogPathfinding) UE_LOG(LogTemp, Display, TEXT("%s: Find path task called successfully"), *GetOwner()->GetName());
+#endif
+
+}
+
+void UNav3DComponent::FindLineOfSight(
+	const FVector& StartLocation,
+	AActor* TargetActor,
+	const float MinimumDistance,
+	const bool bCheckLineOfSight,
+	const FFindLineOfSightTaskCompleteDynamicDelegate OnComplete,
+	ENav3DFindLineOfSightCallResult &Result) {
+	
+	FNav3DOctreeEdge StartEdge;
+	FNav3DOctreeEdge TargetEdge;
+	FVector LegalStart = StartLocation;
+	FVector LegalTarget = TargetActor->GetActorLocation();
+
+	// Error checking before task start
+	if (!VolumeContainsOctree() || !VolumeContainsOwner()) FindVolume();
+	if (!VolumeContainsOwner()) {
+		Result = ENav3DFindLineOfSightCallResult::NoVolume;
+
+#if WITH_EDITOR
+		if (bDebugLogPathfinding) UE_LOG(LogTemp, Error, TEXT("%s: Find path cannot initialise. Nav3D component owner is not inside a Nav3D volume"), *GetOwner()->GetName());
+#endif
+
+		return;
+	}
+	// Check that an octree has been found
+	if (!VolumeContainsOctree()) {
+		Result = ENav3DFindLineOfSightCallResult::NoOctree;
+		
+#if WITH_EDITOR
+		if (bDebugLogPathfinding) UE_LOG(LogTemp, Error, TEXT("%s: Find path cannot initialise. Nav3D octree has not been built"), *GetOwner()->GetName());
+#endif
+		
+		return;
+	}
+
+	if (bCheckLineOfSight) {
+		if (FVector::Dist(StartLocation, TargetActor->GetActorLocation()) <= MinimumDistance) {
+			// If there is a line of sight plus clearance within the minimum distance then no path finding is required
+			FCollisionQueryParams CollisionQueryParams;
+			CollisionQueryParams.bTraceComplex = true;
+			CollisionQueryParams.TraceTag = "Nav3DLineOfSightCheck";
+			FHitResult HitResult;
+			GetWorld()->LineTraceSingleByChannel(
+                HitResult,
+                StartLocation,
+                LegalTarget,
+                Volume->CollisionChannel,
+                CollisionQueryParams
+            );
+
+			if (HitResult.bBlockingHit && HitResult.GetActor() == TargetActor) {
+				Result = ENav3DFindLineOfSightCallResult::Visible;
+			
+#if WITH_EDITOR
+				if (bDebugLogPathfinding) UE_LOG(LogTemp, Error, TEXT("%s: Find line of sight unnecessary. Target is already visible to Nav3D component owner"), *GetOwner()->GetName());
+#endif
+			
+				return;
+			}
+		}	
+	}
+	
+	if (!Volume->GetEdge(StartLocation, StartEdge))
+	{
+		Result = ENav3DFindLineOfSightCallResult::NoStart;
+
+#if WITH_EDITOR
+		if (bDebugLogPathfinding) UE_LOG(LogTemp, Warning, TEXT("%s: Failed to find start edge. Searching nearby..."), *GetOwner()->GetName());
+#endif
+		
+		if (!Volume->FindAccessibleEdge(LegalStart, StartEdge)) {
+
+#if WITH_EDITOR
+			if (bDebugLogPathfinding) UE_LOG(LogTemp, Error, TEXT("%s: No accessible adjacent edge found"), *GetOwner()->GetName());
+#endif
+			
+			return;	
+		}
+
+#if WITH_EDITOR
+		if (bDebugLogPathfinding) UE_LOG(LogTemp, Display, TEXT("%s: Found legal start location"), *GetOwner()->GetName());
+#endif
+		
+	}
+
+	if (!Volume->GetEdge(LegalTarget, TargetEdge))
+	{
+		Result = ENav3DFindLineOfSightCallResult::NoTarget;
+
+#if WITH_EDITOR
+		if (bDebugLogPathfinding) UE_LOG(LogTemp, Warning, TEXT("%s: Failed to find target edge. Searching nearby..."), *GetOwner()->GetName());
+#endif
+		
+		if (!Volume->FindAccessibleEdge(LegalTarget, TargetEdge)) {
+
+#if WITH_EDITOR
+			if (bDebugLogPathfinding) UE_LOG(LogTemp, Error, TEXT("%s: No accessible edges found near target"), *GetOwner()->GetName());
+#endif
+			
+			return;	
+		}
+
+#if WITH_EDITOR
+		if (bDebugLogPathfinding) UE_LOG(LogTemp, Display, TEXT("%s: Found accessible target location"), *GetOwner()->GetName());
+#endif
+		
+	}
+
+	FNav3DPathFindingConfig Config;
+	Config.Heuristic = Heuristic;
+	Config.EstimateWeight = HeuristicWeight;
+	Config.NodeSizePreference = NodeSizePreference;
+	Config.PathPruning = PathPruning;
+	Config.PathSmoothing = PathSmoothing;
+	FNav3DPath& Path = *Nav3DPath;
+
+	(new FAutoDeleteAsyncTask<FNav3DFindLineOfSightTask>(
+		this,
+		StartEdge,
+		TargetEdge,
+		LegalStart,
+		TargetActor,
+		MinimumDistance,
+		Config,
+		Path,
+		OnComplete))->StartBackgroundTask();
+	Result = ENav3DFindLineOfSightCallResult::Success;
+
+#if WITH_EDITOR
+	if (bDebugLogPathfinding) UE_LOG(LogTemp, Display, TEXT("%s: Find line of sight task called successfully"), *GetOwner()->GetName());
 #endif
 
 }
@@ -227,6 +361,16 @@ void UNav3DComponent::FindCoverMultipleOpponents(
 		if (bDebugFindCover) UE_LOG(LogTemp, Error, TEXT("%s: Find cover cannot initialise. Nav3D component owner is not inside a Nav3D volume"), *GetOwner()->GetName());
 #endif
 
+		return;
+	}
+	// Check that an octree has been found
+	if (!VolumeContainsOctree()) {
+		Result = ENav3DFindCoverCallResult::NoOctree;
+		
+#if WITH_EDITOR
+		if (bDebugLogPathfinding) UE_LOG(LogTemp, Error, TEXT("%s: Find cover cannot initialise. Nav3D octree has not been built"), *GetOwner()->GetName());
+#endif
+		
 		return;
 	}
 	if (!VolumeCoverMapEnabled()) {
@@ -431,24 +575,26 @@ void UNav3DComponent::ExecutePathFinding(
 			while (Parent.Contains(CurrentEdge) && !(CurrentEdge == Parent[CurrentEdge])) {
 				CurrentEdge = Parent[CurrentEdge];
 				Volume->GetEdgeLocation(CurrentEdge, PathPoint.Location);
-				Path.Points.Add(PathPoint);
+				Path.Points.Insert(PathPoint, 0);
 				const FNav3DOctreeNode& Node = Volume->GetNode(CurrentEdge);
 				if (CurrentEdge.GetLayerIndex() == 0) {
-					if (!Node.HasChildren()) Path.Points[Path.Points.Num() - 1].Layer = 1;
-					else Path.Points[Path.Points.Num() - 1].Layer = 0;
+					if (!Node.HasChildren()) Path.Points[0].Layer = 1;
+					else Path.Points[0].Layer = 0;
 				} else {
-					Path.Points[Path.Points.Num() - 1].Layer = CurrentEdge.GetLayerIndex() + 1;
+					Path.Points[0].Layer = CurrentEdge.GetLayerIndex() + 1;
 				}
 			}
-
+			
 			if (Path.Points.Num() > 1) {
-				Path.Points[0].Location = TargetLocation;
-				Path.Points[Path.Points.Num() - 1].Location = StartLocation;
+				Path.Points[0].Location = StartLocation;
+				Path.Points[Path.Points.Num() - 1].Location = TargetLocation;
+				
 			} else {
 				if (Path.Points.Num() == 0) Path.Points.Emplace();
 				Path.Points[0].Location = TargetLocation;
 				Path.Points.Emplace(StartLocation, StartEdge.GetLayerIndex());
 			}
+			
 			return;
 		}
 
@@ -530,9 +676,41 @@ float UNav3DComponent::HeuristicScore(const FNav3DOctreeEdge StartEdge, const FN
 
 void UNav3DComponent::AddPathStartLocation(FNav3DPath& Path) const {
 	if (Path.Points.Num() == 0) return;
-	const FVector Location = GetOwner()->GetActorLocation();
-	if (!Location.Equals(Path.Points[Path.Points.Num() - 1].Location), 50.0f) {
-		Path.Points.Add(FNav3DPathPoint(Location, Path.Points[Path.Points.Num() - 1].Layer));
+	const FVector StartLocation = GetOwner()->GetActorLocation();
+	if (!StartLocation.Equals(Path.Points[0].Location), 50.0f) {
+		Path.Points.Insert(FNav3DPathPoint(StartLocation, Path.Points[0].Layer), 0);
+	}
+}
+
+void UNav3DComponent::ApplyPathLineOfSight(FNav3DPath& Path, AActor* Target, const float MinimumDistance) const {
+	if (!GetWorld() || Path.Points.Num() < 2) return;
+	TArray<FVector> PathPoints;
+	Path.GetPath(PathPoints);
+	int32 Index;
+	for (Index = 1; Index < PathPoints.Num(); Index++) {
+		if (FVector::Dist(PathPoints[Index], Target->GetActorLocation()) > MinimumDistance) continue;
+		FCollisionQueryParams CollisionQueryParams;
+		CollisionQueryParams.bTraceComplex = true;
+		CollisionQueryParams.TraceTag = "Nav3DPathLineOfSight";
+		FHitResult HitResult;
+		GetWorld()->LineTraceSingleByChannel(
+            HitResult,
+            PathPoints[Index],
+            Target->GetActorLocation(),
+            Volume->CollisionChannel,
+            CollisionQueryParams
+        );
+		if (HitResult.bBlockingHit) {
+			if (HitResult.Actor == Target) {
+				break;
+			}
+		}
+	}
+	if (Index < PathPoints.Num() - 1) {
+		Index++;
+		Path.Points.RemoveAt(Index, PathPoints.Num() - Index);
+		for (auto P: Path.Points) {
+		}
 	}
 }
 
@@ -627,12 +805,21 @@ void UNav3DComponent::ApplyPathSmoothing(FNav3DPath& Path, const FNav3DPathFindi
 #if WITH_EDITOR
 
 void UNav3DComponent::RequestNavPathDebugDraw(const FNav3DPath Path) const {
-	if (!GetWorld() || !Volume || Path.Points.Num() < 2 || !bDebugDrawNavPath) return;
+	if (!GetWorld() || !Volume || Path.Points.Num() < 2 || !bDebugDrawEnabled) return;
 	FNav3DDebugPath DebugPath;
 	for (auto& Point: Path.Points) DebugPath.Points.Add(Point.Location);
 	DebugPath.Colour = DebugPathColour;
 	DebugPath.LineScale = DebugPathLineScale;
 	Volume->AddDebugNavPath(DebugPath);
 }
+
+void UNav3DComponent::RequestNavCoverLocationDebugDraw(const FNav3DCoverLocation CoverLocation) const {
+	if (!GetWorld() || !Volume || CoverLocation.Location == FVector::ZeroVector) return;
+	FNav3DDebugLocation DebugCoverLocation;
+	DebugCoverLocation.Colour = DebugPathColour;
+	DebugCoverLocation.LineScale = DebugPathLineScale;
+	Volume->AddDebugLocation(DebugCoverLocation);
+}
+
 
 #endif

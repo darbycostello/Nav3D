@@ -145,6 +145,7 @@ public:
 	bool BuildOctree();
 	void UpdateOctree();
 	void AddDebugNavPath(const FNav3DDebugPath DebugPath);
+	void AddDebugLocation(const FNav3DDebugLocation DebugLocation);
 	void AddModifierVolume(ANav3DModifierVolume* ModifierVolume);
 	void LockOctree() { bOctreeLocked = true; }
 	void UnlockOctree() { bOctreeLocked = false; }
@@ -189,6 +190,7 @@ private:
 	bool bDebugDrawRequested;
 	TArray<FNav3DDebugEdge> DebugEdges;
 	TArray<FNav3DDebugPath> DebugPaths;
+	TArray<FNav3DDebugLocation> DebugLocations;
 #endif
 
 	UPROPERTY()
@@ -243,7 +245,8 @@ private:
 	void DebugDrawLeafOcclusion();
 	void DebugDrawEdgeAdjacency() const;
 	void DebugDrawBoundsMesh(FBox Box, FColor Colour) const;
-	void DebugDrawNavPaths();
+	void DebugDrawNavPaths() const;
+	void DebugDrawLocations() const;
 	void DebugDrawModifierVolumes() const;
 	void DebugDrawCoverMapLocations() const;
 	void DebugDrawOcclusionComponentCover() const;
