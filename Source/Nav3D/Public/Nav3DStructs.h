@@ -119,7 +119,7 @@ enum class ENav3DFindCoverCallResult: uint8 {
     NoVolume UMETA(DisplayName="Volume not found", ToolTip="Nav3D component owner is not inside a Nav3D volume."),
 	NoOctree UMETA(DisplayName="Octree not found", ToolTip="Nav3D octree has not been built."),
     CoverMapNotEnabled UMETA(DisplayName="Cover map not enabled", ToolTip="Nav3D cover map is not enabled for this volume."),
-	CoverMapInvalid UMETA(DisplayName="Cover map invald", ToolTip="Nav3D cover map has no entries or is not valid for this volume.")
+	CoverMapInvalid UMETA(DisplayName="Cover map invalid", ToolTip="Nav3D cover map has no entries or is not valid for this volume.")
 };
 
 USTRUCT(BlueprintType)

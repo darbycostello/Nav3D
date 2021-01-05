@@ -45,6 +45,8 @@ void ANav3DVolume::Initialise()
 	NumBytes = 0;
 
 #if WITH_EDITOR
+	DebugPaths.Empty();
+	DebugLocations.Empty();
 	FlushDebugDraw();
 #endif
 
@@ -144,7 +146,7 @@ void ANav3DVolume::DebugDrawOctree() {
 
 		if (bDisplayLeafOcclusion) DebugDrawLeafOcclusion();
 		DebugDrawNavPaths();
-		DebugDrawLocations();
+		DebugDrawNavLocations();
 		VerifyModifierVolumes();
 		DebugDrawModifierVolumes();
 
@@ -195,7 +197,7 @@ void ANav3DVolume::DebugDrawNavPaths() const {
 	}
 }
 
-void ANav3DVolume::DebugDrawLocations() const {
+void ANav3DVolume::DebugDrawNavLocations() const {
 	for (auto& DebugLocation: DebugLocations) {
 		DrawDebugSphere(GetWorld(), DebugLocation.Location,DebugLocation.LineScale * 2.f, 12, DebugLocation.Colour,true,-1.f,0, DebugLocation.LineScale);
 	}

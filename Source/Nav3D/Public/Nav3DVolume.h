@@ -246,7 +246,7 @@ private:
 	void DebugDrawEdgeAdjacency() const;
 	void DebugDrawBoundsMesh(FBox Box, FColor Colour) const;
 	void DebugDrawNavPaths() const;
-	void DebugDrawLocations() const;
+	void DebugDrawNavLocations() const;
 	void DebugDrawModifierVolumes() const;
 	void DebugDrawCoverMapLocations() const;
 	void DebugDrawOcclusionComponentCover() const;

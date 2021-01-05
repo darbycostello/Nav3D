@@ -481,7 +481,7 @@ void UNav3DComponent::ExecuteFindCover(
 	}
 	if (IndexedDistances.Num() == 0 && bPerformLineTraces || Distances.Num() == 0 && !bPerformLineTraces) return;
 
-	// Return the first viable cover location, based on the the search type 
+	// Return the first viable cover location, based on the search type 
 	if (!bPerformLineTraces) {
 		int32 Index;
 		float SquareDistance;
@@ -525,9 +525,11 @@ void UNav3DComponent::ExecuteFindCover(
             );
 			if (HitResult.bBlockingHit) {
 				if (HitResult.Actor != Opponent) {
-					CoverLocation = CoverLocations[Entry.Key];
 					SuccessCount++;
-					if (SuccessCount == Opponents.Num()) return;
+					if (SuccessCount == Opponents.Num()) {
+						CoverLocation = CoverLocations[Entry.Key];
+						return;
+					}
 				}
 				break;
 			}
@@ -709,8 +711,6 @@ void UNav3DComponent::ApplyPathLineOfSight(FNav3DPath& Path, AActor* Target, con
 	if (Index < PathPoints.Num() - 1) {
 		Index++;
 		Path.Points.RemoveAt(Index, PathPoints.Num() - Index);
-		for (auto P: Path.Points) {
-		}
 	}
 }
 
@@ -814,7 +814,7 @@ void UNav3DComponent::RequestNavPathDebugDraw(const FNav3DPath Path) const {
 }
 
 void UNav3DComponent::RequestNavCoverLocationDebugDraw(const FNav3DCoverLocation CoverLocation) const {
-	if (!GetWorld() || !Volume || CoverLocation.Location == FVector::ZeroVector) return;
+	if (!GetWorld() || !Volume || !bDebugDrawEnabled || CoverLocation.Location == FVector::ZeroVector) return;
 	FNav3DDebugLocation DebugCoverLocation;
 	DebugCoverLocation.Colour = DebugPathColour;
 	DebugCoverLocation.LineScale = DebugPathLineScale;
