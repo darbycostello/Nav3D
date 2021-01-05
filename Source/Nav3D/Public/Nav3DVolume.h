@@ -154,6 +154,7 @@ public:
 	void GetPathCost(FVector& Location, float& Cost);
 	int32 GetCoverNormalIndex(FVector Normal) const;
 	FVector GetCoverNormal(const int32 NormalIndex) const { return CoverNormals[NormalIndex];}
+	bool GetCoverLocationValid(FVector& Location) const;
 	void FlushDebugDraw() const;
 	void RequestOctreeDebugDraw();
 	void GetVolumeExtents(const FVector& Location, int32 LayerIndex, FIntVector& Extents) const;

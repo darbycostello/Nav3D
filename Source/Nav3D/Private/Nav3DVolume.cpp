@@ -932,12 +932,24 @@ void ANav3DVolume::GetPathCost(FVector& Location, float& Cost) {
 	Cost = 1.f;
 	if (ModifierVolumes.Num() == 0) return;
 	for (auto& ModifierVolume: ModifierVolumes) {
-		if (!ModifierVolume) return;
+		if (!ModifierVolume) continue;
 		if (ModifierVolume->GetBoundingBox().IsInside(Location))
 		{
 			Cost += ModifierVolume->GetPathCost();
 		}
 	}
+}
+
+bool ANav3DVolume::GetCoverLocationValid(FVector& Location) const {
+	if (ModifierVolumes.Num() == 0) return true;
+	for (auto& ModifierVolume: ModifierVolumes) {
+		if (!ModifierVolume) continue;
+		if (ModifierVolume->GetBoundingBox().IsInside(Location) && ModifierVolume->bInvalidateCoverLocations)
+		{
+			return false;
+		}
+	}
+	return true;
 }
 
 bool ANav3DVolume::GetEdge(const FVector& Location, FNav3DOctreeEdge& Edge)

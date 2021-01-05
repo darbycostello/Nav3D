@@ -323,6 +323,8 @@ void UNav3DComponent::ExecuteFindCover(
 		for (auto& FoundLocation: FoundLocations) {
 			FVector Normal = Volume->GetCoverNormal(NormalIndex);
 			FoundLocation += Normal * (Volume->VoxelSize + Volume->Clearance);
+			// Check if any modifier volume is invalidating the cover location
+			if (!Volume->GetCoverLocationValid(FoundLocation)) continue;
 			CoverLocations.Add(FNav3DCoverLocation(Component->GetOwner(), FoundLocation, Normal));
 			if (bPerformLineTraces) {
 				IndexedDistances.Add(TPair<int32, float>(D, FVector::DistSquared(FoundLocation, GetOwner()->GetActorLocation())));
