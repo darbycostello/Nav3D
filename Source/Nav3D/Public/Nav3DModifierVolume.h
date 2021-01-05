@@ -20,6 +20,10 @@ public:
 	UPROPERTY(EditAnywhere, meta=(ClampMin = "0", ClampMax = "100"), Category = "Nav3D")
     float PathCostModifier = 1;
 
+	// Enabling this will prevent any locations within the volume being used for cover map queries.
+	UPROPERTY(EditAnywhere, Category = "Nav3D")
+	bool bInvalidateCoverLocations = false;
+	
 	// Whether to use this volume to modify overlapping Nav3D volumes  
 	UPROPERTY(EditAnywhere, DisplayName = "Enabled", Category = "Nav3D")
     bool bEnabled = true;

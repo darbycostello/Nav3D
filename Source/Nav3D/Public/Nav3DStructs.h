@@ -79,6 +79,21 @@ enum class ENav3DPathPruning: uint8 {
     WithoutClearance UMETA(DisplayName="Without clearance", ToolTip="Use path pruning without clearance.")
 };
 
+UENUM()
+enum class ENav3DCoverSearchType: uint8 {
+	Nearest UMETA(DisplayName="Find nearest", ToolTip="Find the nearest viable cover location to the target."),
+    Furthest UMETA(DisplayName="Find furthest", ToolTip="Find the furthest cover location from the target."),
+    Random UMETA(DisplayName="Find random", ToolTip="Select a random cover location from all viable options.")
+};
+
+UENUM()
+enum class ENav3DFindCoverCallResult: uint8 {
+	Success UMETA(DisplayName="Call Success", ToolTip="Find cover task was called successfully."),
+    NoVolume UMETA(DisplayName="Volume not found", ToolTip="Nav3D component owner is not inside a Nav3D volume."),
+    CoverMapNotEnabled UMETA(DisplayName="Cover map not enabled", ToolTip="Nav3D cover map is not enabled for this volume."),
+	CoverMapInvalid UMETA(DisplayName="Cover map invald", ToolTip="Nav3D cover map has no entries or is not valid for this volume.")
+};
+
 USTRUCT(BlueprintType)
 struct NAV3D_API FNav3DPathFindingConfig
 {
@@ -224,6 +239,18 @@ FORCEINLINE FArchive& operator<<(FArchive& Ar, FNav3DOctree& Octree) {
 	Ar << Octree.Leafs;
 	return Ar;
 }
+
+struct NAV3D_API FNav3DCoverLocation {
+	AActor* Actor;
+	FVector Location;
+	int32 NormalIndex;
+
+	FNav3DCoverLocation(): Actor(nullptr), Location(FVector::ZeroVector), NormalIndex(0) {}
+
+	FNav3DCoverLocation(AActor* Actor, const FVector Location, const int32 NormalIndex):
+	Actor(Actor), Location(Location), NormalIndex(NormalIndex){}
+};
+typedef TSharedPtr<FNav3DCoverLocation, ESPMode::ThreadSafe> FNav3DCoverLocationSharedPtr;
 
 struct NAV3D_API FNav3DCoverMapNode {
 	TMap<int32, TArray<FVector>> Locations;

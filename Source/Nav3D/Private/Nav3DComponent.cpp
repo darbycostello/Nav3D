@@ -1,14 +1,17 @@
 #include "Nav3DComponent.h"
+#include "Nav3DFindCoverTask.h"
 #include "Nav3DFindPathTask.h"
 #include "Nav3DStructs.h"
 #include "Nav3DVolume.h"
 #include "GameFramework/Actor.h"
 #include "Kismet/GameplayStatics.h"
+#include "Kismet/KismetMathLibrary.h"
 
 UNav3DComponent::UNav3DComponent(const FObjectInitializer& ObjectInitializer)
 {
 	PrimaryComponentTick.bCanEverTick = true;
 	Nav3DPath = MakeShareable<FNav3DPath>(new FNav3DPath());
+	Nav3DCoverLocation = MakeShareable<FNav3DCoverLocation>(new FNav3DCoverLocation());
 	bWantsInitializeComponent = true;
 }
 
@@ -25,6 +28,16 @@ bool UNav3DComponent::VolumeContainsOctree() const
 bool UNav3DComponent::VolumeContainsOwner() const
 {	
 	return GetOwner() && Volume->IsWithinBounds(GetOwner()->GetActorLocation());
+}
+
+bool UNav3DComponent::VolumeCoverMapEnabled() const
+{	
+	return Volume->bEnableCoverMap;
+}
+
+bool UNav3DComponent::VolumeCoverMapExists() const
+{	
+	return Volume->CoverMapValid();
 }
 
 bool UNav3DComponent::FindVolume()
@@ -168,13 +181,190 @@ void UNav3DComponent::FindPath(
 	Config.PathSmoothing = PathSmoothing;
 	FNav3DPath& Path = *Nav3DPath;
 
-	(new FAutoDeleteAsyncTask<FNav3DFindPathTask>(this, StartEdge, TargetEdge, LegalStart, LegalTarget, Config, Path, OnComplete))->StartBackgroundTask();
+	(new FAutoDeleteAsyncTask<FNav3DFindPathTask>(
+		this,
+		StartEdge,
+		TargetEdge,
+		LegalStart,
+		LegalTarget,
+		Config,
+		Path,
+		OnComplete))->StartBackgroundTask();
 	Result = ENav3DPathFindingCallResult::Success;
 
 #if WITH_EDITOR
 	if (bDebugLogPathfinding) UE_LOG(LogTemp, Display, TEXT("%s: Pathfinding task called successfully"), *GetOwner()->GetName());
 #endif
 
+}
+
+void UNav3DComponent::FindCover(
+	FVector SearchOrigin,
+	float MaxRadius,
+	AActor* Target,
+	ENav3DCoverSearchType SearchType,
+	FFindCoverTaskCompleteDynamicDelegate OnComplete,
+	ENav3DFindCoverCallResult& Result) {
+	
+	TArray<AActor*> TargetActors = {Target};
+
+	// Error checking before task start
+	if (!VolumeContainsOctree() || !VolumeContainsOwner()) FindVolume();
+	if (!VolumeContainsOwner()) {
+		Result = ENav3DFindCoverCallResult::NoVolume;
+		
+#if WITH_EDITOR
+		if (bDebugFindCover) UE_LOG(LogTemp, Error, TEXT("%s: Find cover cannot initialise. Nav3D component owner is not inside a Nav3D volume"), *GetOwner()->GetName());
+#endif
+
+		return;
+	}
+	if (!VolumeCoverMapEnabled()) {
+		Result = ENav3DFindCoverCallResult::CoverMapNotEnabled;
+		
+#if WITH_EDITOR
+		if (bDebugFindCover) UE_LOG(LogTemp, Error, TEXT("%s: Find cover cannot initialise. Nav3D volume cover map is not enabled"), *GetOwner()->GetName());
+#endif
+
+		return;
+	}
+	if (!VolumeCoverMapExists()) {
+		Result = ENav3DFindCoverCallResult::CoverMapInvalid;
+		
+#if WITH_EDITOR
+		if (bDebugFindCover) UE_LOG(LogTemp, Error, TEXT("%s: Find cover cannot initialise. Nav3D volume cover map has no entried or is not valid"), *GetOwner()->GetName());
+#endif
+
+		return;
+	}
+
+	TArray<TEnumAsByte<EObjectTypeQuery>> ObjectTypes;
+	ObjectTypes.Add(UEngineTypes::ConvertToObjectType(Volume->CollisionChannel));
+	FNav3DCoverLocation& CoverLocation = *Nav3DCoverLocation;
+	(new FAutoDeleteAsyncTask<FNav3DFindCoverTask>(
+		this,
+		SearchOrigin,
+		MaxRadius,
+		TargetActors,
+		ObjectTypes,
+		SearchType,
+		CoverLocation,
+		OnComplete))->StartBackgroundTask();
+
+	Result = ENav3DFindCoverCallResult::Success;
+}
+
+void UNav3DComponent::FindCoverMultiple(
+	FVector SearchOrigin,
+	float MaxRadius,
+	TArray<AActor*> Opponents,
+	ENav3DCoverSearchType SearchType,
+	FFindCoverTaskCompleteDynamicDelegate OnComplete,
+	ENav3DFindCoverCallResult& Result) {
+	
+	// Error checking before task start
+	if (!VolumeContainsOctree() || !VolumeContainsOwner()) FindVolume();
+	if (!VolumeContainsOwner()) {
+		Result = ENav3DFindCoverCallResult::NoVolume;
+		
+#if WITH_EDITOR
+		if (bDebugFindCover) UE_LOG(LogTemp, Error, TEXT("%s: Find cover cannot initialise. Nav3D component owner is not inside a Nav3D volume"), *GetOwner()->GetName());
+#endif
+
+		return;
+	}
+	if (!VolumeCoverMapEnabled()) {
+		Result = ENav3DFindCoverCallResult::CoverMapNotEnabled;
+		
+#if WITH_EDITOR
+		if (bDebugFindCover) UE_LOG(LogTemp, Error, TEXT("%s: Find cover cannot initialise. Nav3D volume cover map is not enabled"), *GetOwner()->GetName());
+#endif
+
+		return;
+	}
+	if (!VolumeCoverMapExists()) {
+		Result = ENav3DFindCoverCallResult::CoverMapInvalid;
+		
+#if WITH_EDITOR
+		if (bDebugFindCover) UE_LOG(LogTemp, Error, TEXT("%s: Find cover cannot initialise. Nav3D volume cover map has no entried or is not valid"), *GetOwner()->GetName());
+#endif
+
+		return;
+	}
+
+	TArray<TEnumAsByte<EObjectTypeQuery>> ObjectTypes;
+	ObjectTypes.Add(UEngineTypes::ConvertToObjectType(Volume->CollisionChannel));
+	FNav3DCoverLocation& CoverLocation = *Nav3DCoverLocation;
+	(new FAutoDeleteAsyncTask<FNav3DFindCoverTask>(
+		this,
+		SearchOrigin,
+		MaxRadius,
+		Opponents,
+		ObjectTypes,
+		SearchType,
+		CoverLocation,
+		OnComplete))->StartBackgroundTask();
+
+	Result = ENav3DFindCoverCallResult::Success;
+}
+
+void UNav3DComponent::ExecuteFindCover(
+	const FVector Location,
+	const float Radius,
+	const TArray<AActor*> Opponents,
+	const TArray<TEnumAsByte<EObjectTypeQuery>> ObjectTypes,
+	const ENav3DCoverSearchType SearchType,
+	FNav3DCoverLocation& CoverLocation) const {
+
+	CoverLocation = FNav3DCoverLocation();
+	if (Opponents.Num() == 0) return;
+	if (!Opponents[0]) return;
+	
+	TArray<UPrimitiveComponent*> OverlappedComponents;
+	UKismetSystemLibrary::SphereOverlapComponents(
+		GetWorld(),
+        Location,
+        Radius,
+        ObjectTypes,
+        UPrimitiveComponent::StaticClass(),
+        {},
+        OverlappedComponents);
+	
+	if (OverlappedComponents.Num() == 0) return;
+	FVector OpponentLocation = Opponents[0]->GetActorLocation();
+	// For multiple opponents, take the median location of them
+	if (Opponents.Num() > 1) {
+		for (int32 I = 1; I < Opponents.Num(); I++) {
+			if (Opponents[I]) OpponentLocation += Opponents[I]->GetActorLocation() * 0.5f;
+		}
+	}
+	
+	TArray<FNav3DCoverLocation> CoverLocations;
+	TArray<float> Distances;
+	for (auto& Component: OverlappedComponents) {
+		if (!IsValid(Component)) continue;
+		const FName ActorName = Component->GetOwner()->GetFName();
+		if (!Volume->CoverMapContainsActor(ActorName)) continue;
+		
+		FVector CollisionPoint;
+		Component->GetClosestPointOnCollision(OpponentLocation, CollisionPoint);
+		const int32 NormalIndex = Volume->GetCoverNormalIndex((CollisionPoint - OpponentLocation).GetSafeNormal());
+		
+		TArray<FVector> FoundLocations = Volume->GetCoverMapNodeLocations(ActorName, NormalIndex);
+		for (auto& FoundLocation: FoundLocations) {
+			CoverLocations.Add(FNav3DCoverLocation(Component->GetOwner(), FoundLocation, NormalIndex));
+			Distances.Add(FVector::DistSquared(FoundLocation, GetOwner()->GetActorLocation()));
+		}
+	}
+	if (Distances.Num() == 0) return;
+	int32 Index;
+	float SquareDistance;
+	switch (SearchType) {
+		default: UKismetMathLibrary::MinOfFloatArray(Distances, Index, SquareDistance); break;
+		case ENav3DCoverSearchType::Furthest: UKismetMathLibrary::MaxOfFloatArray(Distances, Index, SquareDistance); break;
+		case ENav3DCoverSearchType::Random: Index = UKismetMathLibrary::RandomIntegerInRange(0, Distances.Num()-1); break;
+	}
+	if (Index != -1) CoverLocation = CoverLocations[Index];
 }
 
 void UNav3DComponent::ExecutePathFinding(

@@ -171,7 +171,9 @@ public:
 	bool IsWithinBounds(const FVector Location) const { return GetBoundingBox().IsInside(Location); }
 	TArray<FNav3DOctreeEdge> CalculateVolatileEdges(const AActor* Actor) const;
 	void RequestOctreeUpdate(UNav3DOcclusionComponent* OcclusionComponent);
-	
+	bool CoverMapValid() const { return CoverMap.Nodes.Num() > 0; }
+	bool CoverMapContainsActor(const FName ActorName) const { return CoverMap.Nodes.Contains(ActorName); }
+	TArray<FVector> GetCoverMapNodeLocations(const FName ActorName, const int32 NormalIndex) { return CoverMap.Nodes[ActorName].Locations[NormalIndex]; }
 	
 private:
 	FNav3DOctree Octree;
