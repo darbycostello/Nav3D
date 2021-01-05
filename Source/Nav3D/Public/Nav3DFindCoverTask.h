@@ -17,6 +17,7 @@ public:
 		const TArray<AActor*> Opponents,
 		const TArray<TEnumAsByte<EObjectTypeQuery>> ObjectTypes,
 		const ENav3DCoverSearchType SearchType,
+		const bool bPerformLineTraces,
 		FNav3DCoverLocation& CoverLocation,
 		const FFindCoverTaskCompleteDynamicDelegate Complete) :
 	
@@ -26,6 +27,7 @@ public:
 		Opponents(Opponents),
 		ObjectTypes(ObjectTypes),
 		SearchType(SearchType),
+		bPerformLineTraces(bPerformLineTraces),
 		CoverLocation(CoverLocation),
 		TaskComplete(Complete) {}
 
@@ -36,11 +38,12 @@ protected:
     TArray<AActor*> Opponents;
 	TArray<TEnumAsByte<EObjectTypeQuery>> ObjectTypes;
 	ENav3DCoverSearchType SearchType;
+	bool bPerformLineTraces;
     FNav3DCoverLocation& CoverLocation;
 	FFindCoverTaskCompleteDynamicDelegate TaskComplete;
 
 	void DoWork() const {
-		Nav3DComponent->ExecuteFindCover(Location, Radius, Opponents, ObjectTypes, SearchType, CoverLocation);
+		Nav3DComponent->ExecuteFindCover(Location, Radius, Opponents, ObjectTypes, SearchType, bPerformLineTraces, CoverLocation);
 		
 		AsyncTask(ENamedThreads::GameThread, [=]() {
 #if WITH_EDITOR

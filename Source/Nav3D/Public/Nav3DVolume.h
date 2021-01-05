@@ -153,6 +153,7 @@ public:
 	bool FindAccessibleEdge(FVector& Location, FNav3DOctreeEdge& Edge);
 	void GetPathCost(FVector& Location, float& Cost);
 	int32 GetCoverNormalIndex(FVector Normal) const;
+	FVector GetCoverNormal(const int32 NormalIndex) const { return CoverNormals[NormalIndex];}
 	void FlushDebugDraw() const;
 	void RequestOctreeDebugDraw();
 	void GetVolumeExtents(const FVector& Location, int32 LayerIndex, FIntVector& Extents) const;

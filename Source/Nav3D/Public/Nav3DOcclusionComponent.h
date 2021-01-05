@@ -33,14 +33,14 @@ public:
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
     bool UpdateVolatileEdges();
 	TArray<FNav3DOctreeEdge>& GetVolatileEdges();
+	void ResetCoverLocations() { CoverLocations.Reset(); }
+	bool GetCoverEnabled() const { return bEnableCover; }
+	bool GetCoverLocations(const int32 NormalIndex, TArray<FVector>& Locations);
 
 protected:
     virtual void BeginPlay() override;
 	void RequestUpdate();
 	bool FindVolume(ANav3DVolume*& CurrentVolume) const;
-	void ResetCoverLocations() { CoverLocations.Reset(); }
-	bool GetCoverEnabled() const { return bEnableCover; }
-	bool GetCoverLocations(const int32 NormalIndex, TArray<FVector>& Locations);
 	void AddCoverLocations(const int32 NormalIndex, const TArray<FVector> Locations) { CoverLocations.Add(NormalIndex, Locations);}
 
 	UPROPERTY()

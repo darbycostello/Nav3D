@@ -76,6 +76,7 @@ public:
 		const TArray<AActor*> Opponents,
 		TArray<TEnumAsByte<EObjectTypeQuery>> ObjectTypes,
 		const ENav3DCoverSearchType SearchType,
+		const bool bPerformLineTraces,
 		FNav3DCoverLocation& CoverLocation) const;
 	
 	UFUNCTION(BlueprintCallable, Category = "Nav3D")
@@ -90,24 +91,29 @@ public:
 	void FindCover(
 		FVector SearchOrigin,
 		float MaxRadius,
-		AActor* Target,
+		AActor* Opponent,
 		ENav3DCoverSearchType SearchType,
+		const bool bPerformLineTraces,
 		FFindCoverTaskCompleteDynamicDelegate OnComplete,
 		ENav3DFindCoverCallResult& Result
 	);
 
 	UFUNCTION(BlueprintCallable, Category = "Nav3D")
-    void FindCoverMultiple(
+    void FindCoverMultipleOpponents(
         FVector SearchOrigin,
         float MaxRadius,
         TArray<AActor*> Opponents,
         ENav3DCoverSearchType SearchType,
+        const bool bPerformLineTraces,
         FFindCoverTaskCompleteDynamicDelegate OnComplete,
         ENav3DFindCoverCallResult& Result
     );
 	
 	UFUNCTION(BlueprintCallable, Category = "Nav3D")
-	void GetPath(TArray<FVector> &Path) const { Nav3DPath->GetPath(Path); }
+	void GetPath(TArray<FVector>& Path) const { Nav3DPath->GetPath(Path); }
+
+	UFUNCTION(BlueprintCallable, Category = "Nav3D")
+    void GetCoverLocation(FNav3DCoverLocation& CoverLocation) const { Nav3DCoverLocation->GetLocation(CoverLocation); }
 
 protected:
 	virtual void BeginPlay() override;

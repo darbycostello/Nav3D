@@ -207,7 +207,7 @@ void ANav3DVolume::DebugDrawCoverMapLocations() const {
 				FMath::Max(255*CoverNormals[Index.Key].X, 64.f),
 				FMath::Max(255*CoverNormals[Index.Key].Y, 64.f),
 				FMath::Max(255*CoverNormals[Index.Key].Z, 64.f));
-				FVector End = Location + CoverNormals[Index.Key] * VoxelSize;
+				FVector End = Location + CoverNormals[Index.Key] * (VoxelSize + Clearance);
 				DrawDebugDirectionalArrow(GetWorld(), Location, End, 1000.0f, Colour, true, -1, 0, 20.f);		
 			}
 		}

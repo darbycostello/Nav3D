@@ -240,15 +240,31 @@ FORCEINLINE FArchive& operator<<(FArchive& Ar, FNav3DOctree& Octree) {
 	return Ar;
 }
 
+USTRUCT(BlueprintType)
 struct NAV3D_API FNav3DCoverLocation {
+
+	GENERATED_BODY()
+
+	// The actor providing cover
+	UPROPERTY(BlueprintReadWrite)
 	AActor* Actor;
+
+	// Location of the cover point
+	UPROPERTY(BlueprintReadWrite)
 	FVector Location;
-	int32 NormalIndex;
 
-	FNav3DCoverLocation(): Actor(nullptr), Location(FVector::ZeroVector), NormalIndex(0) {}
+	// Quantized normal between the actor providing cover and the cover location
+	UPROPERTY(BlueprintReadWrite)
+	FVector Normal;
 
-	FNav3DCoverLocation(AActor* Actor, const FVector Location, const int32 NormalIndex):
-	Actor(Actor), Location(Location), NormalIndex(NormalIndex){}
+	FNav3DCoverLocation(): Actor(nullptr), Location(FVector::ZeroVector), Normal(FVector::ZeroVector) {}
+
+	FNav3DCoverLocation(AActor* Actor, const FVector Location, const FVector Normal):
+	Actor(Actor), Location(Location), Normal(Normal){}
+
+	void GetLocation(FNav3DCoverLocation& CoverLocation) const {
+		CoverLocation = FNav3DCoverLocation(Actor, Location, Normal);
+	}
 };
 typedef TSharedPtr<FNav3DCoverLocation, ESPMode::ThreadSafe> FNav3DCoverLocationSharedPtr;
 

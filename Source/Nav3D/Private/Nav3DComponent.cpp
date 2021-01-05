@@ -199,67 +199,23 @@ void UNav3DComponent::FindPath(
 }
 
 void UNav3DComponent::FindCover(
-	FVector SearchOrigin,
-	float MaxRadius,
-	AActor* Target,
-	ENav3DCoverSearchType SearchType,
-	FFindCoverTaskCompleteDynamicDelegate OnComplete,
+	const FVector SearchOrigin,
+	const float MaxRadius,
+	AActor* Opponent,
+	const ENav3DCoverSearchType SearchType,
+	const bool bPerformLineTraces,
+	const FFindCoverTaskCompleteDynamicDelegate OnComplete,
 	ENav3DFindCoverCallResult& Result) {
-	
-	TArray<AActor*> TargetActors = {Target};
-
-	// Error checking before task start
-	if (!VolumeContainsOctree() || !VolumeContainsOwner()) FindVolume();
-	if (!VolumeContainsOwner()) {
-		Result = ENav3DFindCoverCallResult::NoVolume;
-		
-#if WITH_EDITOR
-		if (bDebugFindCover) UE_LOG(LogTemp, Error, TEXT("%s: Find cover cannot initialise. Nav3D component owner is not inside a Nav3D volume"), *GetOwner()->GetName());
-#endif
-
-		return;
-	}
-	if (!VolumeCoverMapEnabled()) {
-		Result = ENav3DFindCoverCallResult::CoverMapNotEnabled;
-		
-#if WITH_EDITOR
-		if (bDebugFindCover) UE_LOG(LogTemp, Error, TEXT("%s: Find cover cannot initialise. Nav3D volume cover map is not enabled"), *GetOwner()->GetName());
-#endif
-
-		return;
-	}
-	if (!VolumeCoverMapExists()) {
-		Result = ENav3DFindCoverCallResult::CoverMapInvalid;
-		
-#if WITH_EDITOR
-		if (bDebugFindCover) UE_LOG(LogTemp, Error, TEXT("%s: Find cover cannot initialise. Nav3D volume cover map has no entried or is not valid"), *GetOwner()->GetName());
-#endif
-
-		return;
-	}
-
-	TArray<TEnumAsByte<EObjectTypeQuery>> ObjectTypes;
-	ObjectTypes.Add(UEngineTypes::ConvertToObjectType(Volume->CollisionChannel));
-	FNav3DCoverLocation& CoverLocation = *Nav3DCoverLocation;
-	(new FAutoDeleteAsyncTask<FNav3DFindCoverTask>(
-		this,
-		SearchOrigin,
-		MaxRadius,
-		TargetActors,
-		ObjectTypes,
-		SearchType,
-		CoverLocation,
-		OnComplete))->StartBackgroundTask();
-
-	Result = ENav3DFindCoverCallResult::Success;
+	FindCoverMultipleOpponents(SearchOrigin, MaxRadius, {Opponent}, SearchType, bPerformLineTraces, OnComplete, Result);
 }
 
-void UNav3DComponent::FindCoverMultiple(
-	FVector SearchOrigin,
-	float MaxRadius,
+void UNav3DComponent::FindCoverMultipleOpponents(
+	const FVector SearchOrigin,
+	const float MaxRadius,
 	TArray<AActor*> Opponents,
-	ENav3DCoverSearchType SearchType,
-	FFindCoverTaskCompleteDynamicDelegate OnComplete,
+	const ENav3DCoverSearchType SearchType,
+	const bool bPerformLineTraces,
+	const FFindCoverTaskCompleteDynamicDelegate OnComplete,
 	ENav3DFindCoverCallResult& Result) {
 	
 	// Error checking before task start
@@ -286,7 +242,7 @@ void UNav3DComponent::FindCoverMultiple(
 		Result = ENav3DFindCoverCallResult::CoverMapInvalid;
 		
 #if WITH_EDITOR
-		if (bDebugFindCover) UE_LOG(LogTemp, Error, TEXT("%s: Find cover cannot initialise. Nav3D volume cover map has no entried or is not valid"), *GetOwner()->GetName());
+		if (bDebugFindCover) UE_LOG(LogTemp, Error, TEXT("%s: Find cover cannot initialise. Nav3D volume cover map is invalid or empty"), *GetOwner()->GetName());
 #endif
 
 		return;
@@ -302,6 +258,7 @@ void UNav3DComponent::FindCoverMultiple(
 		Opponents,
 		ObjectTypes,
 		SearchType,
+		bPerformLineTraces,
 		CoverLocation,
 		OnComplete))->StartBackgroundTask();
 
@@ -314,6 +271,7 @@ void UNav3DComponent::ExecuteFindCover(
 	const TArray<AActor*> Opponents,
 	const TArray<TEnumAsByte<EObjectTypeQuery>> ObjectTypes,
 	const ENav3DCoverSearchType SearchType,
+	const bool bPerformLineTraces,
 	FNav3DCoverLocation& CoverLocation) const {
 
 	CoverLocation = FNav3DCoverLocation();
@@ -331,40 +289,104 @@ void UNav3DComponent::ExecuteFindCover(
         OverlappedComponents);
 	
 	if (OverlappedComponents.Num() == 0) return;
-	FVector OpponentLocation = Opponents[0]->GetActorLocation();
-	// For multiple opponents, take the median location of them
+	FVector ThreatLocation = Opponents[0]->GetActorLocation();
+	// For multiple opponents, calculate the median location
 	if (Opponents.Num() > 1) {
 		for (int32 I = 1; I < Opponents.Num(); I++) {
-			if (Opponents[I]) OpponentLocation += Opponents[I]->GetActorLocation() * 0.5f;
+			if (Opponents[I]) ThreatLocation += Opponents[I]->GetActorLocation() * 0.5f;
 		}
 	}
 	
 	TArray<FNav3DCoverLocation> CoverLocations;
+	TArray<TPair<int32, float>> IndexedDistances;
+	int32 D = 0;	
 	TArray<float> Distances;
 	for (auto& Component: OverlappedComponents) {
 		if (!IsValid(Component)) continue;
 		const FName ActorName = Component->GetOwner()->GetFName();
-		if (!Volume->CoverMapContainsActor(ActorName)) continue;
-		
 		FVector CollisionPoint;
-		Component->GetClosestPointOnCollision(OpponentLocation, CollisionPoint);
-		const int32 NormalIndex = Volume->GetCoverNormalIndex((CollisionPoint - OpponentLocation).GetSafeNormal());
-		
-		TArray<FVector> FoundLocations = Volume->GetCoverMapNodeLocations(ActorName, NormalIndex);
-		for (auto& FoundLocation: FoundLocations) {
-			CoverLocations.Add(FNav3DCoverLocation(Component->GetOwner(), FoundLocation, NormalIndex));
-			Distances.Add(FVector::DistSquared(FoundLocation, GetOwner()->GetActorLocation()));
+		TArray<FVector> FoundLocations;
+		int32 NormalIndex;
+		if (!Volume->CoverMapContainsActor(ActorName)) {
+			UActorComponent* ActorComponent = Component->GetOwner()->GetComponentByClass(UNav3DOcclusionComponent::StaticClass());
+			if (!ActorComponent) continue;
+			UNav3DOcclusionComponent* OcclusionComponent = Cast<UNav3DOcclusionComponent>(ActorComponent);
+			if (!OcclusionComponent->GetCoverEnabled()) continue;
+			Component->GetClosestPointOnCollision(ThreatLocation, CollisionPoint);
+			NormalIndex = Volume->GetCoverNormalIndex((CollisionPoint - ThreatLocation).GetSafeNormal());
+			OcclusionComponent->GetCoverLocations(NormalIndex, FoundLocations);
+		} else {
+			Component->GetClosestPointOnCollision(ThreatLocation, CollisionPoint);
+			NormalIndex = Volume->GetCoverNormalIndex((CollisionPoint - ThreatLocation).GetSafeNormal());
+			FoundLocations = Volume->GetCoverMapNodeLocations(ActorName, NormalIndex);
 		}
+		for (auto& FoundLocation: FoundLocations) {
+			FVector Normal = Volume->GetCoverNormal(NormalIndex);
+			FoundLocation += Normal * (Volume->VoxelSize + Volume->Clearance);
+			CoverLocations.Add(FNav3DCoverLocation(Component->GetOwner(), FoundLocation, Normal));
+			if (bPerformLineTraces) {
+				IndexedDistances.Add(TPair<int32, float>(D, FVector::DistSquared(FoundLocation, GetOwner()->GetActorLocation())));
+				D++;
+			} else {
+				Distances.Add(FVector::DistSquared(FoundLocation, GetOwner()->GetActorLocation()));
+			}
+		}
+		
 	}
-	if (Distances.Num() == 0) return;
-	int32 Index;
-	float SquareDistance;
-	switch (SearchType) {
+	if (IndexedDistances.Num() == 0 && bPerformLineTraces || Distances.Num() == 0 && !bPerformLineTraces) return;
+
+	// Return the first viable cover location, based on the the search type 
+	if (!bPerformLineTraces) {
+		int32 Index;
+		float SquareDistance;
+		switch (SearchType) {
 		default: UKismetMathLibrary::MinOfFloatArray(Distances, Index, SquareDistance); break;
 		case ENav3DCoverSearchType::Furthest: UKismetMathLibrary::MaxOfFloatArray(Distances, Index, SquareDistance); break;
 		case ENav3DCoverSearchType::Random: Index = UKismetMathLibrary::RandomIntegerInRange(0, Distances.Num()-1); break;
+		}
+		if (Index != -1) CoverLocation = CoverLocations[Index];
+		return;
 	}
-	if (Index != -1) CoverLocation = CoverLocations[Index];
+	
+	// Sort the array in the order required by the search type
+	switch (SearchType) {
+	default:
+		IndexedDistances.Sort([](const TPair<int32, float> &A, const TPair<int32, float> &B)->bool { return A.Value < B.Value; });
+		break;	
+	case ENav3DCoverSearchType::Furthest:
+		IndexedDistances.Sort([](const TPair<int32, float> &A, const TPair<int32, float> &B)->bool { return A.Value > B.Value; });
+		break;
+	case ENav3DCoverSearchType::Random:
+		IndexedDistances.Sort([](const TPair<int32, float> &A, const TPair<int32, float> &B)->bool { return FMath::FRand() < 0.5f; });
+		break;
+	}
+	// Line trace from each location to each opponent. This could get expensive
+	FCollisionQueryParams CollisionQueryParams;
+	CollisionQueryParams.bTraceComplex = true;
+	CollisionQueryParams.TraceTag = "Nav3DCoverTrace";
+	FHitResult HitResult;
+	int32 SuccessCount;
+	for (auto& Entry: IndexedDistances) {
+		SuccessCount = 0;
+		
+		for (auto& Opponent: Opponents) {
+			GetWorld()->LineTraceSingleByChannel(
+                HitResult,
+                Opponent->GetActorLocation(),
+                CoverLocations[Entry.Key].Location,
+                Volume->CollisionChannel,
+                CollisionQueryParams
+            );
+			if (HitResult.bBlockingHit) {
+				if (HitResult.Actor != Opponent) {
+					CoverLocation = CoverLocations[Entry.Key];
+					SuccessCount++;
+					if (SuccessCount == Opponents.Num()) return;
+				}
+				break;
+			}
+		}
+	}	
 }
 
 void UNav3DComponent::ExecutePathFinding(
