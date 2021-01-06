@@ -1,7 +1,8 @@
 # Nav3D for Unreal Engine
 
 ![Nav3D banner image](https://user-images.githubusercontent.com/891532/103788146-6cdfe280-5036-11eb-883f-c9bf174b4ec2.jpg)
-Nav3D is a navigation and cover system plugin for UE4, using [Sparse Voxel Octrees](https://www.gdcvault.com/play/1022016/Getting-off-the-NavMesh-Navigating) to provide pathfinding solution and associated queries within a fully 3D volume. It provides a number of core components and does **not** rely on UE4's other systems, such as Navmesh, AI or Behaviour Trees. This allows you greater flexibility in solving the 3D pathfinding problems for your particular project.
+
+Nav3D is a navigation and cover system plugin for UE4, using [Sparse Voxel Octrees](https://www.gdcvault.com/play/1022016/Getting-off-the-NavMesh-Navigating) to provide pathfinding solutions and associated queries within a full 3D volume. It comprises a number of modular components and does **not** rely on UE4's other systems, such as Navmesh, AI or Behaviour Trees. This allows you greater flexibility in solving the 3D pathfinding problems for your particular project.
 
 This is a work in progress and part of a wider project I'm working on. For professional projects I'm sure you're already aware of the commercially available SVO solution for UE4, which may better suit your needs. This project was put together as part of my own learning and project development. 
 
