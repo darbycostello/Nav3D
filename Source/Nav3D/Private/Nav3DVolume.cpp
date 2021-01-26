@@ -45,8 +45,6 @@ void ANav3DVolume::Initialise()
 	NumBytes = 0;
 
 #if WITH_EDITOR
-	DebugPaths.Empty();
-	DebugLocations.Empty();
 	FlushDebugDraw();
 #endif
 
