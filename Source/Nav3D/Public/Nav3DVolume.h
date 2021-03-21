@@ -128,6 +128,9 @@ public:
 	void UpdateTaskComplete();
 
 #if WITH_EDITOR
+    void FlushDebugDraw() const;
+    void RequestOctreeDebugDraw();
+
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual void PostEditUndo() override;
 #endif 
@@ -246,9 +249,6 @@ private:
 	void UpdateLeaf(const FVector& Location, int32 LeafIndex);
 
 #if WITH_EDITOR
-    void FlushDebugDraw() const;
-    void RequestOctreeDebugDraw();
-
 	void DebugDrawOctree();
 	void DebugDrawVolume() const;
 	void DebugDrawVoxel(FVector Location, FVector Extent, FColor Colour) const;
