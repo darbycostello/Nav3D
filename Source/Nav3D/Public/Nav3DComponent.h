@@ -37,7 +37,7 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Pathfinding")
     int32 PathSmoothing = 5;
 
-#if WITH_EDITOR
+#if WITH_EDITORONLY_DATA
 	// Whether to debug draw the pathfinding paths and cover locations 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging")
     bool bDebugDrawEnabled;

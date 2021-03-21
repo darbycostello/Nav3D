@@ -79,7 +79,7 @@ void UNav3DComponent::FindPath(
 
 	// Error checking before task start
 	if (!VolumeContainsOctree() || !VolumeContainsOwner()) FindVolume();
-	if (!VolumeContainsOwner()) {
+	if (!Volume || !VolumeContainsOwner()) {
 		Result = ENav3DPathFindingCallResult::NoVolume;
 		
 #if WITH_EDITOR
@@ -179,7 +179,6 @@ void UNav3DComponent::FindPath(
 	Config.NodeSizePreference = NodeSizePreference;
 	Config.PathPruning = PathPruning;
 	Config.PathSmoothing = PathSmoothing;
-	FNav3DPath& Path = *Nav3DPath;
 
 	(new FAutoDeleteAsyncTask<FNav3DFindPathTask>(
 		this,
@@ -188,7 +187,7 @@ void UNav3DComponent::FindPath(
 		LegalStart,
 		LegalTarget,
 		Config,
-		Path,
+        Nav3DPath,
 		OnComplete))->StartBackgroundTask();
 	Result = ENav3DPathFindingCallResult::Success;
 
@@ -623,7 +622,7 @@ void UNav3DComponent::ExecutePathFinding(
 				{
 					FVector CurrentLocation(0.f), AdjacentLocation(0.f);
 					Volume->GetEdgeLocation(CurrentEdge, CurrentLocation);
-					Volume->GetEdgeLocation(AdjacentEdge, AdjacentLocation);
+                    Volume->GetEdgeLocation(AdjacentEdge, AdjacentLocation);
 					float Cost;
 					Volume->GetPathCost(AdjacentLocation, Cost);
 					Cost -= static_cast<float>(TargetEdge.GetLayerIndex()) / static_cast<float>(Volume->NumLayers) * Config.NodeSizePreference;
@@ -810,6 +809,8 @@ void UNav3DComponent::RequestNavPathDebugDraw(const FNav3DPath Path) const {
 	for (auto& Point: Path.Points) DebugPath.Points.Add(Point.Location);
 	DebugPath.Colour = DebugPathColour;
 	DebugPath.LineScale = DebugPathLineScale;
+
+    Volume->ClearAllDebugNavPaths();
 	Volume->AddDebugNavPath(DebugPath);
 }
 
