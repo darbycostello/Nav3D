@@ -17,7 +17,7 @@ public:
 		const FVector& StartLocation,
 		const FVector& TargetLocation,
 		FNav3DPathFindingConfig& Config,
-		FNav3DPath& Path,
+        FNav3DPathSharedPtr& Path,
 		const FFindPathTaskCompleteDynamicDelegate Complete) :
 	
 		Nav3DComponent(Nav3DComponent),
@@ -31,30 +31,47 @@ public:
 	{}
 
 protected:
-	UNav3DComponent* Nav3DComponent;
+	TWeakObjectPtr<UNav3DComponent> Nav3DComponent;
 	FNav3DOctreeEdge StartEdge;
 	FNav3DOctreeEdge TargetEdge;
 	FVector StartLocation;
 	FVector TargetLocation;
 	FNav3DPathFindingConfig Config;
-	FNav3DPath& Path;
+    FNav3DPathSharedPtr Path;
 	FFindPathTaskCompleteDynamicDelegate TaskComplete;
 
 	void DoWork() const {
-		Nav3DComponent->ExecutePathFinding(StartEdge, TargetEdge, StartLocation, TargetLocation, Config, Path);
-		Nav3DComponent->AddPathStartLocation(Path);
+
+		Nav3DComponent->ExecutePathFinding(StartEdge, TargetEdge, StartLocation, TargetLocation, Config, *Path.Get());
+		Nav3DComponent->AddPathStartLocation(*Path.Get());
+
+        // "capture by value" captures the "this".
+        //...but it will be destroyed outside of this scope...
+        // Capture the local variables instead...
+        TWeakObjectPtr<UNav3DComponent> Comp = Nav3DComponent;
+        FNav3DPathSharedPtr PathPtr = Path;
+        FNav3DPathFindingConfig ConfigCopy = Config;
+        FFindPathTaskCompleteDynamicDelegate TaskCompleteCopy = TaskComplete;
 		
 		// Run the path pruning, smoothing and debug draw back on the game thread
-		AsyncTask(ENamedThreads::GameThread, [=]() {	
-			Nav3DComponent->ApplyPathPruning(Path, Config);
-			Nav3DComponent->ApplyPathSmoothing(Path, Config);
+		AsyncTask(ENamedThreads::GameThread, [Comp, PathPtr, ConfigCopy, TaskCompleteCopy]() {
+            if (!Comp.IsValid())
+            {
+                UE_LOG(LogTemp, Error, TEXT("Invalid UNav3DComponent, FNav3DFindPathTask abort"));
+                return;
+            }
+
+            FNav3DPath& PathRef = *PathPtr.Get();
+
+            Comp->ApplyPathPruning(PathRef, ConfigCopy);
+            Comp->ApplyPathSmoothing(PathRef, ConfigCopy);
 
 #if WITH_EDITOR
-			Nav3DComponent->RequestNavPathDebugDraw(Path);
+            Comp->RequestNavPathDebugDraw(PathRef);
 #endif
-		});
 
-		TaskComplete.Execute(Path.Points.Num() > 0);
+            TaskCompleteCopy.Execute(PathRef.Points.Num() > 0);
+		});
 	}
 
 	FORCEINLINE TStatId GetStatId() const

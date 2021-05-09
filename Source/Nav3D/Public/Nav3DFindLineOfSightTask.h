@@ -32,7 +32,7 @@ public:
 		TaskComplete(Complete) {}
 
 protected:
-	UNav3DComponent* Nav3DComponent;
+    TWeakObjectPtr<UNav3DComponent> Nav3DComponent;
 	FNav3DOctreeEdge StartEdge;
 	FNav3DOctreeEdge TargetEdge;
 	FVector StartLocation;
@@ -43,21 +43,25 @@ protected:
 	FFindLineOfSightTaskCompleteDynamicDelegate TaskComplete;
 
 	void DoWork() const {
+
 		Nav3DComponent->ExecutePathFinding(StartEdge, TargetEdge, StartLocation, TargetActor->GetActorLocation(), Config, Path);
 		Nav3DComponent->AddPathStartLocation(Path);
 		Nav3DComponent->ApplyPathLineOfSight(Path, TargetActor, MinimumDistance);
 		
 		// Run the path pruning, smoothing and debug draw back on the game thread
 		AsyncTask(ENamedThreads::GameThread, [=]() {
+            if (!Nav3DComponent.IsValid())
+                return;
+
 			Nav3DComponent->ApplyPathPruning(Path, Config);
 			Nav3DComponent->ApplyPathSmoothing(Path, Config);
 
 #if WITH_EDITOR
 			Nav3DComponent->RequestNavPathDebugDraw(Path);
 #endif
-		});
 
-		TaskComplete.Execute(Path.Points.Num() > 0);
+            TaskComplete.Execute(Path.Points.Num() > 0);
+		});
 	}
 
 	FORCEINLINE TStatId GetStatId() const

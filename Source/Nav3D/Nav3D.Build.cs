@@ -30,11 +30,15 @@ public class Nav3D : ModuleRules
                 "AIModule",
                 "NavigationSystem",
                 "GameplayTasks",
-                "UnrealEd"
 			}
 			);
-			
-		
+
+		if (Target.bBuildEditor)
+		{
+			PublicDependencyModuleNames.Add("UnrealEd");
+		}
+
+
 		PrivateDependencyModuleNames.AddRange(
 			new string[]
 			{
@@ -44,8 +48,7 @@ public class Nav3D : ModuleRules
 				"SlateCore",
 			}
 			);
-		
-		
+
 		DynamicallyLoadedModuleNames.AddRange(
 			new string[]
 			{}

@@ -5,9 +5,11 @@
 #include "GameFramework/PlayerController.h"
 #include "Engine/Public/DrawDebugHelpers.h"
 #include "chrono"
+#if WITH_EDITOR
 #include "Editor.h"
-#include "Nav3DUpdateOctreeTask.h"
 #include "Builders/CubeBuilder.h"
+#endif
+#include "Nav3DUpdateOctreeTask.h"
 #include "Async/ParallelFor.h"
 #include "Kismet/GameplayStatics.h"
 #include "Kismet/KismetMathLibrary.h"
@@ -46,9 +48,9 @@ void ANav3DVolume::Initialise()
 
 #if WITH_EDITOR
 	FlushDebugDraw();
-#endif
 
-	UpdateVolume();
+    UpdateVolume();
+#endif
 }
 
 void ANav3DVolume::UpdateTaskComplete() {
@@ -201,6 +203,18 @@ void ANav3DVolume::DebugDrawNavLocations() const {
 	}
 }
 
+void ANav3DVolume::DebugDrawModifierVolumes() const {
+    for (auto& ModifierVolume : ModifierVolumes) {
+        if (!ModifierVolume) return;
+        ModifierVolume->DebugDrawModifierVolume();
+    }
+}
+
+void ANav3DVolume::ClearAllDebugNavPaths()
+{
+    DebugPaths.Empty();
+}
+
 void ANav3DVolume::AddDebugNavPath(const FNav3DDebugPath DebugPath) {
 	DebugPaths.Add(DebugPath);
 	RequestOctreeDebugDraw();
@@ -263,8 +277,6 @@ void ANav3DVolume::EditorApplyScale( const FVector& DeltaScale, const FVector* P
 	Initialise();
 }
 
-#endif
-
 void ANav3DVolume::UpdateVolume() {
 
 	// Calculate the nearest integer exponent to fit the voxel size perfectly within the volume extents
@@ -286,6 +298,8 @@ void ANav3DVolume::UpdateVolume() {
 	const FBox Bounds = GetComponentsBoundingBox(true);
 	Bounds.GetCenterAndExtents(VolumeOrigin, VolumeExtent);
 }
+
+#endif
 
 TArray<AActor*> ANav3DVolume::GatherOcclusionActors() {
 	TArray<AActor*> Actors, OcclusionActors;
@@ -518,6 +532,7 @@ void ANav3DVolume::Serialize(FArchive& Ar) {
 	Super::Serialize(Ar);
 	Ar << Octree;
 	Ar << VoxelHalfSizes;
+    Ar << VolumeOrigin;
 	Ar << VolumeExtent;
 	Ar << CoverMap;
 	NumBytes = Octree.GetSize();
@@ -1266,6 +1281,8 @@ bool ANav3DVolume::GetNodeLocation(const FNav3DOctreeEdge Edge, FVector& Locatio
 	return true;
 }
 
+#if WITH_EDITOR
+
 void ANav3DVolume::DebugDrawVoxel(const FVector Location, const FVector Extent, const FColor Colour) const {
 	if (!InDebugRange(Location)) return;
 	DrawDebugBox(GetWorld(), Location, Extent, FQuat::Identity, Colour, true, -1.f, 0, LineScale);		
@@ -1339,6 +1356,8 @@ void ANav3DVolume::DebugDrawMortonCode(const FVector Location, const FString Str
 	}
 }
 
+#endif
+
 void ANav3DVolume::VerifyModifierVolumes() {
 	TArray<int32> RemoveVolumes;
 	for (int32 I = 0; I < ModifierVolumes.Num(); I++) {
@@ -1348,13 +1367,6 @@ void ANav3DVolume::VerifyModifierVolumes() {
 		for (int32 J = RemoveVolumes.Num()-1; J >= 0; J--) {
 			ModifierVolumes.RemoveAt(RemoveVolumes[J]);
         }
-	}
-}
-
-void ANav3DVolume::DebugDrawModifierVolumes() const {
-	for (auto& ModifierVolume: ModifierVolumes) {
-		if (!ModifierVolume) return;
-		ModifierVolume->DebugDrawModifierVolume();
 	}
 }
 

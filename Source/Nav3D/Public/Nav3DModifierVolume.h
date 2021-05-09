@@ -50,9 +50,13 @@ public:
 #endif
 	
 	virtual void OnConstruction(const FTransform &Transform) override;
+
+#if WITH_EDITOR
 	virtual void EditorApplyTranslation(const FVector& DeltaTranslation, bool bAltDown, bool bShiftDown, bool bCtrlDown) override;
 	virtual void EditorApplyRotation(const FRotator& DeltaRotation, bool bAltDown, bool bShiftDown, bool bCtrlDown) override;
 	virtual void EditorApplyScale( const FVector& DeltaScale, const FVector* PivotLocation, bool bAltDown, bool bShiftDown, bool bCtrlDown ) override;
+#endif
+
 	bool GetEnabled() const { return bEnabled; }
 	float GetPathCost() const { return bEnabled ? PathCostModifier : 0.f; }
 	FBox GetBoundingBox() const;
@@ -60,7 +64,10 @@ public:
 private:
 	void Initialise();
 	void GetOverlappingVolumes(TArray<ANav3DVolume*> &Volumes, TArray<FBox> &Overlaps) const;
+
+#if WITH_EDITOR
 	void DebugDrawModifierVolume() const;
 	void DebugDrawOverlaps() const;
 	void DebugDrawBoundsMesh(FBox Box, FColor Colour) const;
+#endif
 };

@@ -128,6 +128,9 @@ public:
 	void UpdateTaskComplete();
 
 #if WITH_EDITOR
+    void FlushDebugDraw() const;
+    void RequestOctreeDebugDraw();
+
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual void PostEditUndo() override;
 #endif 
@@ -137,13 +140,18 @@ public:
 	virtual void OnConstruction(const FTransform &Transform) override;
 	virtual void PostRegisterAllComponents() override;
 	virtual void PostUnregisterAllComponents() override;
+
+#if WITH_EDITOR
 	virtual void EditorApplyTranslation(const FVector& DeltaTranslation, bool bAltDown, bool bShiftDown, bool bCtrlDown) override;
 	virtual void EditorApplyRotation(const FRotator& DeltaRotation, bool bAltDown, bool bShiftDown, bool bCtrlDown) override;
 	virtual void EditorApplyScale( const FVector& DeltaScale, const FVector* PivotLocation, bool bAltDown, bool bShiftDown, bool bCtrlDown ) override;
+#endif
+
 	virtual void Serialize(FArchive& Ar) override;
 	void Initialise();
 	bool BuildOctree();
 	void UpdateOctree();
+    void ClearAllDebugNavPaths();
 	void AddDebugNavPath(const FNav3DDebugPath DebugPath);
 	void AddDebugLocation(const FNav3DDebugLocation DebugLocation);
 	void AddModifierVolume(ANav3DModifierVolume* ModifierVolume);
@@ -156,11 +164,9 @@ public:
 	int32 GetCoverNormalIndex(FVector Normal) const;
 	FVector GetCoverNormal(const int32 NormalIndex) const { return CoverNormals[NormalIndex];}
 	bool GetCoverLocationValid(FVector& Location) const;
-	void FlushDebugDraw() const;
-	void RequestOctreeDebugDraw();
 	void GetVolumeExtents(const FVector& Location, int32 LayerIndex, FIntVector& Extents) const;
 	void GetMortonVoxel(const FVector& Location, int32 LayerIndex, FIntVector& MortonLocation) const;
-	bool OctreeValid() const { return NumLayers > 0; }
+	bool OctreeValid() const { return NumLayers > 0 && Octree.Layers.Num() == NumLayers; }
 	const TArray<FNav3DOctreeNode>& GetLayer(uint8 LayerIndex) const { return Octree.Layers[LayerIndex]; };
 	const FNav3DOctreeNode& GetNode(const FNav3DOctreeEdge& Edge) const;
 	bool EdgeNodeIsValid(const FNav3DOctreeEdge& Edge) const;
@@ -219,7 +225,11 @@ private:
 		{0.7071f, -0.7071f, 0.f}, {1.f, 0.f, 0.f}, {0.7071f, 0.7071f, 0.f},
 		{0.57735f, -0.57735f, 0.57735f}, {0.7071f, 0.f, 0.7071f}, {0.57735f, 0.57735f, 0.57735f}};
 	TArray<FNav3DOctreeNode>& GetLayer(const uint8 LayerIndex) { return Octree.Layers[LayerIndex]; };
+
+#if WITH_EDITOR
 	void UpdateVolume();
+#endif
+
 	void RasterizeInitial();
 	void RasterizeLayer(uint8 LayerIndex);
 	void RasterizeLeaf(FVector NodeLocation, int32 LeafIndex);
@@ -237,6 +247,8 @@ private:
 	float GetActualVolumeSize() const { return FMath::Pow(2, VoxelExponent) * (VoxelSize * 4); }
 	void UpdateNode(FNav3DOctreeEdge Edge);
 	void UpdateLeaf(const FVector& Location, int32 LeafIndex);
+
+#if WITH_EDITOR
 	void DebugDrawOctree();
 	void DebugDrawVolume() const;
 	void DebugDrawVoxel(FVector Location, FVector Extent, FColor Colour) const;
@@ -250,6 +262,8 @@ private:
 	void DebugDrawModifierVolumes() const;
 	void DebugDrawCoverMapLocations() const;
 	void DebugDrawOcclusionComponentCover() const;
+#endif
+
 	void VerifyModifierVolumes();
 	FColor GetLayerColour(const int32 LayerIndex) const;
 	TArray<AActor*> GatherOcclusionActors();

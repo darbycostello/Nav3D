@@ -16,6 +16,8 @@ void ANav3DModifierVolume::OnConstruction(const FTransform &Transform)
 	Initialise();
 }
 
+#if WITH_EDITOR
+
 void ANav3DModifierVolume::EditorApplyTranslation(const FVector& DeltaTranslation, bool bAltDown, bool bShiftDown, bool bCtrlDown)
 {
 	Super::EditorApplyTranslation(DeltaTranslation, bAltDown, bShiftDown, bCtrlDown);
@@ -34,7 +36,6 @@ void ANav3DModifierVolume::EditorApplyScale( const FVector& DeltaScale, const FV
 	Initialise();
 }
 
-#if WITH_EDITOR
 void ANav3DModifierVolume::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) {
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 	FProperty* Property = PropertyChangedEvent.Property;
@@ -74,6 +75,15 @@ void ANav3DModifierVolume::DebugDrawOverlaps() const
 		DebugDrawBoundsMesh(Box, OverlapColour);
 	}
 }
+
+void ANav3DModifierVolume::DebugDrawBoundsMesh(const FBox Box, const FColor Colour) const {
+    const TArray<FVector> Vertices = {
+        {Box.Min.X, Box.Min.Y, Box.Min.Z}, {Box.Max.X, Box.Min.Y, Box.Min.Z}, {Box.Max.X, Box.Min.Y, Box.Max.Z}, {Box.Min.X, Box.Min.Y, Box.Max.Z},
+        {Box.Min.X, Box.Max.Y, Box.Min.Z}, {Box.Max.X, Box.Max.Y, Box.Min.Z}, {Box.Max.X, Box.Max.Y, Box.Max.Z}, {Box.Min.X, Box.Max.Y, Box.Max.Z} };
+    const TArray<int32> Indices = { 0, 1, 2, 0, 2, 3, 5, 4, 7, 5, 7, 6, 3, 2, 6, 3, 6, 7, 5, 4, 0, 5, 0, 1, 0, 4, 7, 0, 7, 3, 5, 1, 2, 5, 2, 6 };
+    DrawDebugMesh(GetWorld(), Vertices, Indices, Colour, true, -1.0, 0);
+}
+
 #endif
 
 void ANav3DModifierVolume::Initialise()
@@ -85,17 +95,11 @@ void ANav3DModifierVolume::Initialise()
 	{
 		if (Volume) {
 			Volume->AddModifierVolume(this);
+#if WITH_EDITOR
 			Volume->RequestOctreeDebugDraw();
+#endif
 		}
 	}
-}
-
-void ANav3DModifierVolume::DebugDrawBoundsMesh(const FBox Box, const FColor Colour) const { 
-	const TArray<FVector> Vertices = {
-		{Box.Min.X, Box.Min.Y, Box.Min.Z}, {Box.Max.X, Box.Min.Y, Box.Min.Z}, {Box.Max.X, Box.Min.Y, Box.Max.Z}, {Box.Min.X, Box.Min.Y, Box.Max.Z},
-		{Box.Min.X, Box.Max.Y, Box.Min.Z}, {Box.Max.X, Box.Max.Y, Box.Min.Z}, {Box.Max.X, Box.Max.Y, Box.Max.Z}, {Box.Min.X, Box.Max.Y, Box.Max.Z}};
-	const TArray<int32> Indices = { 0, 1, 2, 0, 2, 3, 5, 4, 7, 5, 7, 6, 3, 2, 6, 3, 6, 7, 5, 4, 0, 5, 0, 1, 0, 4, 7, 0, 7, 3, 5, 1, 2, 5, 2, 6};
-	DrawDebugMesh(GetWorld(), Vertices, Indices, Colour, true, -1.0, 0);
 }
 
 void ANav3DModifierVolume::GetOverlappingVolumes(TArray<ANav3DVolume*> &Volumes, TArray<FBox> &Overlaps) const
