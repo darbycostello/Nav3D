@@ -464,18 +464,20 @@ void ANav3DVolume::GetAdjacentLeafs(const FNav3DOctreeEdge& Edge, TArray<FNav3DO
 					AdjacentEdges.Add(AdjacentEdge);
 					continue;
 				}
+				
+				if (AdjacentNode.FirstChild.NodeIndex < Octree.Leafs.Num()) {
+					const FNav3DOctreeLeaf& Leaf = Octree.Leafs[AdjacentNode.FirstChild.NodeIndex];
 
-				const FNav3DOctreeLeaf& Leaf = Octree.Leafs[AdjacentNode.FirstChild.NodeIndex];
-
-				if (!Leaf.IsOccluded()) {
-					if (SignedX < 0) SignedX = 3;
-					else if (SignedX > 3) SignedX = 0;
-					else if (SignedY < 0) SignedY = 3;
-					else if (SignedY > 3) SignedY = 0;
-					else if (SignedZ < 0) SignedZ = 3;
-					else if (SignedZ > 3) SignedZ = 0;
-					const uint_fast64_t SubCode = morton3D_64_encode(SignedX, SignedY, SignedZ);
-					if (!Leaf.GetSubNode(SubCode)) AdjacentEdges.Emplace(0, AdjacentNode.FirstChild.NodeIndex, SubCode);	
+					if (!Leaf.IsOccluded()) {
+						if (SignedX < 0) SignedX = 3;
+						else if (SignedX > 3) SignedX = 0;
+						else if (SignedY < 0) SignedY = 3;
+						else if (SignedY > 3) SignedY = 0;
+						else if (SignedZ < 0) SignedZ = 3;
+						else if (SignedZ > 3) SignedZ = 0;
+						const uint_fast64_t SubCode = morton3D_64_encode(SignedX, SignedY, SignedZ);
+						if (!Leaf.GetSubNode(SubCode)) AdjacentEdges.Emplace(0, AdjacentNode.FirstChild.NodeIndex, SubCode);	
+					}
 				}
 			}
 		}
