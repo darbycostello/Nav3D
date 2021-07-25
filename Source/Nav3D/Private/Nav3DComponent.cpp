@@ -601,12 +601,10 @@ void UNav3DComponent::ExecutePathFinding(
 		if (!IsValid(Volume) || !CurrentEdge.IsValid()) return;
 		const FNav3DOctreeNode& CurrentNode = Volume->GetNode(CurrentEdge);
 		TArray<FNav3DOctreeEdge> AdjacentEdges;
-		if (CurrentNode.HasChildren()) {
-			if (CurrentEdge.GetLayerIndex() == 0 && CurrentNode.FirstChild.IsValid()) {
-				Volume->GetAdjacentLeafs(CurrentEdge, AdjacentEdges);
-			} else {
-				Volume->GetAdjacentEdges(CurrentEdge, AdjacentEdges);
-			}	
+		if (CurrentEdge.GetLayerIndex() == 0 && CurrentNode.FirstChild.IsValid()) {
+			Volume->GetAdjacentLeafs(CurrentEdge, AdjacentEdges);
+		} else {
+			Volume->GetAdjacentEdges(CurrentEdge, AdjacentEdges);
 		}
 		
 		for (auto& AdjacentEdge : AdjacentEdges) {
