@@ -45,9 +45,7 @@ protected:
 		Nav3DComponent->ExecutePathFinding(StartEdge, TargetEdge, StartLocation, TargetLocation, Config, *Path.Get());
 		Nav3DComponent->AddPathStartLocation(*Path.Get());
 
-        // "capture by value" captures the "this".
-        //...but it will be destroyed outside of this scope...
-        // Capture the local variables instead...
+        // Capture the local variables
         TWeakObjectPtr<UNav3DComponent> Comp = Nav3DComponent;
         FNav3DPathSharedPtr PathPtr = Path;
         FNav3DPathFindingConfig ConfigCopy = Config;

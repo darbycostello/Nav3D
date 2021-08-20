@@ -675,6 +675,7 @@ float UNav3DComponent::HeuristicScore(const FNav3DOctreeEdge StartEdge, const FN
 }
 
 void UNav3DComponent::AddPathStartLocation(FNav3DPath& Path) const {
+	if (!GetOwner()->IsValidLowLevel()) return;
 	if (Path.Points.Num() == 0) return;
 	const FVector StartLocation = GetOwner()->GetActorLocation();
 	if (!StartLocation.Equals(Path.Points[0].Location), 50.0f) {
@@ -713,7 +714,7 @@ void UNav3DComponent::ApplyPathLineOfSight(FNav3DPath& Path, AActor* Target, con
 }
 
 void UNav3DComponent::ApplyPathPruning(FNav3DPath& Path, const FNav3DPathFindingConfig Config) const {
-	if (!GetWorld() || Config.PathPruning == ENav3DPathPruning::None || Path.Points.Num() < 3) return;
+	if (!GetWorld() || Config.PathPruning == ENav3DPathPruning::None || Path.Points.Num() < 3 || !GetOwner()->IsValidLowLevel()) return;
 	FNav3DPath PrunedPath;
 	PrunedPath.Add(Path.Points[0]);
 	int32 CurrentPoint = 0;
