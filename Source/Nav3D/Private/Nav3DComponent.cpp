@@ -523,7 +523,7 @@ void UNav3DComponent::ExecuteFindCover(
                 CollisionQueryParams
             );
 			if (HitResult.bBlockingHit) {
-				if (HitResult.Actor != Opponent) {
+				if (HitResult.GetActor() != Opponent) {
 					SuccessCount++;
 					if (SuccessCount == Opponents.Num()) {
 						CoverLocation = CoverLocations[Entry.Key];
@@ -702,7 +702,7 @@ void UNav3DComponent::ApplyPathLineOfSight(FNav3DPath& Path, AActor* Target, con
             CollisionQueryParams
         );
 		if (HitResult.bBlockingHit) {
-			if (HitResult.Actor == Target) {
+			if (HitResult.GetActor() == Target) {
 				break;
 			}
 		}
