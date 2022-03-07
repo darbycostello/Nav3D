@@ -41,23 +41,23 @@ protected:
 	FFindPathTaskCompleteDynamicDelegate TaskComplete;
 
 	void DoWork() const {
+		// Capture the local variables
+		TWeakObjectPtr<UNav3DComponent> Comp = Nav3DComponent;
+		FNav3DPathSharedPtr PathPtr = Path;
+		FNav3DPathFindingConfig ConfigCopy = Config;
+		FFindPathTaskCompleteDynamicDelegate TaskCompleteCopy = TaskComplete;
+		if (!Comp.IsValid())
+		{
+			UE_LOG(LogTemp, Error, TEXT("Invalid UNav3DComponent, FNav3DFindPathTask abort"));
+			return;
+		}
 
 		Nav3DComponent->ExecutePathFinding(StartEdge, TargetEdge, StartLocation, TargetLocation, Config, *Path.Get());
 		Nav3DComponent->AddPathStartLocation(*Path.Get());
 
-        // Capture the local variables
-        TWeakObjectPtr<UNav3DComponent> Comp = Nav3DComponent;
-        FNav3DPathSharedPtr PathPtr = Path;
-        FNav3DPathFindingConfig ConfigCopy = Config;
-        FFindPathTaskCompleteDynamicDelegate TaskCompleteCopy = TaskComplete;
 		
 		// Run the path pruning, smoothing and debug draw back on the game thread
 		AsyncTask(ENamedThreads::GameThread, [Comp, PathPtr, ConfigCopy, TaskCompleteCopy]() {
-            if (!Comp.IsValid())
-            {
-                UE_LOG(LogTemp, Error, TEXT("Invalid UNav3DComponent, FNav3DFindPathTask abort"));
-                return;
-            }
 
             FNav3DPath& PathRef = *PathPtr.Get();
 
