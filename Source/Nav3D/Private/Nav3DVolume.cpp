@@ -3,7 +3,10 @@
 #include "Components/LineBatchComponent.h"
 #include "Engine/CollisionProfile.h"
 #include "GameFramework/PlayerController.h"
-#include "Engine/Public/DrawDebugHelpers.h"
+// #include "Engine/Public/DrawDebugHelpers.h"
+#include "DrawDebugHelpers.h"
+#include "Engine/OverlapResult.h"
+
 #include "chrono"
 #if WITH_EDITOR
 #include "Editor.h"
@@ -58,7 +61,7 @@ void ANav3DVolume::UpdateTaskComplete() {
 
 #if WITH_EDITOR
 	// Run the debug draw on the game thread
-	AsyncTask(ENamedThreads::GameThread, [=]() {
+	AsyncTask(ENamedThreads::GameThread, [=,this]() {
 	    DebugDrawOctree();
     });	
 #endif
@@ -545,11 +548,11 @@ float ANav3DVolume::GetVoxelScale(const uint8 LayerIndex) const {
 }
 
 int32 ANav3DVolume::GetLayerNodeCount(const uint8 LayerIndex) const {
-	return FMath::Pow(8, VoxelExponent - LayerIndex);
+	return FMath::Pow(8.f, VoxelExponent - LayerIndex);
 }
 
 int32 ANav3DVolume::GetSegmentNodeCount(const uint8 LayerIndex) const {
-	return FMath::Pow(2, VoxelExponent - LayerIndex);
+	return FMath::Pow(2.f, VoxelExponent - LayerIndex);
 }
 
 void ANav3DVolume::BeginPlay() {

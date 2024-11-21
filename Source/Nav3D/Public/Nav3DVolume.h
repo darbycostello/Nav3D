@@ -244,7 +244,7 @@ private:
 	bool InDebugRange(FVector Location) const;
 	bool GetNodeIndex(uint8 LayerIndex, uint_fast64_t NodeMortonCode, int32& NodeIndex) const;
 	int32 GetInsertIndex(uint8 LayerIndex, uint_fast64_t MortonCode) const;
-	float GetActualVolumeSize() const { return FMath::Pow(2, VoxelExponent) * (VoxelSize * 4); }
+	float GetActualVolumeSize() const { return FMath::Pow(2.f, VoxelExponent) * (VoxelSize * 4); }
 	void UpdateNode(FNav3DOctreeEdge Edge);
 	void UpdateLeaf(const FVector& Location, int32 LeafIndex);
 

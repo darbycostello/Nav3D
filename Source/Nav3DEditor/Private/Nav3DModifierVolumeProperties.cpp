@@ -3,7 +3,7 @@
 #include "Nav3DModifierVolume.h"
 #include "DetailLayoutBuilder.h"
 #include "DetailCategoryBuilder.h"
-#include "DetailCustomizations/Private/BrushDetails.h"
+
 
 #define LOCTEXT_NAMESPACE "Nav3DModifierVolumeProperties"
 

@@ -1,0 +1,8 @@
+{
+	"BuildId": "37670630",
+	"Modules": 
+	{
+		"Nav3D": "UnrealEditor-Nav3D.dll",
+		"Nav3DEditor": "UnrealEditor-Nav3DEditor.dll"
+	}
+}

@@ -4,7 +4,7 @@
 #include "DetailLayoutBuilder.h"
 #include "DetailWidgetRow.h"
 #include "DetailCategoryBuilder.h"
-#include "DetailCustomizations/Private/BrushDetails.h"
+
 
 #define LOCTEXT_NAMESPACE "Nav3DVolumeProperties"
 

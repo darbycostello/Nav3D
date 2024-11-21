@@ -1,8 +1,8 @@
 #include "Nav3DEditor/Nav3DEditor.h"
 #include "Nav3DVolumeProperties.h"
 #include "Nav3DModifierVolumeProperties.h"
-#include "PropertyEditor/Public/PropertyEditorModule.h"
-
+// #include "PropertyEditor/Public/PropertyEditorModule.h"
+#include "PropertyEditorModule.h"
 IMPLEMENT_GAME_MODULE(FNav3DEditorModule, Nav3DEditor);
 DEFINE_LOG_CATEGORY(LogNav3DEditor)
 #define LOCTEXT_NAMESPACE "Nav3DEditor"
