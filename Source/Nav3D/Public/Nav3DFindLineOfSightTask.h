@@ -49,7 +49,7 @@ protected:
 		Nav3DComponent->ApplyPathLineOfSight(Path, TargetActor, MinimumDistance);
 		
 		// Run the path pruning, smoothing and debug draw back on the game thread
-		AsyncTask(ENamedThreads::GameThread, [=]() {
+		AsyncTask(ENamedThreads::GameThread, [=,this]() {
             if (!Nav3DComponent.IsValid())
                 return;
 
