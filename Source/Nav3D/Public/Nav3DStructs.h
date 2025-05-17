@@ -176,13 +176,21 @@ struct NAV3D_API FNav3DOctreeEdge {
 
 	bool IsValid() const { return LayerIndex != 15; }
 	void Invalidate() { LayerIndex = 15; }
-	bool operator==(const FNav3DOctreeEdge& OtherEdge) const { return memcmp(this, &OtherEdge, sizeof(FNav3DOctreeEdge)) == 0; }
+	bool operator==(const FNav3DOctreeEdge& OtherEdge) const { return LayerIndex == OtherEdge.LayerIndex && NodeIndex == OtherEdge.NodeIndex && SubNodeIndex == OtherEdge.SubNodeIndex; }
 	bool operator!=(const FNav3DOctreeEdge& OtherEdge) const { return !(*this == OtherEdge); }
 	static FNav3DOctreeEdge GetInvalidEdge() { return FNav3DOctreeEdge(15, 0, 0); }
 	FString ToString() const { return FString::Printf(TEXT("%i:%i:%i"), LayerIndex, NodeIndex, SubNodeIndex); }
 };
 
-FORCEINLINE uint32 GetTypeHash(const FNav3DOctreeEdge& Edge) { return *(uint32*)&Edge; }
+FORCEINLINE uint32 GetTypeHash(const FNav3DOctreeEdge& Edge) {
+	uint32 Hash = 0;
+    
+	Hash = HashCombine(Hash, GetTypeHash(Edge.LayerIndex));
+	Hash = HashCombine(Hash, GetTypeHash(Edge.NodeIndex));
+	Hash = HashCombine(Hash, GetTypeHash(Edge.SubNodeIndex));
+    
+	return Hash;
+}
 
 FORCEINLINE FArchive& operator <<(FArchive& Archive, FNav3DOctreeEdge& Edge) {
 	Archive.Serialize(&Edge, sizeof(FNav3DOctreeEdge));
