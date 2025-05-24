@@ -54,6 +54,9 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging")
 	bool bDebugLogPathfinding;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging")
+	bool bDebugVisualizePathfinding;
+
 	// Whether to log the find cover task process in the console. 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nav3D|Debugging")
 	bool bDebugFindCover;

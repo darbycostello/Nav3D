@@ -570,6 +570,19 @@ void UNav3DComponent::ExecutePathFinding(
 		OpenSet.Remove(CurrentEdge);
 		ClosedSet.Add(CurrentEdge);
 
+#if WITH_EDITOR
+		if (bDebugVisualizePathfinding) {
+			AsyncTask(ENamedThreads::GameThread, [this, CurrentEdge]() {
+				if (bDebugVisualizePathfinding)
+				{
+					FVector Location;
+					Volume->GetEdgeLocation(CurrentEdge, Location);
+					DrawDebugSphere(GetWorld(), Location, 10.f, 12, FColor::Red, false, 0.0f);
+				}
+			});
+		}
+#endif
+
 		if (CurrentEdge.NodeIndex == TargetEdge.NodeIndex) {
 			FNav3DPathPoint PathPoint;
 
