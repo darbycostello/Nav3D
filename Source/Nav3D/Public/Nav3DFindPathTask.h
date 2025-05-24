@@ -52,9 +52,16 @@ protected:
 			return;
 		}
 
+		double Start = FPlatformTime::Seconds();
 		Nav3DComponent->ExecutePathFinding(StartEdge, TargetEdge, StartLocation, TargetLocation, Config, *Path.Get());
 		Nav3DComponent->AddPathStartLocation(*Path.Get());
+		double End = FPlatformTime::Seconds();
 
+#if WITH_EDITORONLY_DATA
+		if (Nav3DComponent->bDebugLogPathfinding) {
+			UE_LOG(LogTemp, Display, TEXT("Pathfinding took %f seconds"), End - Start);
+		}
+#endif
 		
 		// Run the path pruning, smoothing and debug draw back on the game thread
 		AsyncTask(ENamedThreads::GameThread, [Comp, PathPtr, ConfigCopy, TaskCompleteCopy]() {
