@@ -124,7 +124,7 @@ void ANav3DVolume::RequestOctreeDebugDraw() {
 }
 
 void ANav3DVolume::DebugDrawOctree() {
-	GetWorld()->PersistentLineBatcher->SetComponentTickEnabled(false);
+	GetWorld()->GetLineBatcher(UWorld::ELineBatcherType::WorldPersistent)->SetComponentTickEnabled(false);
 	FlushDebugDraw();
 	if (OctreeValid()) {
 		for (int32 I = 0; I < Octree.Layers.Num(); I++) {
