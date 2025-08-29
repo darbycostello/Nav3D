@@ -1,24 +1,43 @@
-#include "Nav3DEditor/Nav3DEditor.h"
-#include "Nav3DVolumeProperties.h"
-#include "Nav3DModifierVolumeProperties.h"
-// #include "PropertyEditor/Public/PropertyEditorModule.h"
+#include "Nav3DEditor/Public/Nav3DEditor.h"
+#include "Nav3DDataDetailCustomization.h"
 #include "PropertyEditorModule.h"
+#include "Nav3D/Public/Nav3DData.h"
+#include "Modules/ModuleManager.h"
+
 IMPLEMENT_GAME_MODULE(FNav3DEditorModule, Nav3DEditor);
 DEFINE_LOG_CATEGORY(LogNav3DEditor)
 #define LOCTEXT_NAMESPACE "Nav3DEditor"
 
 void FNav3DEditorModule::StartupModule()
 {
-	UE_LOG(LogNav3DEditor, Warning, TEXT("Nav3DEditor: Module Startup"));
-	FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
-	PropertyModule.RegisterCustomClassLayout("Nav3DVolume", FOnGetDetailCustomizationInstance::CreateStatic(&FNav3DVolumeProperties::MakeInstance));
-	PropertyModule.RegisterCustomClassLayout("Nav3DModifierVolume", FOnGetDetailCustomizationInstance::CreateStatic(&FNav3DModifierVolumeProperties::MakeInstance));
+	UE_LOG(LogNav3DEditor, Verbose, TEXT("Nav3DEditor: Module Startup"));
+	
+	// Add the Nav3D filter button to the Details panel
+	FPropertyEditorModule& PropertyModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
+	{
+		TSharedRef<FPropertySection> Section = PropertyModule.FindOrCreateSection("Actor", "Nav3D", LOCTEXT("Nav3D", "Nav3D"));
+		Section->AddCategory("Nav3D");
+	}
+
+	// Register detail customization
+	PropertyModule.RegisterCustomClassLayout(
+		ANav3DData::StaticClass()->GetFName(),
+		FOnGetDetailCustomizationInstance::CreateStatic(&FNav3DDataDetailCustomization::MakeInstance)
+	);
+	
+	PropertyModule.NotifyCustomizationModuleChanged();
 }
 
 void FNav3DEditorModule::ShutdownModule()
 {
-	UE_LOG(LogNav3DEditor, Warning, TEXT("Nav3DEditor: Module Shutdown"));
-	FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
+	UE_LOG(LogNav3DEditor, Verbose, TEXT("Nav3DEditor: Module Shutdown"));
+	
+	// Unregister detail customization
+	if (FModuleManager::Get().IsModuleLoaded("PropertyEditor"))
+	{
+		FPropertyEditorModule& PropertyModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
+		PropertyModule.UnregisterCustomClassLayout(ANav3DData::StaticClass()->GetFName());
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

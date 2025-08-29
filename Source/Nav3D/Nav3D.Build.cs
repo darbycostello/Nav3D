@@ -1,58 +1,68 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
-using System.IO;
 
 public class Nav3D : ModuleRules
 {
 	public Nav3D(ReadOnlyTargetRules Target) : base(Target)
 	{
-		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
-		
+		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
+		bUseUnity = true;
+
+
 		PublicIncludePaths.AddRange(
-			new string[] {
-                Path.Combine(ModuleDirectory, "Public")
-				// ... add public include paths required here ...
-			}
-			);
-				
-		
-		PrivateIncludePaths.AddRange(
-			new string[] {
-				"Nav3D/Private"
-			}
-			);
-			
-		
-		PublicDependencyModuleNames.AddRange(
 			new string[]
 			{
-				"Core",
-                "AIModule",
-                "NavigationSystem",
-                "GameplayTasks",
+				ModuleDirectory + "/../ThirdParty"
 			}
-			);
+		);
 
-		if (Target.bBuildEditor)
-		{
-			PublicDependencyModuleNames.Add("UnrealEd");
-		}
+
+		PrivateIncludePaths.AddRange(
+			new[]
+			{
+				"Nav3D/Private"
+				// ... add other private include paths required here ...
+			}
+		);
+
+
+		PublicDependencyModuleNames.AddRange(
+			new[]
+			{
+				"Core", "AIModule"
+				// ... add other public dependencies that you statically link with here ...
+			}
+		);
 
 
 		PrivateDependencyModuleNames.AddRange(
-			new string[]
+			new[]
 			{
 				"CoreUObject",
 				"Engine",
 				"Slate",
 				"SlateCore",
+				"RHI",
+				"RenderCore",
+				"DeveloperSettings",
+				"GameplayTasks",
+				"AIModule",
+				"NavigationSystem",
+				"Landscape",
+				"InputCore"
 			}
-			);
+		);
+
 
 		DynamicallyLoadedModuleNames.AddRange(
 			new string[]
-			{}
-			);
+			{
+				// ... add any modules that your module loads dynamically here ...
+			}
+		);
 
+		if (Target.bBuildEditor)
+			PublicDependencyModuleNames.Add("UnrealEd");
 	}
 }

@@ -1,0 +1,157 @@
+#pragma once
+
+#include "Engine/OverlapResult.h"
+#include "LandscapeComponent.h"
+#include "Nav3DTypes.h"
+#include <Templates/SubclassOf.h>
+#include "CoreMinimal.h"
+#include "Tactical/Nav3DTacticalReasoning.h"
+
+class UNavigationQueryFilter;
+class UNav3DQueryFilter;
+enum class ENav3DVersion : uint8;
+
+struct FNav3DVolumeNavigationDataSettings
+{
+	FNav3DVolumeNavigationDataSettings();
+
+	float VoxelExtent;
+	UWorld* World;
+	FNav3DDataGenerationSettings GenerationSettings;
+	FNav3DTacticalSettings TacticalSettings;
+};
+
+class NAV3D_API FNav3DVolumeNavigationData
+{
+public:
+	// Core data
+	TArray<FOverlapResult> OverlappingObjects;
+	FIntVector VoxelDimensions;
+	FNav3DVolumeNavigationDataSettings Settings;
+	FBox VolumeBounds;
+	FNav3DData Nav3DData;
+	bool bInNavigationDataChunk;
+	FNav3DTacticalData TacticalData;
+
+	// Public methods
+	const FBox& GetVolumeBounds() const { return VolumeBounds; }
+	const FNav3DData& GetData() const { return Nav3DData; }
+	FVector GetLeafNodePositionFromMortonCode(const MortonCode MortonCode) const;
+	FVector GetNodePositionFromLayerAndMortonCode(const LayerIndex LayerIndex, const MortonCode MortonCode) const;
+	FNav3DVolumeNavigationDataSettings& GetSettings() { return Settings; }
+	const FNav3DVolumeNavigationDataSettings& GetSettings() const { return Settings; }
+	void SetSettings(const FNav3DVolumeNavigationDataSettings& NewSettings) { Settings = NewSettings; }
+	void SetVolumeBounds(const FBox& NewBounds) { VolumeBounds = NewBounds; }
+	void SetData(const FNav3DData& NewData) { Nav3DData = NewData; }
+	void SetInNavigationDataChunk(bool bInChunk) { bInNavigationDataChunk = bInChunk; }
+	bool IsInNavigationDataChunk() const { return bInNavigationDataChunk; }
+	void SetVoxelDimensions(const FIntVector& NewDimensions) { VoxelDimensions = NewDimensions; }
+	const FIntVector& GetVoxelDimensions() const { return VoxelDimensions; }
+	void SetOverlappingObjects(const TArray<FOverlapResult>& NewObjects) { OverlappingObjects = NewObjects; }
+	const TArray<FOverlapResult>& GetOverlappingObjects() const { return OverlappingObjects; }
+	void SetNumCandidateObjects(int32 NewCount) const { NumCandidateObjects = NewCount; }
+	void SetNumOccludedVoxels(int32 NewCount) const { NumOccludedVoxels = NewCount; }
+	int32 GetNumCandidateObjects() const { return NumCandidateObjects; }
+	int32 GetNumOccludedVoxels() const { return NumOccludedVoxels; }
+	void Serialize(FArchive& Archive, const ENav3DVersion Version);
+
+	using FNodeRef = FNav3DNodeAddress;
+
+	FNav3DVolumeNavigationData() = default;
+	static bool IsValidRef(const FNav3DNodeAddress Ref) { return Ref.IsValid(); }
+	const FNav3DVolumeNavigationDataSettings& GetDataGenerationSettings() const;
+	const FBox& GetNavigationBounds() const;
+	const FNav3DNode& GetNodeFromAddress(const FNav3DNodeAddress& Address) const;
+	FVector GetNodePositionFromAddress(const FNav3DNodeAddress& Address, bool TryGetSubNodePosition) const;
+	bool GetNodeAddressFromPosition(FNav3DNodeAddress& OutNodeAddress, const FVector& Position, const LayerIndex MinLayerIndex) const;
+	void GetNodeNeighbours(TArray<FNav3DNodeAddress>& Neighbours, const FNav3DNodeAddress& NodeAddress) const;
+	float GetLayerRatio(LayerIndex LayerIndex) const;
+	float GetLayerInverseRatio(LayerIndex LayerIndex) const;
+	float GetNodeExtentFromNodeAddress(FNav3DNodeAddress NodeAddress) const;
+	
+	TOptional<FNavLocation> GetRandomPoint() const;
+	TArray<TWeakObjectPtr<const AActor>> DynamicOccluders;
+
+	void GenerateNavigationData(const FBox& Bounds, const FNav3DVolumeNavigationDataSettings& GenerationSettings);
+	void Reset();
+	void RebuildDirtyBounds(const TArray<FBox>& DirtyBounds);
+	void AddDynamicOccluder(const AActor* Occluder);
+	void RemoveDynamicOccluder(const AActor* Occluder);
+	static bool CheckStaticMeshOcclusion(const UStaticMeshComponent* StaticMeshComp, const FVector& Position, const float BoxExtent);
+	bool IsPositionOccluded(const FVector& Position, const float BoxExtent) const;
+	LayerIndex GetMinLayerIndexForAgentSize(const float AgentRadius) const;
+	int32 GetLayerCount() const { return Nav3DData.GetLayerCount(); }
+
+private:
+	void FirstPass();
+	void RasterizeLeaf(const FVector& NodePosition, const LeafIndex LeafIndex);
+	void RasterizeInitialLayer(TMap<LeafIndex, MortonCode>& LeafIndexToLayerOneNodeIndexMap);
+	void RasterizeLayer(LayerIndex LayerIndex);
+	int32 GetNodeIndexFromMortonCode(LayerIndex LayerIndex, MortonCode MortonCode) const;
+	void BuildNeighbourLinks(LayerIndex LayerIdx);
+	bool FindNeighbourInDirection(FNav3DNodeAddress& NodeAddress, const LayerIndex LayerIndex, const NodeIndex NodeIndex, const NeighbourDirection Direction);
+	void GetLeafNeighbours(TArray<FNav3DNodeAddress>& Neighbours, const FNav3DNodeAddress& LeafAddress) const;
+	void GetFreeNodesFromNodeAddress(FNav3DNodeAddress NodeAddress, TArray<FNav3DNodeAddress>& FreeNodes) const;
+	void BuildParentLinkForLeafNodes(const TMap<LeafIndex, MortonCode>& LeafIndexToParentMortonCodeMap);
+	static bool CheckLandscapeProxyOcclusion(const ALandscapeProxy* LandscapeProxy, const FVector& Position, const float BoxExtent);
+	void LogNavigationStats() const;
+	void GatherOverlappingObjects();
+	void RebuildLeafNodesInBounds(const FBox& DirtyBounds);
+	void PropagateChangesToHigherLayers(const TSet<MortonCode>& ModifiedLeafCodes, LayerIndex StartLayer);
+	static bool IsNodeInBounds(const FVector& NodePosition, float NodeExtent, const FBox& Bounds);
+
+	mutable int32 NumCandidateObjects;
+	mutable int32 NumOccludedVoxels;
+};
+
+FORCEINLINE const FNav3DVolumeNavigationDataSettings&
+FNav3DVolumeNavigationData::GetDataGenerationSettings() const
+{
+	return Settings;
+}
+
+FORCEINLINE const FBox&
+FNav3DVolumeNavigationData::GetNavigationBounds() const
+{
+	return Nav3DData.GetNavigationBounds();
+}
+
+FORCEINLINE const FNav3DNode& FNav3DVolumeNavigationData::GetNodeFromAddress(
+	const FNav3DNodeAddress& Address) const
+{
+	static const FNav3DNode InvalidNode; // Static invalid node to return for bad addresses
+
+	// Basic validation
+	if (!Address.IsValid())
+	{
+		return InvalidNode;
+	}
+
+	// Validate layer index
+	if (Address.LayerIndex >= Nav3DData.GetLayerCount())
+	{
+		return InvalidNode;
+	}
+
+	// For leaf nodes
+	if (Address.LayerIndex == 0)
+	{
+		const auto& LeafNodes = Nav3DData.GetLeafNodes();
+		if (!LeafNodes.GetLeafNodes().IsValidIndex(Address.NodeIndex))
+		{
+			return InvalidNode;
+		}
+	}
+	// For other layers
+	else
+	{
+		const auto& Layer = Nav3DData.GetLayer(Address.LayerIndex);
+		if (!Layer.GetNodes().IsValidIndex(Address.NodeIndex))
+		{
+			return InvalidNode;
+		}
+		return Layer.GetNode(Address.NodeIndex);
+	}
+
+	return Nav3DData.GetLayer(Address.LayerIndex).GetNode(Address.NodeIndex);
+}

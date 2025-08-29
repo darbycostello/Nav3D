@@ -1,8 +1,6 @@
-# Nav3D for Unreal Engine
+# Nav3D - 3D Navigation Plugin for Unreal Engine 5
 
-![Nav3D banner image](https://user-images.githubusercontent.com/891532/103788146-6cdfe280-5036-11eb-883f-c9bf174b4ec2.jpg)
-
-A comprehensive 3D navigation system for Unreal Engine 5, providing volumetric pathfinding using Sparse Voxel Octrees, with a feature-rich tactical reasoning feature for finding cover spots and mutual visibility between agents.
+A comprehensive 3D navigation system for Unreal Engine 5, providing true volumetric pathfinding using Sparse Voxel Octrees. This plugin enables AI agents to navigate freely in 3D space with advanced pathfinding algorithms including A*, Theta*, and Lazy Theta*.
 
 ## Table of Contents
 
@@ -33,7 +31,6 @@ The system implements Daniel Brewer's "3D Flight Navigation Using Sparse Voxel O
 - Full volumetric pathfinding without height restrictions
 - Sparse Voxel Octree (SVO) data structure for efficient 3D space representation
 - Multi-scale voxel resolution based on agent size
-- Dynamic occlusion components for use with large, moving actors
 
 ### 🧠 **Advanced Pathfinding Algorithms**
 - **A-Star**: Fast, grid-aligned paths
@@ -147,7 +144,7 @@ Layer 0: Leaf nodes (finest detail)
 
 ### Tactical Reasoning System
 
-Beyond pathfinding, Nav3D provides extensive tactical analysis of 3D space:
+**The Major Innovation**: Beyond pathfinding, Nav3D provides extensive tactical analysis of 3D space:
 
 #### Region Analysis
 ```cpp
