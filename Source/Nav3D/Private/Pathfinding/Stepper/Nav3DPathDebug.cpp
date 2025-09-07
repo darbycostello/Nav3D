@@ -112,7 +112,7 @@ void FNav3DPathDebug::UpdateDebugIterationData() const
 
 void FNav3DPathDebug::UpdateCurrentBestPath(
 	const TArray<FNav3DPathFinderNodeAddress>& NodeAddresses,
-	bool AddEndLocation) const
+	const bool AddEndLocation) const
 {
 	DebugData.CurrentBestPath.ResetForRepath();
 

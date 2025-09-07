@@ -1,6 +1,6 @@
 ﻿#include "Pathfinding/Nav3DPathSmoothing.h"
 
-void FNav3DPathSmoothing::SmoothPath(FNav3DPath& Path, int32 Subdivisions)
+void FNav3DPathSmoothing::SmoothPath(FNav3DPath& Path, const int32 Subdivisions)
 {
 	if (Subdivisions <= 0)
 	{

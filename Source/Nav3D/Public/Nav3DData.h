@@ -59,6 +59,10 @@ public:
 		bool bForceNewRegion,
 		bool bUseRaycasting) const;
     
+	// Debug helper to get current reference count status
+	UFUNCTION(BlueprintCallable, Category = "Nav3D", CallInEditor)
+	void LogVolumeReferenceCounts() const;
+    
 	void RebuildDirtyBounds(const TArray<FBox>& DirtyBounds);
 	void RegisterDynamicOccluder(const AActor* Occluder);
 	void UnregisterDynamicOccluder(const AActor* Occluder);
@@ -177,12 +181,16 @@ private:
 	UFUNCTION(CallInEditor, meta=(DisplayName="Clear", Category="Nav3D"))
 	void ClearNavigationData();
 
+	UFUNCTION(CallInEditor, meta=(DisplayName="Analyse", Category="Nav3D"))
+	void Analyse() const;
+
 	UFUNCTION(CallInEditor, meta=(DisplayName="Build", Category="Nav3D"))
 	void BuildNavigationData() const;
 
 	void InvalidateAffectedPaths(const TArray<FBox>& UpdatedBounds);
 	void OnNavigationDataGenerationFinished();
 	UNav3DDataChunk* GetNavigationDataChunk(ULevel* Level) const;
+	static FBox CalculateLevelBounds(ULevel* Level);
 
 	static FPathFindingResult FindPath(
 		const FNavAgentProperties& NavAgentProperties,
@@ -195,6 +203,10 @@ private:
     
     // Empty tactical to return when tactical reasoning is not enabled
     static const FNav3DTacticalData EmptyTacticalData;
+
+	// Track which volumes are currently loaded and their reference counts
+	TMap<FBox, int32> LoadedVolumeReferenceCounts;  // Volume bounds → ref count
+	mutable FCriticalSection VolumeLoadingMutex;    // Thread safety
 };
 
 FORCEINLINE const TArray<FNav3DVolumeNavigationData>& ANav3DData::GetVolumeNavigationData() const

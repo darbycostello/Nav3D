@@ -9,8 +9,15 @@
 #include "HAL/PlatformAtomics.h"
 #include "Engine/OverlapResult.h"
 #include <ThirdParty/libmorton/morton.h>
+
+#include "LandscapeMeshCollisionComponent.h"
 #include "Nav3D.h"
 #include "Nav3DData.h"
+#include "Components/BoxComponent.h"
+#include "Components/CapsuleComponent.h"
+#include "Components/InstancedStaticMeshComponent.h"
+#include "Components/SphereComponent.h"
+#include "PhysicsEngine/BodySetup.h"
 
 #if !UE_BUILD_SHIPPING
 #include <DrawDebugHelpers.h>
@@ -21,6 +28,9 @@ FNav3DVolumeNavigationDataSettings()
 	: VoxelExtent(0.0f), World(nullptr)
 {
 }
+
+// Static cancel flag definition
+TAtomic<bool> FNav3DVolumeNavigationData::sCancelRequested{false};
 
 FVector FNav3DVolumeNavigationData::GetNodePositionFromAddress(
 	const FNav3DNodeAddress& Address,
@@ -468,6 +478,7 @@ void FNav3DVolumeNavigationData::GenerateNavigationData(
     QUICK_SCOPE_CYCLE_COUNTER(STAT_Nav3DBoundsNavigationData_GenerateNavigationData);
 
     Settings = GenerationSettings;
+    if (IsCancelRequested()) { return; }
     VolumeBounds = Bounds;
     NumCandidateObjects = 0;
     NumOccludedVoxels = 0;
@@ -478,37 +489,64 @@ void FNav3DVolumeNavigationData::GenerateNavigationData(
     {
         return;
     }
+    if (IsCancelRequested()) { return; }
     
     GatherOverlappingObjects();
+    if (IsCancelRequested()) { return; }
+
+    // Reset progress tracking
+    LastLoggedCorePercent = -1;
 
     const auto LayerCount = Nav3DData.GetLayerCount();
 
     FirstPass();
+    if (IsCancelRequested()) { return; }
+
+	UpdateCoreProgress(0.01f);
 
     {
         QUICK_SCOPE_CYCLE_COUNTER(STAT_Nav3DBoundsNavigationData_AllocateLeafNodes);
         const auto LeafCount = Nav3DData.GetLayerBlockedNodes(0).Num() * 8;
         Nav3DData.GetLeafNodes().AllocateLeafNodes(LeafCount);
     }
+    if (IsCancelRequested()) { return; }
 
     TMap<LeafIndex, MortonCode> LeafIndexToParentMortonCodeMap;
     RasterizeInitialLayer(LeafIndexToParentMortonCodeMap);
+    if (IsCancelRequested()) { return; }
 
     for (LayerIndex LayerIndex = 1; LayerIndex < LayerCount; ++LayerIndex)
     {
+        if (IsCancelRequested()) { return; }
         RasterizeLayer(LayerIndex);
     }
 
     BuildParentLinkForLeafNodes(LeafIndexToParentMortonCodeMap);
+    if (IsCancelRequested()) { return; }
 
     for (LayerIndex LayerIdx = LayerCount - 2; LayerIdx != static_cast<LayerIndex>(-1); --LayerIdx)
     {
+        if (IsCancelRequested()) { return; }
         BuildNeighbourLinks(LayerIdx);
     }
 
     Nav3DData.bIsValid = true;
     
     LogNavigationStats();
+
+    UpdateCoreProgress(1.0f);
+}
+
+void FNav3DVolumeNavigationData::UpdateCoreProgress(const float Fraction0To1) const
+{
+	const float ClampedFrac = FMath::Clamp(Fraction0To1, 0.0f, 1.0f);
+	const int32 CoreRounded = FMath::RoundToInt(ClampedFrac * 100.0f);
+	if (CoreRounded <= LastLoggedCorePercent)
+	{
+		return;
+	}
+	LastLoggedCorePercent = CoreRounded;
+	UE_LOG(LogNav3D, Log, TEXT("Nav3D build core progress: %d%%"), CoreRounded);
 }
 
 void FNav3DVolumeNavigationData::Serialize(FArchive& Archive, const ENav3DVersion Version)
@@ -523,6 +561,13 @@ void FNav3DVolumeNavigationData::Serialize(FArchive& Archive, const ENav3DVersio
 	Archive << Nav3DData;
 	Archive << bInNavigationDataChunk;
 	Archive << TacticalData;
+
+	// Loading-specific validity restoration
+	if (Archive.IsLoading())
+	{
+		// Mark loaded nav data as valid if it contains layers
+		Nav3DData.bIsValid = (Nav3DData.GetLayerCount() > 0);
+	}
 
 	// Saving-specific size finalization
 	if (Archive.IsSaving())
@@ -543,26 +588,183 @@ void FNav3DVolumeNavigationData::Reset()
 
 void FNav3DVolumeNavigationData::GatherOverlappingObjects()
 {
-	UE_LOG(LogNav3D, Verbose, TEXT("Gather overlapping objects"));
-	OverlappingObjects.Reset();
-	Settings.World->OverlapMultiByChannel(
-		OverlappingObjects, VolumeBounds.GetCenter(), FQuat::Identity,
-		Settings.GenerationSettings.CollisionChannel,
-		FCollisionShape::MakeBox(VolumeBounds.GetExtent()),
-		Settings.GenerationSettings.CollisionQueryParameters);
+    OverlappingObjects.Reset();
+    Settings.World->OverlapMultiByChannel(
+        OverlappingObjects, VolumeBounds.GetCenter(), FQuat::Identity,
+        Settings.GenerationSettings.CollisionChannel,
+        FCollisionShape::MakeBox(VolumeBounds.GetExtent()),
+        Settings.GenerationSettings.CollisionQueryParameters);
 
-	OverlappingObjects.RemoveAllSwap([](const FOverlapResult& Result)
-	{
-		return !Result.GetComponent()->CanEverAffectNavigation();
-	});
+    const int32 InitialCount = OverlappingObjects.Num();
 
-	NumCandidateObjects = OverlappingObjects.Num();
-	UE_LOG(LogNav3D, Verbose, TEXT("Candidate objects found: %d"), NumCandidateObjects);
+    // Aggressive filtering: only keep objects with actual collision geometry for navigation
+    OverlappingObjects.RemoveAllSwap([this](const FOverlapResult& Result)
+    {
+        // First, safely validate the component
+        if (!Result.Component.IsValid())
+        {
+            UE_LOG(LogNav3D, VeryVerbose, TEXT("Removing invalid component from overlap results"));
+            return true; // Remove
+        }
+
+        UPrimitiveComponent* PrimComponent = Result.Component.Get();
+        if (!PrimComponent || !IsValid(PrimComponent))
+        {
+            UE_LOG(LogNav3D, VeryVerbose, TEXT("Removing null/invalid component from overlap results"));
+            return true; // Remove
+        }
+
+        // Basic navigation check
+        if (!PrimComponent->CanEverAffectNavigation())
+        {
+            return true; // Remove
+        }
+
+        // Filter out collision-only components (like your PCG spheres)
+        if (IsCollisionOnlyComponent(PrimComponent))
+        {
+            UE_LOG(LogNav3D, VeryVerbose, TEXT("Removing collision-only component: %s"), 
+                   *PrimComponent->GetName());
+            return true; // Remove
+        }
+
+        // For static mesh components, check if they have collision geometry
+        if (const UStaticMeshComponent* StaticMeshComp = Cast<UStaticMeshComponent>(PrimComponent))
+        {
+            return !HasValidCollisionGeometry(StaticMeshComp);
+        }
+
+        // For ISMs, check the static mesh collision
+        if (const UInstancedStaticMeshComponent* ISMComp = Cast<UInstancedStaticMeshComponent>(PrimComponent))
+        {
+            return !HasValidCollisionGeometry(ISMComp);
+        }
+
+        // Keep landscape and other navigation-relevant types
+        if (PrimComponent->IsA<ULandscapeHeightfieldCollisionComponent>() ||
+            PrimComponent->IsA<ULandscapeMeshCollisionComponent>())
+        {
+            return false; // Keep
+        }
+
+        // Keep other components that can affect navigation
+        return false;
+    });
+
+    NumCandidateObjects = OverlappingObjects.Num();
+    
+    UE_LOG(LogNav3D, Log, TEXT("Navigation filtering: %d -> %d objects (%.1f%% reduction)"), 
+           InitialCount, NumCandidateObjects, 
+           InitialCount > 0 ? (100.0f * (InitialCount - NumCandidateObjects) / InitialCount) : 0.0f);
+}
+
+// Helper to identify collision-only components (like your PCG sphere colliders)
+bool FNav3DVolumeNavigationData::IsCollisionOnlyComponent(const UPrimitiveComponent* Component)
+{
+    if (!Component)
+    {
+        return false;
+    }
+
+    // Check for sphere collision components (common in PCG setups)
+    if (Component->IsA<USphereComponent>())
+    {
+        return true;
+    }
+
+    // Check for box collision components
+    if (Component->IsA<UBoxComponent>())
+    {
+        return true;
+    }
+
+    // Check for capsule collision components
+    if (Component->IsA<UCapsuleComponent>())
+    {
+        return true;
+    }
+
+    // You can add more collision-only component types here as needed
+    
+    return false;
+}
+
+// From the parallel conversation - check for actual collision geometry
+bool FNav3DVolumeNavigationData::HasValidCollisionGeometry(const UStaticMeshComponent* StaticMeshComp)
+{
+    if (!StaticMeshComp || !StaticMeshComp->GetStaticMesh())
+    {
+        return false;
+    }
+
+    // Check collision settings
+    if (StaticMeshComp->GetCollisionEnabled() == ECollisionEnabled::NoCollision)
+    {
+        return false;
+    }
+
+    const UStaticMesh* StaticMesh = StaticMeshComp->GetStaticMesh();
+    const UBodySetup* BodySetup = StaticMesh->GetBodySetup();
+    
+    if (!BodySetup)
+    {
+        return false;
+    }
+
+    // Check if it has any collision geometry
+    const FKAggregateGeom& AggGeom = BodySetup->AggGeom;
+    return (AggGeom.ConvexElems.Num() > 0 || 
+            AggGeom.BoxElems.Num() > 0 || 
+            AggGeom.SphereElems.Num() > 0 || 
+            AggGeom.SphylElems.Num() > 0 ||
+            AggGeom.TaperedCapsuleElems.Num() > 0);
+}
+
+// Overload for ISMs
+bool FNav3DVolumeNavigationData::HasValidCollisionGeometry(const UInstancedStaticMeshComponent* ISMComp)
+{
+    if (!ISMComp || !ISMComp->GetStaticMesh())
+    {
+        return false;
+    }
+
+    // Check collision settings
+    if (ISMComp->GetCollisionEnabled() == ECollisionEnabled::NoCollision)
+    {
+        return false;
+    }
+
+    // Check if it has instances
+    if (ISMComp->GetInstanceCount() == 0)
+    {
+        return false;
+    }
+
+    // Check the static mesh collision
+    const UStaticMesh* StaticMesh = ISMComp->GetStaticMesh();
+    const UBodySetup* BodySetup = StaticMesh->GetBodySetup();
+    
+    if (!BodySetup)
+    {
+        return false;
+    }
+
+    const FKAggregateGeom& AggGeom = BodySetup->AggGeom;
+    return (AggGeom.ConvexElems.Num() > 0 || 
+            AggGeom.BoxElems.Num() > 0 || 
+            AggGeom.SphereElems.Num() > 0 || 
+            AggGeom.SphylElems.Num() > 0 ||
+            AggGeom.TaperedCapsuleElems.Num() > 0);
 }
 
 bool FNav3DVolumeNavigationData::IsPositionOccluded(const FVector& Position, const float BoxExtent) const
 {
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_Nav3DBoundsNavigationData_IsPositionOccluded);
+
+	if (IsCancelRequested())
+	{
+		return false;
+	}
 
 	// Add debug logging at start
 	UE_LOG(LogNav3D, VeryVerbose, TEXT("Checking occlusion at %s with extent %f"), *Position.ToString(),
@@ -576,6 +778,10 @@ bool FNav3DVolumeNavigationData::IsPositionOccluded(const FVector& Position, con
 	// Check dynamic occluders first since they might have moved
 	for (const TWeakObjectPtr<const AActor>& OccluderWeak : DynamicOccluders)
 	{
+		if (IsCancelRequested())
+		{
+			return false;
+		}
 		const AActor* Occluder = OccluderWeak.Get();
 		if (!Occluder || !IsValid(Occluder))
 		{
@@ -605,39 +811,104 @@ bool FNav3DVolumeNavigationData::IsPositionOccluded(const FVector& Position, con
 	}
 
 	// Then check static geometry
-	for (const FOverlapResult& OverlapResult : OverlappingObjects)
+	for (int32 i = 0; i < OverlappingObjects.Num(); ++i)
 	{
-		UPrimitiveComponent* PrimComponent = OverlapResult.GetComponent();
-		if (!PrimComponent || !IsValid(PrimComponent) || !PrimComponent->CanEverAffectNavigation())
+		if (IsCancelRequested())
 		{
-			continue;
+			return false;
 		}
+	    const FOverlapResult& OverlapResult = OverlappingObjects[i];
+	    
+	    // Validate the OverlapResult structure itself
+	    if (!OverlapResult.Component.IsValid())
+	    {
+	        UE_LOG(LogNav3D, Warning, TEXT("Skipping overlap result %d: Invalid component"), i);
+	        continue;
+	    }
+	    
+	    UPrimitiveComponent* PrimComponent = OverlapResult.Component.Get();
+	    if (!PrimComponent || !IsValid(PrimComponent))
+	    {
+	        UE_LOG(LogNav3D, Warning, TEXT("Skipping overlap result %d: Component failed validation"), i);
+	        continue;
+	    }
+	    
+	    if (!PrimComponent->CanEverAffectNavigation())
+	    {
+	        UE_LOG(LogNav3D, Warning, TEXT("Skipping overlap result %d: Component can't affect navigation"), i);
+	        continue;
+	    }
 
-		const FBox ObjectBounds = PrimComponent->Bounds.GetBox();
-		if (!ObjectBounds.Intersect(PositionBox))
-		{
-			continue;
-		}
+	    const FBox ObjectBounds = PrimComponent->Bounds.GetBox();
+	    if (!ObjectBounds.Intersect(PositionBox))
+	    {
+	        continue;
+	    }
 
-		bool bIsOccluded = false;
-		if (const ALandscapeProxy* LandscapeProxy = Cast<ALandscapeProxy>(OverlapResult.GetActor()))
-		{
-			bIsOccluded = CheckLandscapeProxyOcclusion(LandscapeProxy, Position, BoxExtent);
-		}
-		else if (const UStaticMeshComponent* StaticMeshComp = Cast<UStaticMeshComponent>(PrimComponent))
-		{
-			bIsOccluded = CheckStaticMeshOcclusion(StaticMeshComp, Position, BoxExtent);
-		}
+	    bool bIsOccluded = false;
 
-		if (bIsOccluded)
-		{
-			if (FMath::IsNearlyEqual(BoxExtent, Nav3DData.GetLeafNodes().GetLeafNodeExtent()))
-			{
-				FPlatformAtomics::InterlockedIncrement(&NumOccludedVoxels);
-				UE_LOG(LogNav3D, VeryVerbose, TEXT("Layer 0 voxel occluded at %s"), *Position.ToString());
-			}
-			return true;
-		}
+	    // ULTRA-DEFENSIVE: Get actor through component owner instead of OverlapResult.GetActor()
+	    const AActor* Actor = PrimComponent->GetOwner();
+	    if (Actor && IsValid(Actor))
+	    {
+	        // Validate the actor's class before any operations
+	        if (!Actor->GetClass())
+	        {
+	            UE_LOG(LogNav3D, Warning, TEXT("Skipping actor with null class: %s"), *Actor->GetName());
+	            continue;
+	        }
+	        
+	        UE_LOG(LogNav3D, VeryVerbose, TEXT("Checking actor: %s (Class: %s)"), 
+	               *Actor->GetName(), 
+	               *Actor->GetClass()->GetName());
+	               
+	        // Safe landscape check
+	        if (Actor->GetClass()->IsChildOf<ALandscapeProxy>())
+	        {
+	            if (const ALandscapeProxy* LandscapeProxy = Cast<ALandscapeProxy>(Actor))
+	            {
+	                bIsOccluded = CheckLandscapeProxyOcclusion(LandscapeProxy, Position, BoxExtent);
+	            }
+	        }
+	    }
+
+	    // Component check
+	    if (!bIsOccluded)
+	    {
+	        // Validate component class before any operations
+	        if (!PrimComponent->GetClass())
+	        {
+	            UE_LOG(LogNav3D, Warning, TEXT("Skipping component with null class: %s"), *PrimComponent->GetName());
+	            continue;
+	        }
+	        
+	        UE_LOG(LogNav3D, VeryVerbose, TEXT("Checking component: %s (Class: %s)"), 
+	               *PrimComponent->GetName(), 
+	               *PrimComponent->GetClass()->GetName());
+	               
+	        // Safe static mesh check
+	        if (PrimComponent->GetClass()->IsChildOf<UStaticMeshComponent>())
+	        {
+	        	if (const UInstancedStaticMeshComponent* InstancedMeshComp = Cast<UInstancedStaticMeshComponent>(PrimComponent))
+	        	{
+	        		bIsOccluded = CheckInstancedStaticMeshOcclusion(InstancedMeshComp, Position, BoxExtent);
+	        	}
+	            else if (const UStaticMeshComponent* StaticMeshComp = Cast<UStaticMeshComponent>(PrimComponent))
+	            {
+	                bIsOccluded = CheckStaticMeshOcclusion(StaticMeshComp, Position, BoxExtent);
+	            }
+	        }
+	    }
+
+	    if (bIsOccluded)
+	    {
+	        if (FMath::IsNearlyEqual(BoxExtent, Nav3DData.GetLeafNodes().GetLeafNodeExtent()))
+	        {
+	            FPlatformAtomics::InterlockedIncrement(&NumOccludedVoxels);
+	            UE_LOG(LogNav3D, VeryVerbose, TEXT("Layer 0 voxel occluded at %s"), *Position.ToString());
+	        }
+	        return true;
+	    }
 	}
 
 	return false;
@@ -695,7 +966,7 @@ void FNav3DVolumeNavigationData::RebuildLeafNodesInBounds(const FBox& DirtyBound
 	}
 
 	// Remove nodes from the highest index to lowest to maintain valid indices
-	NodesToRemove.Sort([](int32 A, int32 B) { return A > B; });
+	NodesToRemove.Sort([](const int32 A, const int32 B) { return A > B; });
 	TSet<MortonCode> RemovedCodes;
 	for (int32 NodeIdx : NodesToRemove)
 	{
@@ -801,34 +1072,113 @@ void FNav3DVolumeNavigationData::RebuildLeafNodesInBounds(const FBox& DirtyBound
 	}
 }
 
-bool FNav3DVolumeNavigationData::CheckStaticMeshOcclusion(
-	const UStaticMeshComponent* StaticMeshComp,
-	const FVector& Position,
-	const float BoxExtent)
+bool FNav3DVolumeNavigationData::CheckStaticMeshTrianglesWithTransform(
+    const UStaticMesh* StaticMesh,
+    const FTransform& Transform,
+    const FVector& Position,
+    const float BoxExtent)
 {
-	if (UStaticMesh* StaticMesh = StaticMeshComp->GetStaticMesh())
-	{
-		FPositionVertexBuffer* VertexBuffer = &StaticMesh->GetRenderData()->LODResources[0].VertexBuffers.
-		                                                                                    PositionVertexBuffer;
-		const FRawStaticIndexBuffer* IndexBuffer = &StaticMesh->GetRenderData()->LODResources[0].IndexBuffer;
+    if (!StaticMesh || !StaticMesh->GetRenderData() || StaticMesh->GetRenderData()->LODResources.Num() == 0)
+    {
+        return false;
+    }
 
-		for (int32 i = 0; i < IndexBuffer->GetNumIndices(); i += 3)
-		{
-			const FVector3f V0F = VertexBuffer->VertexPosition(IndexBuffer->GetIndex(i));
-			const FVector3f V1F = VertexBuffer->VertexPosition(IndexBuffer->GetIndex(i + 1));
-			const FVector3f V2F = VertexBuffer->VertexPosition(IndexBuffer->GetIndex(i + 2));
+    // Quick bounds check first
+    const FBox MeshBounds = StaticMesh->GetBounds().GetBox();
+    const FBox WorldMeshBounds = MeshBounds.TransformBy(Transform);
+    const FBox VoxelBounds = FBox::BuildAABB(Position, FVector(BoxExtent));
+    
+    if (!WorldMeshBounds.Intersect(VoxelBounds))
+    {
+        return false; // Early exit - no intersection possible
+    }
 
-			FVector V0 = StaticMeshComp->GetComponentTransform().TransformPosition(FVector(V0F));
-			FVector V1 = StaticMeshComp->GetComponentTransform().TransformPosition(FVector(V1F));
-			FVector V2 = StaticMeshComp->GetComponentTransform().TransformPosition(FVector(V2F));
+    // Get mesh data
+    const FPositionVertexBuffer* VertexBuffer = 
+        &StaticMesh->GetRenderData()->LODResources[0].VertexBuffers.PositionVertexBuffer;
+    const FRawStaticIndexBuffer* IndexBuffer = 
+        &StaticMesh->GetRenderData()->LODResources[0].IndexBuffer;
 
-			if (TriBoxOverlap(Position, FVector(BoxExtent), V0, V1, V2))
-			{
-				return true;
-			}
-		}
-	}
-	return false;
+    // Check triangles
+    for (int32 i = 0; i < IndexBuffer->GetNumIndices(); i += 3)
+    {
+        if (IsCancelRequested())
+        {
+            return false;
+        }
+        const FVector3f V0F = VertexBuffer->VertexPosition(IndexBuffer->GetIndex(i));
+        const FVector3f V1F = VertexBuffer->VertexPosition(IndexBuffer->GetIndex(i + 1));
+        const FVector3f V2F = VertexBuffer->VertexPosition(IndexBuffer->GetIndex(i + 2));
+
+        // Transform vertices
+        FVector V0 = Transform.TransformPosition(FVector(V0F));
+        FVector V1 = Transform.TransformPosition(FVector(V1F));
+        FVector V2 = Transform.TransformPosition(FVector(V2F));
+
+        if (TriBoxOverlap(Position, FVector(BoxExtent), V0, V1, V2))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool FNav3DVolumeNavigationData::CheckStaticMeshOcclusion(
+    const UStaticMeshComponent* StaticMeshComp,
+    const FVector& Position,
+    const float BoxExtent)
+{
+    if (const UStaticMesh* StaticMesh = StaticMeshComp->GetStaticMesh())
+    {
+        return CheckStaticMeshTrianglesWithTransform(
+            StaticMesh, 
+            StaticMeshComp->GetComponentTransform(), 
+            Position, 
+            BoxExtent
+        );
+    }
+    return false;
+}
+
+bool FNav3DVolumeNavigationData::CheckInstancedStaticMeshOcclusion(
+    const UInstancedStaticMeshComponent* InstancedMeshComp,
+    const FVector& Position,
+    const float BoxExtent)
+{
+    if (!InstancedMeshComp || !InstancedMeshComp->GetStaticMesh())
+    {
+        return false;
+    }
+
+    const int32 InstanceCount = InstancedMeshComp->GetInstanceCount();
+    if (InstanceCount == 0)
+    {
+        return false;
+    }
+
+    const UStaticMesh* StaticMesh = InstancedMeshComp->GetStaticMesh();
+
+    // Check each instance
+    for (int32 InstanceIndex = 0; InstanceIndex < InstanceCount; InstanceIndex++)
+    {
+        if (IsCancelRequested())
+        {
+            return false;
+        }
+        FTransform InstanceTransform;
+        if (!InstancedMeshComp->GetInstanceTransform(InstanceIndex, InstanceTransform, /*bWorldSpace=*/true))
+        {
+            continue;
+        }
+
+        if (CheckStaticMeshTrianglesWithTransform(StaticMesh, InstanceTransform, Position, BoxExtent))
+        {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 bool FNav3DVolumeNavigationData::CheckLandscapeProxyOcclusion(
@@ -914,16 +1264,23 @@ void FNav3DVolumeNavigationData::FirstPass()
 
 	FCriticalSection CriticalSection;
 
-	UE_LOG(LogNav3D, Log, TEXT("Rasterisation first pass"));
+	UE_LOG(LogNav3D, Log, TEXT("FirstPass: Processing %d nodes in parallel (extent=%.2f)"), LayerMaxNodeCount, LayerNodeExtent);
+
+	int32 ProcessedFirstPass = 0;
+	const int32 TotalFirstPass = LayerMaxNodeCount;
 
 	ParallelFor(LayerMaxNodeCount, [&](const int32 NodeIndex)
 	{
+		if (IsCancelRequested()) { return; }
 		const auto Position = GetNodePositionFromLayerAndMortonCode(1, NodeIndex);
 		if (IsPositionOccluded(Position, LayerNodeExtent))
 		{
 			FScopeLock Lock(&CriticalSection);
 			Nav3DData.AddBlockedNode(0, NodeIndex);
 		}
+
+		const int32 Done = FPlatformAtomics::InterlockedIncrement(&ProcessedFirstPass);
+		const float Fraction = static_cast<float>(Done) / FMath::Max(1, TotalFirstPass);
 	});
 
 	for (int32 LayerIndex = 1; LayerIndex < GetLayerCount(); LayerIndex++)
@@ -936,6 +1293,8 @@ void FNav3DVolumeNavigationData::FirstPass()
 				LayerIndex, FNav3DUtils::GetParentMortonCode(MortonCode));
 		}
 	}
+
+	UE_LOG(LogNav3D, Log, TEXT("FirstPass: Complete"));
 }
 
 void FNav3DVolumeNavigationData::RasterizeLeaf(const FVector& NodePosition,
@@ -975,6 +1334,7 @@ void FNav3DVolumeNavigationData::RasterizeInitialLayer(
 
 	ParallelFor(LayerMaxNodeCount, [&](NodeIndex NodeIdx)
 	{
+		if (IsCancelRequested()) { return; }
 		const auto ParentMortonCode = FNav3DUtils::GetParentMortonCode(NodeIdx);
 		const auto bIsBlocked = LayerZeroBlockedNodes.Contains(ParentMortonCode);
 
@@ -1032,7 +1392,12 @@ void FNav3DVolumeNavigationData::RasterizeInitialLayer(
 			Nav3DData.GetLeafNodes().AddEmptyLeafNode();
 		}
 		LeafIdx++;
+
+		const float Fraction = static_cast<float>(LeafIdx) / FMath::Max(1, TempNodes.Num());
+		UpdateCoreProgress(Fraction);
 	}
+
+	UpdateCoreProgress(0.8f);
 }
 
 void FNav3DVolumeNavigationData::RasterizeLayer(const LayerIndex LayerIndex)
@@ -1055,6 +1420,7 @@ void FNav3DVolumeNavigationData::RasterizeLayer(const LayerIndex LayerIndex)
 
 	ParallelFor(LayerMaxNodeCount, [&](const int32 NodeIdx)
 	{
+		if (IsCancelRequested()) { return; }
 		const auto bIsBlocked = LayerBlockedNodes.Contains(FNav3DUtils::GetParentMortonCode(NodeIdx));
 
 		if (!bIsBlocked)
@@ -1103,6 +1469,21 @@ void FNav3DVolumeNavigationData::RasterizeLayer(const LayerIndex LayerIndex)
 	{
 		return A.MortonCode < B.MortonCode;
 	});
+
+	// Progress: distribute 15% across layers above zero
+	const int32 LayersAboveZero = FMath::Max(1, GetLayerCount() - 1);
+	const float PerLayerShare = 15.0f / LayersAboveZero;
+	const float LayerBase = 80.0f + PerLayerShare * (LayerIndex - 1);
+	UpdateCoreProgress(LayerBase + PerLayerShare);
+
+	// Core: nudge towards 0.95 as layers finish
+	const float CorePerLayer = 0.15f / LayersAboveZero;
+	UpdateCoreProgress(FMath::Min(0.95f, 0.80f + CorePerLayer * LayerIndex));
+
+	if (LayerIndex == GetLayerCount() - 1)
+	{
+		UpdateCoreProgress(0.95f);
+	}
 }
 
 int32 FNav3DVolumeNavigationData::GetNodeIndexFromMortonCode(
@@ -1384,7 +1765,7 @@ void FNav3DVolumeNavigationData::BuildParentLinkForLeafNodes(
 }
 
 void FNav3DVolumeNavigationData::PropagateChangesToHigherLayers(const TSet<MortonCode>& ModifiedLeafCodes,
-                                                                LayerIndex StartLayer)
+                                                                const LayerIndex StartLayer)
 {
 	const int32 LayerCount = Nav3DData.GetLayerCount();
 	TSet<MortonCode> CurrentLayerModifiedCodes = ModifiedLeafCodes;
@@ -1526,7 +1907,7 @@ void FNav3DVolumeNavigationData::PropagateChangesToHigherLayers(const TSet<Morto
 	}
 }
 
-bool FNav3DVolumeNavigationData::IsNodeInBounds(const FVector& NodePosition, float NodeExtent, const FBox& Bounds)
+bool FNav3DVolumeNavigationData::IsNodeInBounds(const FVector& NodePosition, const float NodeExtent, const FBox& Bounds)
 {
 	const FBox NodeBox = FBox::BuildAABB(NodePosition, FVector(NodeExtent));
 	return NodeBox.Intersect(Bounds);

@@ -133,7 +133,7 @@ void ANav3DTestVolume::PostEditChangeProperty(FPropertyChangedEvent& PropertyCha
             if (DistributionType == ENav3DTestDistribution::Spline && bRandomizeSpline)
             {
                 // Create a random stream with the current seed
-                FRandomStream RandomStream(RandomSeed);
+                const FRandomStream RandomStream(RandomSeed);
                 GenerateRandomSpline(RandomStream);
             }
         }
@@ -143,7 +143,7 @@ void ANav3DTestVolume::PostEditChangeProperty(FPropertyChangedEvent& PropertyCha
             if (DistributionType == ENav3DTestDistribution::Spline)
             {
                 // Create a random stream with the current seed
-                FRandomStream RandomStream(RandomSeed);
+                const FRandomStream RandomStream(RandomSeed);
                 GenerateRandomSpline(RandomStream);
             }
         }
@@ -173,7 +173,7 @@ void ANav3DTestVolume::GenerateObstacles()
     ClearObstacles();
     
     // Create a random stream with the specified seed
-    FRandomStream RandomStream(RandomSeed);
+    const FRandomStream RandomStream(RandomSeed);
     
     // Make sure we have a mesh assigned
     if (!ObstacleMesh)
@@ -279,7 +279,7 @@ void ANav3DTestVolume::GenerateUniformDistribution(const FRandomStream& RandomSt
 
 void ANav3DTestVolume::GenerateRandomSpline()
 {
-    FRandomStream RandomStream(RandomSeed);
+    const FRandomStream RandomStream(RandomSeed);
     GenerateRandomSpline(RandomStream);
 }
 
@@ -526,7 +526,7 @@ TArray<FVector> ANav3DTestVolume::GenerateClusterCenters(const int32 NumClusters
         // Shuffle the positions
         for (int32 i = 0; i < GridPositions.Num(); i++)
         {
-            int32 SwapIndex = RandomStream.RandRange(0, GridPositions.Num() - 1);
+            const int32 SwapIndex = RandomStream.RandRange(0, GridPositions.Num() - 1);
             if (i != SwapIndex)
             {
                 GridPositions.Swap(i, SwapIndex);
@@ -913,7 +913,7 @@ void ANav3DTestVolume::GenerateSplineDistribution(const FRandomStream& RandomStr
     UE_LOG(LogNav3D, Log, TEXT("Spline Distribution: Placed %d obstacles"), PlacedObstacles);
 }
 
-bool ANav3DTestVolume::IsPointOccluded(const FVector& WorldPoint, float Radius) const
+bool ANav3DTestVolume::IsPointOccluded(const FVector& WorldPoint, const float Radius) const
 {
     // Check for overlap with existing obstacles
     const int32 InstanceCount = ObstacleMeshes->GetInstanceCount();

@@ -253,7 +253,7 @@ bool UNav3DRaycaster::DoesRayIntersectOccludedLeaf(
     const FNav3DVolumeNavigationData& Data,
     const FRaycastState& RayState,
     FNav3DRaycastHit& OutHit,
-    bool bCountAllOccludedVoxels)
+    const bool bCountAllOccludedVoxels)
 {
     const auto& LeafNodes = Data.GetData().GetLeafNodes();
     if (!LeafNodes.GetLeafNodes().IsValidIndex(NodeAddress.NodeIndex))
@@ -370,7 +370,7 @@ bool UNav3DRaycaster::DoesRayIntersectOccludedNormalNode(
     const FNav3DVolumeNavigationData& Data,
     const FRaycastState& RayState,
     FNav3DRaycastHit& OutHit,
-    bool bCountAllOccludedVoxels) const
+    const bool bCountAllOccludedVoxels) const
 {
     // Validate layer and node indices
     const auto& NavData = Data.GetData();

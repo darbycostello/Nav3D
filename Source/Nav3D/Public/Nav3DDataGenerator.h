@@ -3,6 +3,7 @@
 #include "Nav3DData.h"
 #include "Nav3DTypes.h"
 #include <AI/NavDataGenerator.h>
+#include "TimerManager.h"
 
 class ANav3DData;
 class FNav3DDataGenerator;
@@ -125,7 +126,13 @@ public:
 	virtual int32 GetNumRemaningBuildTasks() const override;
 	virtual int32 GetNumRunningBuildTasks() const override;
 
+	// Exposed for cooperative cancellation checks in nested work if needed
+	bool ShouldCancelBuild() const { return false; }
+
 private:
+	void StartChunkedBuildCompletion();
+	void ProcessBuildChunk();
+
 	static void GetSeedLocations(TArray<FVector2D>& SeedLocations,
 	                             const UWorld& World);
 	void SortPendingBounds();
@@ -147,6 +154,8 @@ private:
 	PendingBoundsDataGenerationElements;
 	TNavStatArray<FRunningBoundsDataGenerationElement>
 	RunningBoundsDataGenerationElements;
+
+	FTimerHandle ChunkedBuildTimerHandle;
 };
 
 FORCEINLINE ANav3DData* FNav3DDataGenerator::GetOwner() const

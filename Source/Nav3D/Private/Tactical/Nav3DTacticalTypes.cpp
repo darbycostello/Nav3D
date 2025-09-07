@@ -68,7 +68,7 @@ int32 FBoxRegion::GetVolume() const
     return (Max.X - Min.X + 1) * (Max.Y - Min.Y + 1) * (Max.Z - Min.Z + 1);
 }
 
-bool FNav3DTacticalData::IsRegionVisibilityMatch(int32 ViewerRegionId, int32 TargetRegionId, ETacticalVisibility VisibilityType) const
+bool FNav3DTacticalData::IsRegionVisibilityMatch(const int32 ViewerRegionId, const int32 TargetRegionId, const ETacticalVisibility VisibilityType) const
 {
     // Find the viewer region
     const FNav3DRegion* ViewerRegion = nullptr;
@@ -103,8 +103,8 @@ bool FNav3DTacticalData::IsRegionVisibilityMatch(int32 ViewerRegionId, int32 Tar
     }
     
     // Check visibility based on the requested type
-    bool ViewerCanSeeTarget = ViewerRegion->VisibilitySet.Contains(TargetRegionId);
-    bool TargetCanSeeViewer = TargetRegion->VisibilitySet.Contains(ViewerRegionId);
+    const bool ViewerCanSeeTarget = ViewerRegion->VisibilitySet.Contains(TargetRegionId);
+    const bool TargetCanSeeViewer = TargetRegion->VisibilitySet.Contains(ViewerRegionId);
     
     switch (VisibilityType)
     {

@@ -20,7 +20,7 @@ public:
 		const ANav3DData* NavData,
 		const FNavAgentProperties& AgentProps,
 		const FSharedConstNavQueryFilter& QueryFilter,
-		TWeakObjectPtr<UNav3DAsyncPathfindingTask> InTaskOwner,
+		const TWeakObjectPtr<UNav3DAsyncPathfindingTask> InTaskOwner,
 		const TSharedPtr<FNav3DPath>& InPathResult) :
 		StartLocation(StartLoc),
 		EndLocation(EndLoc),
@@ -112,7 +112,7 @@ UNav3DAsyncPathfindingTask* UNav3DAsyncPathfindingTask::FindPathAsync(
 	const FVector StartLoc,
 	const FVector EndLoc,
 	AActor* PathfindingContext,
-	TSubclassOf<UNavigationQueryFilter> FilterClass)
+	const TSubclassOf<UNavigationQueryFilter> FilterClass)
 {
 	UWorld* World = nullptr;
 

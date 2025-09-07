@@ -3,6 +3,11 @@
 #include "Nav3DUtils.h"
 #include <Debug/DebugDrawService.h>
 #include <Engine/CollisionProfile.h>
+#include <Materials/Material.h>
+#include <Engine/Engine.h>
+#include <PrimitiveSceneProxy.h>
+
+#include "Materials/MaterialRenderProxy.h"
 
 #if !UE_BUILD_SHIPPING && !UE_BUILD_TEST
 #endif
@@ -12,8 +17,8 @@
 #include <EditorViewportClient.h>
 #endif
 
-static const FColor OccludedVoxelColor = FColor::Red;
-static const FColor FreeVoxelColor = FColor::Green;
+static constexpr FColor OccludedVoxelColor = FColor(128, 0, 0);
+static constexpr FColor FreeVoxelColor = FColor(0, 128, 0);
 
 // Colors for tactical reasoning visualization
 static const FColor RegionColors[32] = {
@@ -32,7 +37,7 @@ FNav3DMeshSceneProxy::FNav3DMeshSceneProxy(
 	const FNav3DMeshSceneProxyData& ProxyData)
 	: FDebugRenderSceneProxy(&Component)
 {
-	DrawType = WireMesh;
+	DrawType = SolidAndWireMeshes;
 	TextWithoutShadowDistance = 1500;
 	bWantsSelectionOutline = false;
 	ViewFlagName = TEXT("Navigation");
@@ -48,6 +53,9 @@ FNav3DMeshSceneProxy::FNav3DMeshSceneProxy(
 
 	const auto& DebugInfos = NavigationData->GetDebugData();
 	const auto& AllNavigationBoundsData = NavigationData->GetVolumeNavigationData();
+
+	// Reserve for filled voxel surfaces to reduce reallocations
+	VoxelSurfaces.Reserve(1000);
 
 	for (const auto& NavigationBoundsData : AllNavigationBoundsData)
 	{
@@ -243,7 +251,7 @@ void FNav3DMeshSceneProxy::DebugDrawAdjacency()
     }
 }
 
-void FNav3DMeshSceneProxy::DebugDrawVisibility(int32 ViewerRegionId)
+void FNav3DMeshSceneProxy::DebugDrawVisibility(const int32 ViewerRegionId)
 {
     if (!NavigationData.IsValid())
     {
@@ -314,15 +322,103 @@ bool FNav3DMeshSceneProxy::AddVoxelToBoxes(const FVector& VoxelLocation,
 	{
 		Boxes.Emplace(FBox::BuildAABB(VoxelLocation, FVector(NodeExtent)),
 				 FreeVoxelColor);
+		// Store translucent filled surface data for free voxels
+		VoxelSurfaces.Emplace(FBox::BuildAABB(VoxelLocation, FVector(NodeExtent)), FreeVoxelColor, 0.01f);
 		return true;
 	}
 	if (DebugInfos.bDebugDrawOccludedVoxels && IsOccluded)
 	{
 		Boxes.Emplace(FBox::BuildAABB(VoxelLocation, FVector(NodeExtent)), OccludedVoxelColor);
+		// Store translucent filled surface data for occluded voxels
+		VoxelSurfaces.Emplace(FBox::BuildAABB(VoxelLocation, FVector(NodeExtent)), OccludedVoxelColor, 0.01f);
 		return true;
 	}
 
 	return false;
+}
+
+void FNav3DMeshSceneProxy::GetDynamicMeshElements(const TArray<const FSceneView*>& Views,
+	const FSceneViewFamily& ViewFamily,
+	const uint32 VisibilityMap,
+	FMeshElementCollector& Collector) const
+{
+	// Let base class draw lines, boxes, spheres, text
+	FDebugRenderSceneProxy::GetDynamicMeshElements(Views, ViewFamily, VisibilityMap, Collector);
+
+	for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ++ViewIndex)
+	{
+		if ((VisibilityMap & (1 << ViewIndex)) == 0)
+		{
+			continue;
+		}
+
+		FPrimitiveDrawInterface* PDI = Collector.GetPDI(ViewIndex);
+		RenderVoxelSurfaces(PDI, Collector);
+	}
+}
+
+void FNav3DMeshSceneProxy::RenderVoxelSurfaces(FPrimitiveDrawInterface* PDI, FMeshElementCollector& Collector) const
+{
+	if (VoxelSurfaces.Num() == 0)
+	{
+		return;
+	}
+
+	// Reuse at most two colored material proxies per frame (free vs occluded)
+	const FMaterialRenderProxy* BaseProxy = GEngine && GEngine->DebugMeshMaterial
+		? GEngine->DebugMeshMaterial->GetRenderProxy()
+		: nullptr;
+	if (BaseProxy == nullptr)
+	{
+		return;
+	}
+
+	FColoredMaterialRenderProxy* FreeProxy = nullptr;
+	FColoredMaterialRenderProxy* OccludedProxy = nullptr;
+
+	auto GetProxyForColor = [&](const FColor& InColor, const float InOpacity) -> FColoredMaterialRenderProxy*
+	{
+		if (InColor == FreeVoxelColor)
+		{
+			if (FreeProxy == nullptr)
+			{
+				FLinearColor Linear = FLinearColor(InColor);
+				Linear.A = InOpacity;
+				FreeProxy = new FColoredMaterialRenderProxy(BaseProxy, Linear);
+				Collector.RegisterOneFrameMaterialProxy(FreeProxy);
+			}
+			return FreeProxy;
+		}
+		if (InColor == OccludedVoxelColor)
+		{
+			if (OccludedProxy == nullptr)
+			{
+				FLinearColor Linear = FLinearColor(InColor);
+				Linear.A = InOpacity;
+				OccludedProxy = new FColoredMaterialRenderProxy(BaseProxy, Linear);
+				Collector.RegisterOneFrameMaterialProxy(OccludedProxy);
+			}
+			return OccludedProxy;
+		}
+
+		FLinearColor Linear = FLinearColor(InColor);
+		Linear.A = InOpacity;
+		FColoredMaterialRenderProxy* OneOff = new FColoredMaterialRenderProxy(BaseProxy, Linear);
+		Collector.RegisterOneFrameMaterialProxy(OneOff);
+		return OneOff;
+	};
+
+	for (const FVoxelSurfaceData& Surface : VoxelSurfaces)
+	{
+		FColoredMaterialRenderProxy* ColoredProxy = GetProxyForColor(Surface.Color, Surface.Opacity);
+
+		GetBoxMesh(FTransform(Surface.Bounds.GetCenter()).ToMatrixNoScale(),
+			   Surface.Bounds.GetExtent(),
+			   ColoredProxy,
+			   SDPG_World,
+			   0, // ViewIndex
+			   Collector);
+	}
 }
 
 void FNav3DMeshSceneProxy::AddNodeTextInfos(const MortonCode NodeMortonCode,
@@ -503,7 +599,7 @@ bool UNav3DNavDataRenderingComponent::IsNavigationShowFlagSet(
 	return ShowNavigation;
 }
 
-void FNav3DMeshSceneProxy::DebugDrawBestCover(int32 ViewerRegionId)
+void FNav3DMeshSceneProxy::DebugDrawBestCover(const int32 ViewerRegionId)
 {
     if (!NavigationData.IsValid())
     {

@@ -9,10 +9,25 @@
 #include <AI/NavDataGenerator.h>
 #include <DrawDebugHelpers.h>
 #include <NavigationSystem.h>
+#include <HAL/CriticalSection.h>
+
+#include "EngineUtils.h"
 #include "Nav3D.h"
 #include "Nav3DUtils.h"
 #include "Raycasting/Nav3DRaycaster.h"
 #include "Tactical/Nav3DTacticalReasoning.h"
+#include "Components/PrimitiveComponent.h"
+#include "Components/StaticMeshComponent.h"
+#include "Components/InstancedStaticMeshComponent.h"
+#include "Components/SphereComponent.h"
+#include "Components/BoxComponent.h"
+#include "Components/CapsuleComponent.h"
+#include "LandscapeMeshCollisionComponent.h"
+#include "LandscapeHeightfieldCollisionComponent.h"
+#include "Nav3DBoundsVolume.h"
+#include "PhysicsEngine/BodySetup.h"
+#include "Engine/StaticMesh.h"
+#include "Engine/OverlapResult.h"
 
 #if WITH_EDITOR
 #include <EditorBuildUtils.h>
@@ -160,10 +175,6 @@ bool ANav3DData::NeedsRebuild() const
 	{
 		return NeedsRebuild || NavDataGenerator->GetNumRemaningBuildTasks() > 0;
 	}
-
-	const bool Result = Super::NeedsRebuild();
-	UE_LOG(LogNav3D, Verbose, TEXT("Nav3DData NeedsRebuild: %s = %d"), *GetName(), Result);
-
 	return NeedsRebuild;
 }
 
@@ -624,19 +635,32 @@ void ANav3DData::OnStreamingLevelAdded(ULevel* Level, UWorld*)
 	{
 		if (UNav3DDataChunk* NavigationDataChunk = GetNavigationDataChunk(Level))
 		{
+			FScopeLock Lock(&VolumeLoadingMutex);
+			
 			for (const auto& ChunkNavData : NavigationDataChunk->NavigationData)
 			{
+				const FBox VolumeBounds = ChunkNavData.GetVolumeBounds();
+				
+				// Check if volume is already loaded
 				if (VolumeNavigationData.FindByPredicate(
-					[&ChunkNavData](const FNav3DVolumeNavigationData& NavigationData)
+					[&VolumeBounds](const FNav3DVolumeNavigationData& NavigationData)
 					{
-						return ChunkNavData.GetVolumeBounds() ==
-							NavigationData.GetVolumeBounds();
+						return VolumeBounds == NavigationData.GetVolumeBounds();
 					}) == nullptr)
 				{
+					// First time loading this volume
 					VolumeNavigationData.Add(ChunkNavData);
+					LoadedVolumeReferenceCounts.Add(VolumeBounds, 1);
+					UE_LOG(LogNav3D, Verbose, TEXT("Nav3D: Loading volume for first time, bounds: %s"), *VolumeBounds.ToString());
+				}
+				else
+				{
+					// Volume already loaded, increment reference count
+					LoadedVolumeReferenceCounts[VolumeBounds]++;
+					UE_LOG(LogNav3D, Verbose, TEXT("Nav3D: Incrementing volume reference count to %d, bounds: %s"), 
+						LoadedVolumeReferenceCounts[VolumeBounds], *VolumeBounds.ToString());
 				}
 			}
-
 			RequestDrawingUpdate();
 		}
 	}
@@ -650,15 +674,32 @@ void ANav3DData::OnStreamingLevelRemoved(ULevel* Level, UWorld*)
 	{
 		if (UNav3DDataChunk* NavigationDataChunk = GetNavigationDataChunk(Level))
 		{
+			FScopeLock Lock(&VolumeLoadingMutex);
+			
 			for (const auto& ChunkNavData : NavigationDataChunk->NavigationData)
 			{
-				VolumeNavigationData.RemoveAllSwap([&ChunkNavData](
-					const auto& NavData)
+				const FBox VolumeBounds = ChunkNavData.GetVolumeBounds();
+				
+				if (int32* RefCount = LoadedVolumeReferenceCounts.Find(VolumeBounds))
+				{
+					(*RefCount)--;
+					UE_LOG(LogNav3D, Verbose, TEXT("Nav3D: Decrementing volume reference count to %d, bounds: %s"), 
+						*RefCount, *VolumeBounds.ToString());
+					
+					// Only unload when no more references
+					if (*RefCount <= 0)
 					{
-						return ChunkNavData.GetVolumeBounds() == NavData.GetVolumeBounds();
-					});
+						VolumeNavigationData.RemoveAllSwap([&VolumeBounds](
+							const auto& NavData)
+						{
+							return VolumeBounds == NavData.GetVolumeBounds();
+						});
+						
+						LoadedVolumeReferenceCounts.Remove(VolumeBounds);
+						UE_LOG(LogNav3D, Verbose, TEXT("Nav3D: Unloading volume, no more references, bounds: %s"), *VolumeBounds.ToString());
+					}
+				}
 			}
-
 			RequestDrawingUpdate();
 		}
 	}
@@ -925,6 +966,11 @@ void ANav3DData::SerializeNav3DData(FArchive& Archive, const ENav3DVersion Nav3D
 		for (auto Index = 0; Index < VolumeCount; Index++)
 		{
 			VolumeNavigationData[Index].Serialize(Archive, Nav3DVersion);
+			// Ensure validity is properly restored when loading serialized data
+			if (VolumeNavigationData[Index].GetData().GetLayerCount() > 0)
+			{
+				// Nothing else needed here; IsValid() will now return true
+			}
 		}
 	}
 	else
@@ -1050,18 +1096,305 @@ void ANav3DData::ClearNavigationData()
 	RequestDrawingUpdate();
 }
 
+void ANav3DData::Analyse() const
+{
+    UWorld* World = GetWorld();
+    if (!World)
+    {
+        UE_LOG(LogNav3D, Log, TEXT("Analyse: No valid world"));
+        return;
+    }
+
+    // NEW: If no navigation data exists, discover volumes from the world
+    TArray<FBox> AnalysisBounds;
+    
+    if (VolumeNavigationData.Num() == 0)
+    {
+        UE_LOG(LogNav3D, Log, TEXT("Analyse: No existing navigation data, discovering volumes from world"));
+        
+        // Find all Nav3DBoundsVolume actors in the world
+        for (TActorIterator<ANav3DBoundsVolume> ActorIterator(World); ActorIterator; ++ActorIterator)
+        {
+            ANav3DBoundsVolume* BoundsVolume = *ActorIterator;
+            if (BoundsVolume && IsValid(BoundsVolume))
+            {
+	            if (const FBox VolumeBounds = BoundsVolume->GetComponentsBoundingBox(true);
+	            	VolumeBounds.IsValid)
+                {
+                    AnalysisBounds.Add(VolumeBounds);
+                    UE_LOG(LogNav3D, Log, TEXT("Discovered bounds volume: %s"), *VolumeBounds.ToString());
+                }
+            }
+        }
+        
+        // If still no bounds found, use navigation system bounds
+        if (AnalysisBounds.Num() == 0)
+        {
+            if (UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World))
+            {
+                TArray<FBox> SupportedNavigationBounds;
+                NavSys->GetNavigationBoundsForNavData(*this, SupportedNavigationBounds);
+                AnalysisBounds = SupportedNavigationBounds;
+                UE_LOG(LogNav3D, Log, TEXT("Using navigation system bounds: %d volumes"), AnalysisBounds.Num());
+            }
+        }
+        
+        if (AnalysisBounds.Num() == 0)
+        {
+            UE_LOG(LogNav3D, Log, TEXT("Analyse: No volumes found in world"));
+            return;
+        }
+    }
+    else
+    {
+        // Use existing navigation data bounds
+        for (const FNav3DVolumeNavigationData& Volume : VolumeNavigationData)
+        {
+            AnalysisBounds.Add(Volume.GetVolumeBounds());
+        }
+    }
+
+    UE_LOG(LogNav3D, Log, TEXT("=== Nav3D Analyse: Overlap and filtering breakdown ==="));
+    UE_LOG(LogNav3D, Log, TEXT("Volumes: %d, CollisionChannel: %d"), AnalysisBounds.Num(), static_cast<int32>(GenerationSettings.CollisionChannel));
+
+    for (int32 VolumeIdx = 0; VolumeIdx < AnalysisBounds.Num(); ++VolumeIdx)
+    {
+        const FBox& Bounds = AnalysisBounds[VolumeIdx];
+
+        TArray<FOverlapResult> Overlaps;
+        const bool bHit = World->OverlapMultiByChannel(
+            Overlaps,
+            Bounds.GetCenter(),
+            FQuat::Identity,
+            GenerationSettings.CollisionChannel,
+            FCollisionShape::MakeBox(Bounds.GetExtent()),
+            GenerationSettings.CollisionQueryParameters
+        );
+
+		// Enum stringifiers
+		auto CollisionEnabledToString = [](ECollisionEnabled::Type Value) -> const TCHAR*
+		{
+			switch (Value)
+			{
+			case ECollisionEnabled::NoCollision: return TEXT("NoCollision");
+			case ECollisionEnabled::QueryOnly: return TEXT("QueryOnly");
+			case ECollisionEnabled::PhysicsOnly: return TEXT("PhysicsOnly");
+			case ECollisionEnabled::QueryAndPhysics: return TEXT("QueryAndPhysics");
+			default: return TEXT("Unknown");
+			}
+		};
+
+		auto ResponseToString = [](ECollisionResponse R) -> const TCHAR*
+		{
+			switch (R)
+			{
+			case ECR_Ignore: return TEXT("Ignore");
+			case ECR_Overlap: return TEXT("Overlap");
+			case ECR_Block: return TEXT("Block");
+			default: return TEXT("Unknown");
+			}
+		};
+
+		auto TraceFlagToString = [](ECollisionTraceFlag F) -> const TCHAR*
+		{
+			switch (F)
+			{
+			case CTF_UseDefault: return TEXT("Default");
+			case CTF_UseSimpleAsComplex: return TEXT("SimpleAsComplex");
+			case CTF_UseComplexAsSimple: return TEXT("ComplexAsSimple");
+			default: return TEXT("Unknown");
+			}
+		};
+
+		// Counters
+		int32 Total = Overlaps.Num();
+		int32 Kept = 0;
+		int32 RemovedInvalid = 0;
+		int32 RemovedNoAffectNav = 0;
+		int32 RemovedCollisionOnly = 0;
+		int32 RemovedStaticNoGeom = 0;
+		int32 RemovedISMNoGeom = 0;
+		int32 RemovedOther = 0;
+
+		int32 KeptLandscape = 0;
+		int32 KeptStaticWithGeom = 0;
+		int32 KeptISMWithGeom = 0;
+		int32 KeptOther = 0;
+
+		// ISM breakdown stats
+		int32 ISM_Total = 0;
+		int32 ISM_NoCollision = 0;
+		int32 ISM_QueryOnly = 0;
+		int32 ISM_QueryAndPhysics = 0;
+		int32 ISM_PhysicsOnly = 0;
+		int32 ISM_Response_Ignore = 0;
+		int32 ISM_Response_Overlap = 0;
+		int32 ISM_Response_Block = 0;
+		int32 ISM_AggGeom_Any = 0;
+		int32 ISM_AggGeom_None = 0;
+		int32 ISM_Trace_Default = 0;
+		int32 ISM_Trace_SimpleAsComplex = 0;
+		int32 ISM_Trace_ComplexAsSimple = 0;
+
+		// Optional detailed listing (throttled)
+		int32 DetailedPrinted = 0;
+		constexpr int32 DetailedMax = 25;
+
+		for (const FOverlapResult& Result : Overlaps)
+		{
+			if (!Result.Component.IsValid())
+			{
+				RemovedInvalid++;
+				continue;
+			}
+
+			UPrimitiveComponent* Prim = Result.Component.Get();
+			if (!Prim || !IsValid(Prim))
+			{
+				RemovedInvalid++;
+				continue;
+			}
+
+			if (!Prim->CanEverAffectNavigation())
+			{
+				RemovedNoAffectNav++;
+				continue;
+			}
+
+			// Local helper: collision-only shapes (similar to GatherOverlappingObjects)
+			auto IsCollisionOnly = [](const UPrimitiveComponent* Component) -> bool
+			{
+				return Component && (
+					Component->IsA<USphereComponent>() ||
+					Component->IsA<UBoxComponent>() ||
+					Component->IsA<UCapsuleComponent>()
+				);
+			};
+
+			if (IsCollisionOnly(Prim))
+			{
+				RemovedCollisionOnly++;
+				continue;
+			}
+
+			// Landscapes are always kept
+			if (Prim->IsA<ULandscapeHeightfieldCollisionComponent>() || Prim->IsA<ULandscapeMeshCollisionComponent>())
+			{
+				KeptLandscape++;
+				Kept++;
+				continue;
+			}
+
+			// ISM handling: require collision enabled, instances present, and body setup geometry
+			if (const UInstancedStaticMeshComponent* ISM = Cast<UInstancedStaticMeshComponent>(Prim))
+			{
+				ISM_Total++;
+				const ECollisionEnabled::Type CE = ISM->GetCollisionEnabled();
+				if (CE == ECollisionEnabled::NoCollision) { ISM_NoCollision++; }
+				else if (CE == ECollisionEnabled::QueryOnly) { ISM_QueryOnly++; }
+				else if (CE == ECollisionEnabled::QueryAndPhysics) { ISM_QueryAndPhysics++; }
+				else if (CE == ECollisionEnabled::PhysicsOnly) { ISM_PhysicsOnly++; }
+
+				const ECollisionResponse Resp = ISM->GetCollisionResponseToChannel(GenerationSettings.CollisionChannel);
+				if (Resp == ECR_Ignore) { ISM_Response_Ignore++; }
+				else if (Resp == ECR_Overlap) { ISM_Response_Overlap++; }
+				else if (Resp == ECR_Block) { ISM_Response_Block++; }
+
+				bool bHasGeom = false;
+				ECollisionTraceFlag TraceFlag = CTF_UseDefault;
+				if (ISM->GetStaticMesh())
+				{
+					if (UBodySetup* BodySetup = ISM->GetStaticMesh()->GetBodySetup())
+					{
+						const FKAggregateGeom& Agg = BodySetup->AggGeom;
+						bHasGeom = (Agg.ConvexElems.Num() > 0 || Agg.BoxElems.Num() > 0 || Agg.SphereElems.Num() > 0 || Agg.SphylElems.Num() > 0 || Agg.TaperedCapsuleElems.Num() > 0);
+						TraceFlag = BodySetup->CollisionTraceFlag;
+					}
+				}
+				if (bHasGeom) { ISM_AggGeom_Any++; } else { ISM_AggGeom_None++; }
+				if (TraceFlag == CTF_UseDefault) { ISM_Trace_Default++; }
+				else if (TraceFlag == CTF_UseSimpleAsComplex) { ISM_Trace_SimpleAsComplex++; }
+				else if (TraceFlag == CTF_UseComplexAsSimple) { ISM_Trace_ComplexAsSimple++; }
+				if (bHasGeom)
+				{
+					KeptISMWithGeom++;
+					Kept++;
+				}
+				else
+				{
+					RemovedISMNoGeom++;
+				}
+
+				if (DetailedPrinted < DetailedMax)
+				{
+					const FName Profile = ISM->GetCollisionProfileName();
+					const FString MeshName = ISM->GetStaticMesh() ? ISM->GetStaticMesh()->GetName() : TEXT("<None>");
+					UE_LOG(LogNav3D, Log, TEXT("   ISM: %s Mesh=%s Inst=%d Keep=%s Reason=[HasGeom:%s, Enabled:%s, Resp:%s, Profile:%s, Trace:%s]"),
+						*Prim->GetPathName(), *MeshName, ISM->GetInstanceCount(), bHasGeom ? TEXT("Yes") : TEXT("No"),
+						bHasGeom ? TEXT("Yes") : TEXT("No"), CollisionEnabledToString(CE), ResponseToString(Resp), *Profile.ToString(), TraceFlagToString(TraceFlag));
+					DetailedPrinted++;
+				}
+				continue;
+			}
+
+			// Static mesh component handling
+			if (const UStaticMeshComponent* SMC = Cast<UStaticMeshComponent>(Prim))
+			{
+				bool bHasGeom = false;
+				if (SMC->GetCollisionEnabled() != ECollisionEnabled::NoCollision && SMC->GetStaticMesh())
+				{
+					if (UBodySetup* BodySetup = SMC->GetStaticMesh()->GetBodySetup())
+					{
+						const FKAggregateGeom& Agg = BodySetup->AggGeom;
+						bHasGeom = (Agg.ConvexElems.Num() > 0 || Agg.BoxElems.Num() > 0 || Agg.SphereElems.Num() > 0 || Agg.SphylElems.Num() > 0 || Agg.TaperedCapsuleElems.Num() > 0);
+					}
+				}
+				if (bHasGeom)
+				{
+					KeptStaticWithGeom++;
+					Kept++;
+				}
+				else
+				{
+					RemovedStaticNoGeom++;
+				}
+				continue;
+			}
+
+			// Default: keep other nav-affecting components
+			KeptOther++;
+			Kept++;
+		}
+
+		const int32 Removed = Total - Kept;
+		const float ReductionPct = Total > 0 ? (100.0f * Removed / static_cast<float>(Total)) : 0.0f;
+		const float KeptPct = Total > 0 ? (100.0f * Kept / static_cast<float>(Total)) : 0.0f;
+
+		UE_LOG(LogNav3D, Log, TEXT("-- Volume %d: %s"), VolumeIdx, *Bounds.ToString());
+		UE_LOG(LogNav3D, Log, TEXT("   Overlap hit: %s, Total: %d, Kept: %d (%.1f%%), Removed: %d (%.1f%%)"), bHit ? TEXT("true") : TEXT("false"), Total, Kept, KeptPct, Removed, ReductionPct);
+		UE_LOG(LogNav3D, Log, TEXT("   Removed - Invalid: %d, NoAffectNav: %d, CollisionOnly: %d, StaticNoGeom: %d, ISMNoGeom: %d, Other: %d"),
+			RemovedInvalid, RemovedNoAffectNav, RemovedCollisionOnly, RemovedStaticNoGeom, RemovedISMNoGeom, RemovedOther);
+		UE_LOG(LogNav3D, Log, TEXT("   Kept    - Landscape: %d, StaticWithGeom: %d, ISMWithGeom: %d, Other: %d"),
+			KeptLandscape, KeptStaticWithGeom, KeptISMWithGeom, KeptOther);
+
+		// Additional ISM breakdown
+		if (ISM_Total > 0)
+		{
+			UE_LOG(LogNav3D, Log, TEXT("   ISM Stats  - Total: %d, Enabled: No=%d QueryOnly=%d QueryAndPhysics=%d PhysicsOnly=%d"),
+				ISM_Total, ISM_NoCollision, ISM_QueryOnly, ISM_QueryAndPhysics, ISM_PhysicsOnly);
+			UE_LOG(LogNav3D, Log, TEXT("               Response: Ignore=%d Overlap=%d Block=%d (Channel=%d)"),
+				ISM_Response_Ignore, ISM_Response_Overlap, ISM_Response_Block, static_cast<int32>(GenerationSettings.CollisionChannel));
+			UE_LOG(LogNav3D, Log, TEXT("               AggGeom: Any=%d None=%d, TraceFlag: Default=%d SimpleAsComplex=%d ComplexAsSimple=%d"),
+				ISM_AggGeom_Any, ISM_AggGeom_None, ISM_Trace_Default, ISM_Trace_SimpleAsComplex, ISM_Trace_ComplexAsSimple);
+		}
+	}
+
+	UE_LOG(LogNav3D, Log, TEXT("=== Nav3D Analyse: End ==="));
+}
+
 void ANav3DData::BuildNavigationData() const
 {
-#if WITH_EDITOR
-	if (!GIsPlayInEditorWorld)
-	{
-		// Use the editor build utils in editor - this properly handles async building
-		FEditorBuildUtils::EditorBuild(GetWorld(), FBuildOptions::BuildAIPaths);
-		return;
-	}
-#endif
-
-	// For runtime (and PIE) use navigation system directly
+	// Drive the navigation system directly to avoid duplicate editor build notifications
 	if (UWorld* World = GetWorld())
 	{
 		if (UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World))
@@ -1150,39 +1483,46 @@ void ANav3DData::OnNavigationDataGenerationFinished()
 
 					if (SupportsStreaming())
 					{
-						const auto& LevelNavBounds = GetNavigableBoundsInLevel(Level);
+						// NEW: Find all volumes that overlap with this level's bounds
+						TArray<int32> OverlappingVolumeIndices;
+						const FBox LevelBounds = CalculateLevelBounds(Level);
+						
+						UE_LOG(LogNav3D, Verbose, TEXT("Nav3D: Processing level %s with bounds %s"), 
+							*Level->GetName(), *LevelBounds.ToString());
 
-						TArray<int32> NavigationDataIndices;
-						NavigationDataIndices.Reserve(LevelNavBounds.Num());
-
-						for (const auto& NavBounds : LevelNavBounds)
+						for (int32 VolumeIndex = 0; VolumeIndex < VolumeNavigationData.Num(); ++VolumeIndex)
 						{
-							if (const auto Index = VolumeNavigationData.IndexOfByPredicate(
-									[&NavBounds](const FNav3DVolumeNavigationData& Data)
-									{
-										const auto& Bounds = Data.GetData().GetVolumeBounds();
-										return Bounds == NavBounds;
-									});
-								Index != INDEX_NONE)
+							const FBox& VolumeBounds = VolumeNavigationData[VolumeIndex].GetData().GetVolumeBounds();
+							if (VolumeBounds.Intersect(LevelBounds))
 							{
-								NavigationDataIndices.Add(Index);
+								OverlappingVolumeIndices.Add(VolumeIndex);
+								UE_LOG(LogNav3D, Verbose, TEXT("Nav3D: Volume %d overlaps with level %s"), 
+									VolumeIndex, *Level->GetName());
 							}
 						}
 
-						if (NavigationDataIndices.Num() > 0)
+						UE_LOG(LogNav3D, Verbose, TEXT("Nav3D: Level %s has %d overlapping volumes"), 
+							*Level->GetName(), OverlappingVolumeIndices.Num());
+
+						if (OverlappingVolumeIndices.Num() > 0)
 						{
 							if (NavigationDataChunk == nullptr)
 							{
 								NavigationDataChunk = NewObject<UNav3DDataChunk>(Level);
 								NavigationDataChunk->NavigationDataName = GetFName();
 								Level->NavDataChunks.Add(NavigationDataChunk);
+								UE_LOG(LogNav3D, Verbose, TEXT("Nav3D: Created new navigation data chunk for level %s"), 
+									*Level->GetName());
 							}
 
-							for (const auto Index : NavigationDataIndices)
+							// Add ALL overlapping volumes to this level's chunk
+							for (const int32 VolumeIndex : OverlappingVolumeIndices)
 							{
-								NavigationDataChunk->AddNavigationData(
-									VolumeNavigationData[Index]);
+								NavigationDataChunk->AddNavigationData(VolumeNavigationData[VolumeIndex]);
 							}
+
+							UE_LOG(LogNav3D, Verbose, TEXT("Nav3D: Added %d volumes to level %s chunk"), 
+								OverlappingVolumeIndices.Num(), *Level->GetName());
 
 							continue;
 						}
@@ -1241,6 +1581,30 @@ UNav3DDataChunk* ANav3DData::GetNavigationDataChunk(ULevel* Level) const
 	}
 
 	return nullptr;
+}
+
+FBox ANav3DData::CalculateLevelBounds(ULevel* Level)
+{
+	if (!Level || Level->Actors.Num() == 0)
+	{
+		return FBox(ForceInit);
+	}
+	
+	FBox LevelBounds(ForceInit);
+	
+	for (const AActor* Actor : Level->Actors)
+	{
+		if (Actor && Actor->GetRootComponent())
+		{
+			const FBox ActorBounds = Actor->GetComponentsBoundingBox(true);
+			if (ActorBounds.IsValid)
+			{
+				LevelBounds += ActorBounds;
+			}
+		}
+	}
+	
+	return LevelBounds;
 }
 
 FPathFindingResult ANav3DData::FindPath(
@@ -1507,8 +1871,8 @@ bool ANav3DData::FindBestLocation(
 	const ETacticalVisibility Visibility,
 	const ETacticalDistance DistancePreference,
 	const ETacticalRegion RegionPreference,
-	bool bForceNewRegion,
-	bool bUseRaycasting) const
+	const bool bForceNewRegion,
+	const bool bUseRaycasting) const
 {
 	if (!TacticalSettings.bEnableTacticalReasoning || !TacticalReasoning.IsValid())
 	{
@@ -1538,6 +1902,8 @@ float ANav3DData::GetVoxelExtent() const
 
 int32 ANav3DData::GetLayerCount() const
 {
+	if (VolumeNavigationData.IsEmpty()) return 0;
+	if (const auto Data = VolumeNavigationData[0].GetData(); !Data.IsValid()) return 0;
 	return VolumeNavigationData.GetData()->GetLayerCount();
 }
 
@@ -1557,4 +1923,19 @@ const FNav3DTacticalData& ANav3DData::GetTacticalDataAtPosition(const FVector& P
     
 	// Empty tactical data as last resort
 	return EmptyTacticalData;
+}
+
+void ANav3DData::LogVolumeReferenceCounts() const
+{
+	UE_LOG(LogNav3D, Display, TEXT("=== Nav3D Volume Reference Counts ==="));
+	UE_LOG(LogNav3D, Display, TEXT("Total loaded volumes: %d"), VolumeNavigationData.Num());
+	UE_LOG(LogNav3D, Display, TEXT("Reference count map entries: %d"), LoadedVolumeReferenceCounts.Num());
+	
+	for (const auto& RefCountPair : LoadedVolumeReferenceCounts)
+	{
+		const FBox& VolumeBounds = RefCountPair.Key;
+		const int32 RefCount = RefCountPair.Value;
+		UE_LOG(LogNav3D, Display, TEXT("Volume at %s: %d references"), *VolumeBounds.ToString(), RefCount);
+	}
+	UE_LOG(LogNav3D, Display, TEXT("====================================="));
 }

@@ -1005,10 +1005,10 @@ TArray<FNav3DRegionBuilder> FNav3DTacticalReasoning::MergeBoxRegions(const TArra
                 if (CanMergeRegions(MergedRegions[i], MergedRegions[j]))
                 {
                     // Merge regions using the new function
-                    FNav3DRegionBuilder MergedRegion = MergeRegions(MergedRegions[i], MergedRegions[j]);
+                    const FNav3DRegionBuilder MergedRegion = MergeRegions(MergedRegions[i], MergedRegions[j]);
                     
                     // Update references in other regions
-                    int32 RemovedRegionId = MergedRegions[j].Id;
+                    const int32 RemovedRegionId = MergedRegions[j].Id;
                     MergedRegions[i] = MergedRegion;
                     UpdateAdjacentRegionReferences(MergedRegions, i, RemovedRegionId);
                     
@@ -1683,8 +1683,8 @@ void FNav3DTacticalReasoning::BuildAdjacencyGraph(FNav3DTacticalData& TargetData
         for (int32 j = i + 1; j < TargetData.Regions.Num(); ++j)
         {
             // First check if there's already an adjacency relationship
-            bool bAdjacent = TargetData.Regions[i].AdjacentRegionIds.Contains(TargetData.Regions[j].Id);
-            bool bReverseAdjacent = TargetData.Regions[j].AdjacentRegionIds.Contains(TargetData.Regions[i].Id);
+            const bool bAdjacent = TargetData.Regions[i].AdjacentRegionIds.Contains(TargetData.Regions[j].Id);
+            const bool bReverseAdjacent = TargetData.Regions[j].AdjacentRegionIds.Contains(TargetData.Regions[i].Id);
             
             // Ensure bidirectional consistency for existing relationships
             if (bAdjacent != bReverseAdjacent)
@@ -1726,8 +1726,8 @@ void FNav3DTacticalReasoning::BuildAdjacencyGraph(TArray<FNav3DRegion>& Regions)
         for (int32 j = i + 1; j < Regions.Num(); ++j)
         {
             // First check if there's already an adjacency relationship
-            bool bAdjacent = Regions[i].AdjacentRegionIds.Contains(Regions[j].Id);
-            bool bReverseAdjacent = Regions[j].AdjacentRegionIds.Contains(Regions[i].Id);
+            const bool bAdjacent = Regions[i].AdjacentRegionIds.Contains(Regions[j].Id);
+            const bool bReverseAdjacent = Regions[j].AdjacentRegionIds.Contains(Regions[i].Id);
             
             // Ensure bidirectional consistency for existing relationships
             if (bAdjacent != bReverseAdjacent)
@@ -2264,7 +2264,7 @@ FNav3DRegionBuilder FNav3DTacticalReasoning::MergeRegions(const FNav3DRegionBuil
 void FNav3DTacticalReasoning::UpdateAdjacentRegionReferences(
     TArray<FNav3DRegionBuilder>& Regions, const int32 RegionAIndex, const int32 RegionBId)
 {
-    int32 RegionAId = Regions[RegionAIndex].Id;
+    const int32 RegionAId = Regions[RegionAIndex].Id;
     
     for (int32 i = 0; i < Regions.Num(); ++i)
     {
@@ -2343,9 +2343,9 @@ bool FNav3DTacticalReasoning::AreRegionsAdjacent(const FNav3DRegion& RegionA, co
     ZOverlap = FMath::Max(0.0f, ZOverlap);
     
     // Get the minimum dimension sizes for percentage calculations
-    float MinXSize = FMath::Min(BoxA.Max.X - BoxA.Min.X, BoxB.Max.X - BoxB.Min.X);
-    float MinYSize = FMath::Min(BoxA.Max.Y - BoxA.Min.Y, BoxB.Max.Y - BoxB.Min.Y);
-    float MinZSize = FMath::Min(BoxA.Max.Z - BoxA.Min.Z, BoxB.Max.Z - BoxB.Min.Z);
+    const float MinXSize = FMath::Min(BoxA.Max.X - BoxA.Min.X, BoxB.Max.X - BoxB.Min.X);
+    const float MinYSize = FMath::Min(BoxA.Max.Y - BoxA.Min.Y, BoxB.Max.Y - BoxB.Min.Y);
+    const float MinZSize = FMath::Min(BoxA.Max.Z - BoxA.Min.Z, BoxB.Max.Z - BoxB.Min.Z);
     
     // Check for significant overlap (at least 25% of the smallest dimension)
     const bool OverlapYZ = (YOverlap >= 0.25f * MinYSize) && (ZOverlap >= 0.25f * MinZSize);

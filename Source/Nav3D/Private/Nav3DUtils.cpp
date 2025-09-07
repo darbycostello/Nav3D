@@ -30,7 +30,7 @@ MortonCode FNav3DUtils::GetFirstChildMortonCode(const MortonCode ParentMortonCod
 	return ParentMortonCode << 3;
 }
 
-FVector FNav3DUtils::GetSubNodeOffset(SubNodeIndex SubIdx, float NodeExtent)
+FVector FNav3DUtils::GetSubNodeOffset(const SubNodeIndex SubIdx, const float NodeExtent)
 {
 	// Convert morton index to 3D coordinates
 	uint_fast32_t X, Y, Z;

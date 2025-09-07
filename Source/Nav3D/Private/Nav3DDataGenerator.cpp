@@ -1,8 +1,11 @@
 #include "Nav3DDataGenerator.h"
 #include "Nav3DData.h"
+#include "Nav3DVolumeNavigationData.h"
 #include <GameFramework/PlayerController.h>
 #include <NavigationSystem.h>
 #include "Nav3D.h"
+#include "Engine/World.h"
+#include "HAL/PlatformTime.h"
 
 FNav3DVolumeNavigationDataGenerator::FNav3DVolumeNavigationDataGenerator(
 	FNav3DDataGenerator& NavigationDataGenerator, const FBox& VolumeBounds)
@@ -14,12 +17,16 @@ FNav3DVolumeNavigationDataGenerator::FNav3DVolumeNavigationDataGenerator(
 
 bool FNav3DVolumeNavigationDataGenerator::DoWork()
 {
+	UE_LOG(LogNav3D, Log, TEXT("Starting Nav3D volume generation for bounds: %s"), *VolumeBounds.ToString());
+
 	FNav3DVolumeNavigationDataSettings GenerationSettings;
 	GenerationSettings.GenerationSettings = ParentGenerator.GetGenerationSettings();
 	GenerationSettings.World = ParentGenerator.GetWorld();
 	GenerationSettings.VoxelExtent = NavDataConfig.AgentRadius * 2.0f;
 	GenerationSettings.TacticalSettings = ParentGenerator.GetOwner()->TacticalSettings;
 	BoundsNavigationData.GenerateNavigationData(VolumeBounds, GenerationSettings);
+
+	UE_LOG(LogNav3D, Log, TEXT("Completed Nav3D volume generation for bounds: %s"), *VolumeBounds.ToString());
 	
 	return true;
 }
@@ -49,6 +56,9 @@ void FNav3DDataGenerator::Init()
 	UE_LOG(LogNav3D, Verbose,
 	       TEXT("Using max of %d workers to build Nav3D navigation."),
 	       MaximumGeneratorTaskCount);
+
+	// Clear any previous global cancel before starting a new build session
+	FNav3DVolumeNavigationData::ClearCancelBuildAll();
 }
 
 bool FNav3DDataGenerator::RebuildAll()
@@ -75,41 +85,67 @@ void FNav3DDataGenerator::EnsureBuildCompletion()
 {
 	const bool HadTasks = GetNumRemaningBuildTasks() > 0;
 
-	do
-	{
-		const int32 TasksToProcessCount =
-			MaximumGeneratorTaskCount - RunningBoundsDataGenerationElements.Num();
-		ProcessAsyncTasks(TasksToProcessCount);
-
-		// Block until tasks are finished
-		for (const auto& Element : RunningBoundsDataGenerationElements)
-		{
-			Element.AsyncTask->EnsureCompletion();
-		}
-	}
-	while (GetNumRemaningBuildTasks() > 0);
-
 	if (HadTasks)
 	{
+		StartChunkedBuildCompletion();
+	}
+}
+
+void FNav3DDataGenerator::StartChunkedBuildCompletion()
+{
+	if (const UWorld* World = GetWorld())
+	{
+		FTimerDelegate Delegate;
+		Delegate.BindRaw(this, &FNav3DDataGenerator::ProcessBuildChunk);
+		World->GetTimerManager().SetTimer(ChunkedBuildTimerHandle, Delegate, 0.1f, true);
+	}
+}
+
+void FNav3DDataGenerator::ProcessBuildChunk()
+{
+	static constexpr float MaxChunkTimeSeconds = 0.05f;
+	const double StartTime = FPlatformTime::Seconds();
+
+	const int32 TasksToProcessCount =
+		(FNav3DVolumeNavigationData::IsCancelRequested() 
+			? 0 
+			: (MaximumGeneratorTaskCount - RunningBoundsDataGenerationElements.Num()));
+	ProcessAsyncTasks(TasksToProcessCount);
+
+	bool bHasTimeRemaining = true;
+	int32 ProcessCounter = 0;
+	while (bHasTimeRemaining && GetNumRemaningBuildTasks() > 0)
+	{
+		ProcessAsyncTasks(1);
+
+		const double CurrentTime = FPlatformTime::Seconds();
+		bHasTimeRemaining = (CurrentTime - StartTime) < MaxChunkTimeSeconds;
+
+		if (++ProcessCounter % 10 == 0)
+		{
+			break;
+		}
+	}
+
+	if (GetNumRemaningBuildTasks() == 0)
+	{
+		if (const UWorld* World = GetWorld())
+		{
+			World->GetTimerManager().ClearTimer(ChunkedBuildTimerHandle);
+		}
+
 		NavigationData.RequestDrawingUpdate();
+		UE_LOG(LogNav3D, Log, TEXT("Nav3D build completed"));
 	}
 }
 
 void FNav3DDataGenerator::CancelBuild()
 {
+	// Do not clear the pump timer here; let it drain so completion is reached and popup can hide
 	PendingBoundsDataGenerationElements.Empty();
 
-	for (auto& Element : RunningBoundsDataGenerationElements)
-	{
-		if (Element.AsyncTask)
-		{
-			Element.AsyncTask->EnsureCompletion();
-			delete Element.AsyncTask;
-			Element.AsyncTask = nullptr;
-		}
-	}
-
-	RunningBoundsDataGenerationElements.Empty();
+	// Signal cooperative cancel so workers bail quickly
+	FNav3DVolumeNavigationData::RequestCancelBuildAll();
 }
 
 void FNav3DDataGenerator::TickAsyncBuild(float DeltaSeconds)
@@ -127,7 +163,7 @@ void FNav3DDataGenerator::TickAsyncBuild(float DeltaSeconds)
 	const int32 RunningTasksCount = NavigationSystem->GetNumRunningBuildTasks();
 
 	const int32 TasksToSubmitCount =
-		MaximumGeneratorTaskCount - RunningTasksCount;
+		FNav3DVolumeNavigationData::IsCancelRequested() ? 0 : (MaximumGeneratorTaskCount - RunningTasksCount);
 
 	const auto FinishedBoxes = ProcessAsyncTasks(TasksToSubmitCount);
 
@@ -292,32 +328,35 @@ TArray<FBox> FNav3DDataGenerator::ProcessAsyncTasks(const int32 TaskToProcessCou
 
 	int32 ProcessedTasksCount = 0;
 	// Submit pending tile elements
-	for (int32 ElementIndex = PendingBoundsDataGenerationElements.Num() - 1;
-	     ElementIndex >= 0 && ProcessedTasksCount < TaskToProcessCount;
-	     ElementIndex--)
+	if (!FNav3DVolumeNavigationData::IsCancelRequested())
 	{
-		FPendingBoundsDataGenerationElement& PendingElement =
-			PendingBoundsDataGenerationElements[ElementIndex];
-		FRunningBoundsDataGenerationElement RunningElement(
-			PendingElement.VolumeBounds);
-
-		if (RunningBoundsDataGenerationElements.Contains(RunningElement))
+		for (int32 ElementIndex = PendingBoundsDataGenerationElements.Num() - 1;
+		     ElementIndex >= 0 && ProcessedTasksCount < TaskToProcessCount;
+		     ElementIndex--)
 		{
-			continue;
+			FPendingBoundsDataGenerationElement& PendingElement =
+				PendingBoundsDataGenerationElements[ElementIndex];
+			FRunningBoundsDataGenerationElement RunningElement(
+				PendingElement.VolumeBounds);
+
+			if (RunningBoundsDataGenerationElements.Contains(RunningElement))
+			{
+				continue;
+			}
+
+			TUniquePtr<FNav3DBoxGeneratorTask> Task =
+				MakeUnique<FNav3DBoxGeneratorTask>(
+					CreateBoxNavigationGenerator(PendingElement.VolumeBounds));
+
+			RunningElement.AsyncTask = Task.Release();
+
+			RunningElement.AsyncTask->StartBackgroundTask();
+
+			RunningBoundsDataGenerationElements.Add(RunningElement);
+
+			PendingBoundsDataGenerationElements.RemoveAt(ElementIndex, 1, EAllowShrinking::No);
+			ProcessedTasksCount++;
 		}
-
-		TUniquePtr<FNav3DBoxGeneratorTask> Task =
-			MakeUnique<FNav3DBoxGeneratorTask>(
-				CreateBoxNavigationGenerator(PendingElement.VolumeBounds));
-
-		RunningElement.AsyncTask = Task.Release();
-
-		RunningElement.AsyncTask->StartBackgroundTask();
-
-		RunningBoundsDataGenerationElements.Add(RunningElement);
-
-		PendingBoundsDataGenerationElements.RemoveAt(ElementIndex, 1, EAllowShrinking::No);
-		ProcessedTasksCount++;
 	}
 
 	if (ProcessedTasksCount > 0 &&

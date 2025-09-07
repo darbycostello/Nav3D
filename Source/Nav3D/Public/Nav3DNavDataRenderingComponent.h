@@ -45,6 +45,15 @@ protected:
 	void AddNodeTextInfos(const MortonCode NodeMortonCode,
 	                      const LayerIndex NodeLayerIndex,
 	                      const FVector& NodePosition);
+	// Override to draw custom filled geometry for voxels
+	virtual void GetDynamicMeshElements(const TArray<const FSceneView*>& Views,
+	                                   const FSceneViewFamily& ViewFamily,
+	                                   const uint32 VisibilityMap,
+	                                   FMeshElementCollector& Collector) const override;
+
+	// Helpers for translucent filled boxes
+	void RenderVoxelSurfaces(class FPrimitiveDrawInterface* PDI, class FMeshElementCollector& Collector) const;
+
     
     // Tactical reasoning visualization functions
     void DebugDrawRegions();
@@ -57,6 +66,22 @@ protected:
 	GetViewRelevance(const FSceneView* View) const override;
 	TWeakObjectPtr<UNav3DNavDataRenderingComponent> RenderingComponent;
 	TWeakObjectPtr<ANav3DData> NavigationData;
+
+private:
+	// Surface data for filled voxel rendering
+	struct FVoxelSurfaceData
+	{
+		FBox Bounds;
+		FColor Color;
+		float Opacity;
+
+		FVoxelSurfaceData(const FBox& InBounds, const FColor& InColor, const float InOpacity = 0.1f)
+			: Bounds(InBounds), Color(InColor), Opacity(InOpacity)
+		{
+		}
+	};
+
+	mutable TArray<FVoxelSurfaceData> VoxelSurfaces;
 };
 
 #if !UE_BUILD_SHIPPING && !UE_BUILD_TEST

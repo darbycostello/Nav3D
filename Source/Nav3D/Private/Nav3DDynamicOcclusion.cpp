@@ -190,7 +190,7 @@ void UNav3DDynamicOcclusion::UnregisterOwner(ANav3DData* NavData)
 	NavData->UnregisterDynamicOccluder(GetOwner());
 }
 
-void UNav3DDynamicOcclusion::TickComponent(float DeltaTime, ELevelTick TickType,
+void UNav3DDynamicOcclusion::TickComponent(const float DeltaTime, const ELevelTick TickType,
                                            FActorComponentTickFunction* ThisTickFunction)
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);

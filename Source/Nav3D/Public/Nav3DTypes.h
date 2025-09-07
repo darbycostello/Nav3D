@@ -512,8 +512,6 @@ public:
 		}
 
 		const auto& LayerZero = Layers[0];
-		UE_LOG(LogNav3D, VeryVerbose, TEXT("Checking %d nodes in layer 0"), LayerZero.GetNodes().Num());
-
 		for (NodeIndex NodeIdx = 0; NodeIdx < static_cast<uint32>(LayerZero.GetNodes().Num()); NodeIdx++)
 		{
 			const auto& Node = LayerZero.GetNode(NodeIdx);
@@ -527,8 +525,6 @@ public:
 				}
 			}
 		}
-
-		UE_LOG(LogNav3D, VeryVerbose, TEXT("Found %d occluded leaf nodes"), OccludedCount);
 		return OccludedCount;
 	}
 

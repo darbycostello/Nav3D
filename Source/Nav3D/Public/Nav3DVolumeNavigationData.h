@@ -6,6 +6,7 @@
 #include <Templates/SubclassOf.h>
 #include "CoreMinimal.h"
 #include "Tactical/Nav3DTacticalReasoning.h"
+#include "Templates/Atomic.h"
 
 class UNavigationQueryFilter;
 class UNav3DQueryFilter;
@@ -19,6 +20,8 @@ struct FNav3DVolumeNavigationDataSettings
 	UWorld* World;
 	FNav3DDataGenerationSettings GenerationSettings;
 	FNav3DTacticalSettings TacticalSettings;
+	// Optional cooperative cancellation flag provided by the generator
+	TAtomic<bool>* CancelFlag = nullptr;
 };
 
 class NAV3D_API FNav3DVolumeNavigationData
@@ -77,7 +80,16 @@ public:
 	void RebuildDirtyBounds(const TArray<FBox>& DirtyBounds);
 	void AddDynamicOccluder(const AActor* Occluder);
 	void RemoveDynamicOccluder(const AActor* Occluder);
+
+	// Global cooperative cancel control for all builds in flight
+	static void RequestCancelBuildAll();
+	static void ClearCancelBuildAll();
+	static bool IsCancelRequested();
+
 	static bool CheckStaticMeshOcclusion(const UStaticMeshComponent* StaticMeshComp, const FVector& Position, const float BoxExtent);
+	static bool CheckInstancedStaticMeshOcclusion(const UInstancedStaticMeshComponent* InstancedMeshComp,
+	                                              const FVector& Position,
+	                                              float BoxExtent);
 	bool IsPositionOccluded(const FVector& Position, const float BoxExtent) const;
 	LayerIndex GetMinLayerIndexForAgentSize(const float AgentRadius) const;
 	int32 GetLayerCount() const { return Nav3DData.GetLayerCount(); }
@@ -96,12 +108,26 @@ private:
 	static bool CheckLandscapeProxyOcclusion(const ALandscapeProxy* LandscapeProxy, const FVector& Position, const float BoxExtent);
 	void LogNavigationStats() const;
 	void GatherOverlappingObjects();
+	static bool IsCollisionOnlyComponent(const UPrimitiveComponent* Component);
+	static bool HasValidCollisionGeometry(const UStaticMeshComponent* StaticMeshComp);
+	static bool HasValidCollisionGeometry(const UInstancedStaticMeshComponent* ISMComp);
 	void RebuildLeafNodesInBounds(const FBox& DirtyBounds);
+	static bool CheckStaticMeshTrianglesWithTransform(const UStaticMesh* StaticMesh, const FTransform& Transform,
+	                                                  const FVector& Position, float BoxExtent);
 	void PropagateChangesToHigherLayers(const TSet<MortonCode>& ModifiedLeafCodes, LayerIndex StartLayer);
 	static bool IsNodeInBounds(const FVector& NodePosition, float NodeExtent, const FBox& Bounds);
 
 	mutable int32 NumCandidateObjects;
 	mutable int32 NumOccludedVoxels;
+
+	// Incremental progress state
+	mutable int32 LastLoggedCorePercent = -1;
+
+	// Display progress normalized to core work (e.g., 20%-80% mapped to 0-100)
+	void UpdateCoreProgress(const float Fraction0To1) const;
+
+	// Global cancel flag shared by all build tasks
+	static TAtomic<bool> sCancelRequested;
 };
 
 FORCEINLINE const FNav3DVolumeNavigationDataSettings&
@@ -155,3 +181,7 @@ FORCEINLINE const FNav3DNode& FNav3DVolumeNavigationData::GetNodeFromAddress(
 
 	return Nav3DData.GetLayer(Address.LayerIndex).GetNode(Address.NodeIndex);
 }
+
+inline void FNav3DVolumeNavigationData::RequestCancelBuildAll() { sCancelRequested.Store(true); }
+inline void FNav3DVolumeNavigationData::ClearCancelBuildAll() { sCancelRequested.Store(false); }
+inline bool FNav3DVolumeNavigationData::IsCancelRequested() { return sCancelRequested.Load(); }
