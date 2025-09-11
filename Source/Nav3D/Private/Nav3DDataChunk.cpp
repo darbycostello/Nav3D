@@ -1,5 +1,5 @@
 #include "Nav3DDataChunk.h"
-#include "Nav3DVersion.h"
+#include "Nav3DTypes.h"
 
 void UNav3DDataChunk::Serialize(FArchive& Archive)
 {
@@ -35,6 +35,39 @@ void UNav3DDataChunk::Serialize(FArchive& Archive)
 		NavigationData[Index].Serialize(Archive, Version);
 	}
 
+	// Serialize boundary voxels (Morton-coded)
+	int32 BoundaryCount = BoundaryVoxels.Num();
+	Archive << BoundaryCount;
+	if (Archive.IsLoading())
+	{
+		BoundaryVoxels.Reset(BoundaryCount);
+		BoundaryVoxels.SetNum(BoundaryCount);
+	}
+	for (int32 i = 0; i < BoundaryCount; ++i)
+	{
+		Archive << BoundaryVoxels[i].Morton;
+		Archive << BoundaryVoxels[i].AdjacentChunkVoxels;
+		if (Archive.IsSaving())
+		{
+			uint8 Flag = BoundaryVoxels[i].bIsNavigable ? 1 : 0;
+			Archive << Flag;
+		}
+		else
+		{
+			uint8 Flag = 0;
+			Archive << Flag;
+			BoundaryVoxels[i].bIsNavigable = Flag != 0;
+		}
+	}
+	if (Archive.IsLoading())
+	{
+		MortonToBoundaryIndex.Empty(BoundaryVoxels.Num());
+		for (int32 i = 0; i < BoundaryVoxels.Num(); ++i)
+		{
+			MortonToBoundaryIndex.Add(BoundaryVoxels[i].Morton, i);
+		}
+	}
+
 	if (Archive.IsSaving())
 	{
 		const auto CurrentPosition = Archive.Tell();
@@ -54,3 +87,8 @@ void UNav3DDataChunk::AddNavigationData(FNav3DVolumeNavigationData& NavData)
 }
 
 void UNav3DDataChunk::ReleaseNavigationData() { NavigationData.Reset(); }
+
+const FNav3DVolumeNavigationData* UNav3DDataChunk::GetVolumeNavigationData() const
+{
+	return NavigationData.Num() > 0 ? &NavigationData[0] : nullptr;
+}

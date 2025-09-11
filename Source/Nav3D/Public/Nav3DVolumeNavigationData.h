@@ -12,6 +12,9 @@ class UNavigationQueryFilter;
 class UNav3DQueryFilter;
 enum class ENav3DVersion : uint8;
 
+// Forward declarations
+struct FVoxelOverlapCache;
+
 struct FNav3DVolumeNavigationDataSettings
 {
 	FNav3DVolumeNavigationDataSettings();
@@ -96,6 +99,7 @@ public:
 
 private:
 	void FirstPass();
+	static MortonCode GetParentMortonCodeAtLayer(MortonCode ChildCode, LayerIndex TargetLayer, LayerIndex ChildLayer);
 	void RasterizeLeaf(const FVector& NodePosition, const LeafIndex LeafIndex);
 	void RasterizeInitialLayer(TMap<LeafIndex, MortonCode>& LeafIndexToLayerOneNodeIndexMap);
 	void RasterizeLayer(LayerIndex LayerIndex);
@@ -116,18 +120,25 @@ private:
 	                                                  const FVector& Position, float BoxExtent);
 	void PropagateChangesToHigherLayers(const TSet<MortonCode>& ModifiedLeafCodes, LayerIndex StartLayer);
 	static bool IsNodeInBounds(const FVector& NodePosition, float NodeExtent, const FBox& Bounds);
-
+	void FirstPassOptimized();
+	void CacheLayer1Overlaps();
+	bool IsPositionOccludedOptimized(const FVector& Position, float BoxExtent, MortonCode Layer1Parent) const;
+	void ClearOverlapCache();
+	bool IsPositionOccludedPhysics(const FVector& Position, float BoxExtent) const;
 	mutable int32 NumCandidateObjects;
 	mutable int32 NumOccludedVoxels;
+	TMap<MortonCode, FVoxelOverlapCache> Layer1VoxelOverlapCache;
 
 	// Incremental progress state
 	mutable int32 LastLoggedCorePercent = -1;
+	mutable double BuildStartTime = 0.0;
+	mutable double LastProgressUpdateTime = 0.0;
 
 	// Display progress normalized to core work (e.g., 20%-80% mapped to 0-100)
 	void UpdateCoreProgress(const float Fraction0To1) const;
 
 	// Global cancel flag shared by all build tasks
-	static TAtomic<bool> sCancelRequested;
+	static TAtomic<bool> bSCancelRequested;
 };
 
 FORCEINLINE const FNav3DVolumeNavigationDataSettings&
@@ -182,6 +193,6 @@ FORCEINLINE const FNav3DNode& FNav3DVolumeNavigationData::GetNodeFromAddress(
 	return Nav3DData.GetLayer(Address.LayerIndex).GetNode(Address.NodeIndex);
 }
 
-inline void FNav3DVolumeNavigationData::RequestCancelBuildAll() { sCancelRequested.Store(true); }
-inline void FNav3DVolumeNavigationData::ClearCancelBuildAll() { sCancelRequested.Store(false); }
-inline bool FNav3DVolumeNavigationData::IsCancelRequested() { return sCancelRequested.Load(); }
+inline void FNav3DVolumeNavigationData::RequestCancelBuildAll() { bSCancelRequested.Store(true); }
+inline void FNav3DVolumeNavigationData::ClearCancelBuildAll() { bSCancelRequested.Store(false); }
+inline bool FNav3DVolumeNavigationData::IsCancelRequested() { return bSCancelRequested.Load(); }

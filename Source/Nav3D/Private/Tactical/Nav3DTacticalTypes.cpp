@@ -15,8 +15,16 @@ FNav3DRegion FNav3DRegionBuilder::ToRegion(const FNav3DVolumeNavigationData* Vol
         FNav3DUtils::GetMortonCodeFromVector(MaxCoord)
     );
     
-    // Get node extent
-    const float NodeExtent = VolumeData->GetData().GetLayer(LayerIndex).GetNodeExtent();
+    // Get node extent (leaf layer uses leaf extent, higher layers use layer extent)
+    float NodeExtent;
+    if (LayerIndex == 0)
+    {
+        NodeExtent = VolumeData->GetData().GetLeafNodes().GetLeafNodeExtent();
+    }
+    else
+    {
+        NodeExtent = VolumeData->GetData().GetLayer(LayerIndex).GetNodeExtent();
+    }
     
     // Create bounds properly from centers to corners
     const FBox WorldBounds(

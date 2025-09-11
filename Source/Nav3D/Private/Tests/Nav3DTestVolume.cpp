@@ -350,7 +350,6 @@ void ANav3DTestVolume::GenerateClusteredDistribution(const FRandomStream& Random
     // Calculate approximate number of obstacles to place
     const int32 TotalObstacles = FMath::CeilToInt((OcclusionPercentage / 100.0f) * TotalVolume / AvgObstacleVolume);
     
-    // NEW APPROACH: 
     // 1. Place a sparse set of "seed" points first (much fewer than total obstacles)
     // 2. Then cluster additional obstacles around these seed points
     

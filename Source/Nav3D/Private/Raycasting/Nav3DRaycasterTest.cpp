@@ -2,6 +2,7 @@
 #include "Raycasting/Nav3DRaycasterTest.h"
 #include "Nav3DData.h"
 #include "Raycasting/Nav3DRaycaster.h"
+#include "Nav3D.h"
 #include <Components/SphereComponent.h>
 #include <Debug/DebugDrawService.h>
 #include <NavigationSystem.h>

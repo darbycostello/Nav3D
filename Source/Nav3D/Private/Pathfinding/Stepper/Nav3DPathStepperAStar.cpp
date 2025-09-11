@@ -1,11 +1,14 @@
 #include "Pathfinding/Stepper/Nav3DPathStepperAStar.h"
 #include "Nav3DUtils.h"
 #include "Nav3DVolumeNavigationData.h"
-#include "Pathfinding/Search/Nav3DAStar.h"
+#include "Nav3DDataChunkActor.h"
+#include "Nav3DData.h"
+#include "Nav3DTacticalActor.h"
+#include "Nav3DTypes.h"
+#include "Pathfinding/Nav3DCrossVolumeGraph.h"
 #include "Pathfinding/Nav3DPathBuilder.h"
 #include "Pathfinding/Nav3DQueryFilterSettings.h"
-#include "Pathfinding/Search/Nav3DGraphAStar.h"
-#include "Pathfinding/Stepper/Nav3DPathDebug.h"
+// Search algorithm implementation is in Search/Nav3DAStar.cpp
 
 FNav3DPathStepperAStar::FNav3DPathStepperAStar(
 	const FNav3DPathFindingParameters& Parameters)
@@ -106,6 +109,77 @@ void FNav3DPathStepperAStar::FillNodeAddressNeighbours(
 {
 	Neighbours.Reset();
 	Graph.Graph.GetNodeNeighbours(Neighbours, NodeAddress);
+
+	// Append baked cross-actor portal neighbours when on a boundary leaf
+	const FNav3DNode& Node = Graph.Graph.GetNodeFromAddress(NodeAddress);
+	const FVector NodeWorldPos = Graph.Graph.GetNodePositionFromAddress(NodeAddress, true);
+	const FBox& CurrentBounds = Graph.Graph.GetData().GetNavigationBounds();
+	const float Tolerance = Graph.Graph.GetData().GetLeafNodes().GetLeafNodeExtent() * 0.5f;
+
+	const bool bOnBoundary =
+		FMath::Abs(NodeWorldPos.X - CurrentBounds.Min.X) < Tolerance ||
+		FMath::Abs(NodeWorldPos.X - CurrentBounds.Max.X) < Tolerance ||
+		FMath::Abs(NodeWorldPos.Y - CurrentBounds.Min.Y) < Tolerance ||
+		FMath::Abs(NodeWorldPos.Y - CurrentBounds.Max.Y) < Tolerance ||
+		FMath::Abs(NodeWorldPos.Z - CurrentBounds.Min.Z) < Tolerance ||
+		FMath::Abs(NodeWorldPos.Z - CurrentBounds.Max.Z) < Tolerance;
+
+	if (bOnBoundary && NodeAddress.LayerIndex == 0)
+	{
+		if (const UWorld* World = Graph.Graph.GetDataGenerationSettings().World)
+		{
+			if (const ANav3DData* NavData = FNav3DUtils::GetNav3DData(World))
+			{
+				const ANav3DTacticalActor* TacticalActorForPos = nullptr;
+				for (const ANav3DTacticalActor* Ta : NavData->GetAllTacticalActors())
+				{
+					if (Ta && Ta->ContainsPoint(NodeWorldPos)) { TacticalActorForPos = Ta; break; }
+				}
+				if (TacticalActorForPos)
+				{
+					const FNav3DCrossVolumeGraph& Cvg = TacticalActorForPos->GetCrossVolumeGraph();
+					if (const int32 ChunkIdx = Cvg.FindChunkIndexForPosition(NodeWorldPos);
+						ChunkIdx != INDEX_NONE && Cvg.GetCachedChunkActors().IsValidIndex(ChunkIdx))
+					{
+						int32 VolumeIdx = INDEX_NONE;
+						if (const ANav3DDataChunkActor* ChunkActor = Cvg.GetCachedChunkActors()[ChunkIdx])
+						{
+							if (ChunkActor->Nav3DChunks.Num() > 0)
+							{
+								const UNav3DDataChunk* Chunk = ChunkActor->Nav3DChunks[0];
+								for (int32 V = 0; V < Chunk->NavigationData.Num(); ++V)
+								{
+									if (Chunk->NavigationData[V].GetData().GetNavigationBounds() == CurrentBounds) { VolumeIdx = V; break; }
+								}
+							}
+						}
+						if (VolumeIdx != INDEX_NONE)
+						{
+							const MortonCode CurrentMorton = Node.MortonCode;
+							FNav3DVoxelID ThisVoxel; ThisVoxel.ChunkIndex = ChunkIdx; ThisVoxel.VolumeIndex = VolumeIdx; ThisVoxel.Layer = NodeAddress.LayerIndex; ThisVoxel.Morton = CurrentMorton;
+							TArray<FNav3DCrossVolumeConnection> Connections; Cvg.GetNeighbors(ThisVoxel, Connections);
+							for (const FNav3DCrossVolumeConnection& C : Connections)
+							{
+								const FNav3DVoxelID& Remote = C.RemoteVoxel;
+								if (!Cvg.GetCachedChunkActors().IsValidIndex(Remote.ChunkIndex)) { continue; }
+								const ANav3DDataChunkActor* RemoteActor = Cvg.GetCachedChunkActors()[Remote.ChunkIndex];
+								if (!RemoteActor || RemoteActor->Nav3DChunks.Num() == 0) { continue; }
+								const UNav3DDataChunk* RemoteChunk = RemoteActor->Nav3DChunks[0];
+								if (!RemoteChunk || !RemoteChunk->NavigationData.IsValidIndex(Remote.VolumeIndex)) { continue; }
+								const FNav3DVolumeNavigationData& RemoteVol = RemoteChunk->NavigationData[Remote.VolumeIndex];
+								const FVector RemotePos = FNav3DUtils::GetVoxelWorldPosition(Remote, Cvg.GetCachedChunkActors());
+								if (FNav3DNodeAddress RemoteAddr; RemoteVol.GetNodeAddressFromPosition(RemoteAddr, RemotePos, Remote.Layer))
+								{
+									Neighbours.Add(RemoteAddr);
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
 	NeighbourIndex = 0;
 }
 
@@ -173,9 +247,26 @@ FNav3DPathStepperAStar::ProcessNeighbour(
 
 	const auto NeighbourAddress = Neighbours[NeighbourIndex];
 
-	const auto NeighbourPosition = Parameters.VolumeNavigationData.GetNodePositionFromAddress(NeighbourAddress, true);
-	const float NeighbourExtent = Parameters.VolumeNavigationData.GetNodeExtentFromNodeAddress(NeighbourAddress);
-	if (Parameters.VolumeNavigationData.IsPositionOccluded(NeighbourPosition, NeighbourExtent))
+	// Check if the neighbour node is navigable using stored occlusion data
+	bool bIsNavigable = false;
+	if (NeighbourAddress.LayerIndex == 0)
+	{
+		// For leaf nodes, check if the specific subnode is free
+		const auto& LeafNodes = Parameters.VolumeNavigationData.GetData().GetLeafNodes();
+		if (LeafNodes.GetLeafNodes().IsValidIndex(NeighbourAddress.NodeIndex))
+		{
+			const auto& LeafNode = LeafNodes.GetLeafNode(NeighbourAddress.NodeIndex);
+			bIsNavigable = !LeafNode.IsSubNodeOccluded(NeighbourAddress.SubNodeIndex);
+		}
+	}
+	else
+	{
+		// For non-leaf nodes, check if they don't have children (meaning they're free)
+		const auto& Node = Parameters.VolumeNavigationData.GetNodeFromAddress(NeighbourAddress);
+		bIsNavigable = !Node.HasChildren();
+	}
+	
+	if (!bIsNavigable)
 	{
 		return ENav3DPathStepperStatus::MustContinue;
 	}
@@ -292,36 +383,4 @@ FNav3DPathStepperAStar::FNeighbourIndexIncrement::
 	}
 }
 
-ENavigationQueryResult::Type UNav3DAStar::GetPath(
-	FNav3DPath& NavigationPath,
-	const FNav3DPathFindingParameters& Params) const
-{
-	FNav3DPathStepperAStar Stepper(Params);
-	const auto PathBuilder = MakeShared<FNav3DPathBuilder>(
-		NavigationPath, Stepper);
-
-	Stepper.AddProcessor(PathBuilder);
-
-	int Iterations = 0;
-
-	EGraphAStarResult Result = SearchFail;
-	while (Stepper.Step(Result) ==
-		ENav3DPathStepperStatus::MustContinue)
-	{
-		Iterations++;
-	}
-
-	return FNav3DUtils::GraphAStarResultToNavigationTypeResult(Result);
-}
-
-TSharedPtr<FNav3DPathStepper> UNav3DAStar::GetDebugPathStepper(
-	FNav3DPathFinderDebugData& DebugData,
-	const FNav3DPathFindingParameters Params) const
-{
-	auto Stepper = MakeShared<FNav3DPathStepperAStar>(Params);
-	const auto DebugPath =
-		MakeShared<FNav3DPathDebug>(DebugData, Stepper.Get());
-	Stepper->AddProcessor(DebugPath);
-
-	return Stepper;
-}
+// UNav3DAStar::GetPath moved to Search/Nav3DAStar.cpp to match other algorithms

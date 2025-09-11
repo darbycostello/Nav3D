@@ -1,7 +1,6 @@
 #include "Pathfinding/Search/Nav3DLazyThetaStar.h"
 #include "Nav3DUtils.h"
 #include "Pathfinding/Nav3DPathBuilder.h"
-#include "Pathfinding/Stepper/Nav3DPathDebug.h"
 #include "Pathfinding/Stepper/Nav3DPathStepperLazyThetaStar.h"
 
 ENavigationQueryResult::Type UNav3DLazyThetaStar::GetPath(
@@ -23,16 +22,4 @@ ENavigationQueryResult::Type UNav3DLazyThetaStar::GetPath(
 	}
 
 	return FNav3DUtils::GraphAStarResultToNavigationTypeResult(Result);
-}
-
-TSharedPtr<FNav3DPathStepper> UNav3DLazyThetaStar::GetDebugPathStepper(
-	FNav3DPathFinderDebugData& DebugData,
-	const FNav3DPathFindingParameters Params) const
-{
-	auto Stepper = MakeShared<FNav3DPathStepperLazyThetaStar>(Params, ThetaStarParameters);
-	const auto DebugPath =
-		MakeShared<FNav3DPathDebug>(DebugData, Stepper.Get());
-	Stepper->AddProcessor(DebugPath);
-
-	return Stepper;
 }

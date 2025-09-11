@@ -1,12 +1,12 @@
 // ReSharper disable CommentTypo
 #pragma once
-#include "Nav3D.h"
 #include <CoreMinimal.h>
 #include "Nav3DTypes.generated.h"
 
 class UNav3DPathFindingSearch;
 class UNav3DPathHeuristicCalculator;
 class UNav3DPathTraversalCostCalculator;
+class ANav3DDataChunkActor;
 
 using MortonCode = uint_fast64_t;
 using LayerIndex = uint8;
@@ -32,6 +32,13 @@ static const FIntVector GNeighbourDirections[6] = {
 
 DECLARE_DELEGATE_ThreeParams(FNav3DPathQueryDelegate, uint32, ENavigationQueryResult::Type, FNavPathSharedPtr);
 
+enum class NAV3D_API ENav3DVersion : uint8
+{
+	V_2025090900,
+	MinCompatible = V_2025090900,
+	Latest = V_2025090900
+};
+
 USTRUCT()
 struct FNav3DDataGenerationSettings
 {
@@ -41,6 +48,7 @@ struct FNav3DDataGenerationSettings
 	{
 		CollisionChannel = ECC_WorldStatic;
 		Clearance = 0.0f;
+		AdjacencyClearance = 500.0f;
 
 		CollisionQueryParameters.bFindInitialOverlaps = true;
 		CollisionQueryParameters.bTraceComplex = false;
@@ -53,7 +61,50 @@ struct FNav3DDataGenerationSettings
 	UPROPERTY(EditAnywhere, Category = "Nav3D")
 	float Clearance;
 
+	UPROPERTY(EditAnywhere, Category = "Nav3D", meta = (
+	    DisplayName = "Adjacency Clearance",
+	    ToolTip = "Additional clearance distance added to layer-specific voxel extents for adjacency calculations"
+	))
+	float AdjacencyClearance = 500.0f;
+
 	FCollisionQueryParams CollisionQueryParameters;
+
+
+	// Maximum number of simultaneous box generation jobs (threaded tasks)
+	UPROPERTY(EditAnywhere, Category = "Generation", meta = (
+	    DisplayName = "Max Simultaneous Jobs",
+	    ToolTip = "Maximum number of simultaneous box generation jobs",
+	    ClampMin = "1"
+	))
+	int32 MaxSimultaneousBoxGenerationJobsCount = 4;
+};
+
+// Cache structure for storing overlap results per Layer 1 voxel
+USTRUCT()
+struct NAV3D_API FVoxelOverlapCache
+{
+	GENERATED_BODY()
+	
+	// Layer 1 Morton code this cache entry represents
+	MortonCode Layer1MortonCode;
+	
+	// All actors that overlap this Layer 1 voxel
+	TArray<TWeakObjectPtr<AActor>> OverlappingActors;
+	
+	// Bounds of this Layer 1 voxel for reference
+	FBox VoxelBounds;
+	
+	FVoxelOverlapCache()
+		: Layer1MortonCode(0)
+		, VoxelBounds(ForceInit)
+	{
+	}
+	
+	FVoxelOverlapCache(MortonCode InMortonCode, const FBox& InBounds)
+		: Layer1MortonCode(InMortonCode)
+		, VoxelBounds(InBounds)
+	{
+	}
 };
 
 struct FNav3DNodeAddress
@@ -348,11 +399,12 @@ struct NAV3D_API FNav3DVolumeDebugData
 	uint8 bDebugDrawBounds : 1;
 
 	UPROPERTY(EditInstanceOnly)
-	uint8 bDebugDrawNodeCoords : 1;
+	uint8 bDebugDrawVolumes : 1;
 
+	// Draw cross-volume adjacency lines via portals between free voxel centers
 	UPROPERTY(EditInstanceOnly)
-	uint8 bDebugDrawMortonCodes : 1;
-
+	uint8 bDebugDrawAdjacency : 1;
+	
 	UPROPERTY(EditInstanceOnly)
 	uint8 bDebugDrawLayers : 1;
 
@@ -365,8 +417,11 @@ struct NAV3D_API FNav3DVolumeDebugData
 	UPROPERTY(EditInstanceOnly, meta = (EditCondition = "bDebugDrawLayers"))
 	uint8 bDebugDrawFreeVoxels : 1;
 
-	UPROPERTY(EditInstanceOnly)
-	uint8 bDebugDrawActivePaths : 1;
+	UPROPERTY(EditInstanceOnly, meta = (EditCondition = "bDebugDrawLayers"))
+	uint8 bDebugDrawNodeCoords : 1;
+
+	UPROPERTY(EditInstanceOnly, meta = (EditCondition = "bDebugDrawLayers"))
+	uint8 bDebugDrawMortonCodes : 1;
 };
 
 USTRUCT()
@@ -376,24 +431,24 @@ struct NAV3D_API FNav3DTacticalDebugData
 
 	FNav3DTacticalDebugData();
 
-	UPROPERTY(EditInstanceOnly)
+	UPROPERTY(EditInstanceOnly, meta = (EditCondition = "bDebugDrawVisibility"))
 	uint8 bDebugDrawRegions : 1;
 
-	UPROPERTY(EditInstanceOnly)
+	UPROPERTY(EditInstanceOnly, meta = (EditCondition = "bDebugDrawVisibility"))
 	uint8 bDebugDrawRegionIds : 1;
 
-	UPROPERTY(EditInstanceOnly)
+	UPROPERTY(EditInstanceOnly, meta = (EditCondition = "bDebugDrawVisibility"))
 	uint8 bDebugDrawAdjacencyGraph : 1;
 
-	UPROPERTY(EditInstanceOnly)
+	UPROPERTY(EditInstanceOnly, meta = (EditCondition = "bDebugDrawVisibility"))
 	uint8 bDebugDrawVisibility : 1;
 
 	// Region ID to view visibility lines from (-1 = disabled)
-	UPROPERTY(EditInstanceOnly, meta = (ClampMin = "-1", UIMin = "-1"))
+	UPROPERTY(EditInstanceOnly, meta = (EditCondition = "bDebugDrawVisibility", ClampMin = "-1", UIMin = "-1"))
 	int32 VisibilityViewRegionId;
 	
 	// Draw best cover from VisibilityViewRegionId to observer position
-	UPROPERTY(EditInstanceOnly)
+	UPROPERTY(EditInstanceOnly, meta = (EditCondition = "bDebugDrawVisibility"))
 	uint8 bDrawBestCover : 1;
 };
 
@@ -435,7 +490,8 @@ struct FNav3DTacticalSettings
 	UPROPERTY(EditAnywhere, Category = "Nav3D|Cover", meta = (ClampMin = "1", UIMin = "1", ToolTip = "Maximum number of raycasts to perform when validating cover positions."))
 	int32 MaxCoverRaycasts;
 
-	UPROPERTY(EditAnywhere, Category = "Nav3D|Debug")
+	UPROPERTY(EditAnywhere, Category = "Nav3D|Debug", meta = (EditCondition = "bEnableTacticalReasoning"))
+	FNav3DVolumeDebugData VolumeDebugData;
 	FNav3DTacticalDebugData TacticalDebugData;
 
 	FNav3DTacticalSettings()
@@ -608,3 +664,53 @@ FORCEINLINE FArchive& operator<<(FArchive& Archive, FNav3DData& Data)
 
 	return Archive;
 }
+
+USTRUCT()
+struct FNav3DVoxelConnection
+{
+	GENERATED_BODY()
+
+	FNav3DVoxelConnection()
+		: Local(0)
+		, LocalVolumeIndex(0)
+		, LocalChunkIndex(0)
+		, Remote(0)
+		, RemoteVolumeIndex(0)
+		, RemoteChunkIndex(0)
+		, Distance(0.0f)
+	{
+	}
+
+	UPROPERTY()
+	uint64 Local;
+
+	UPROPERTY()
+	int32 LocalVolumeIndex;
+
+	UPROPERTY()
+	int32 LocalChunkIndex;
+
+	UPROPERTY()
+	uint64 Remote;
+
+	UPROPERTY()
+	int32 RemoteVolumeIndex;
+
+	UPROPERTY()
+	int32 RemoteChunkIndex;
+
+	UPROPERTY()
+	float Distance;
+};
+
+USTRUCT()
+struct FNav3DChunkAdjacency
+{
+	GENERATED_BODY()
+	
+	UPROPERTY()
+	TSoftObjectPtr<ANav3DDataChunkActor> OtherChunkActor;
+	
+	UPROPERTY()
+	TArray<FNav3DVoxelConnection> Connections;
+};

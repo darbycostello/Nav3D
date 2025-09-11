@@ -2,6 +2,7 @@
 #include "Pathfinding/Nav3DPathFindingTypes.h"
 #include "Pathfinding/Stepper/Nav3DPathStepperAStar.h"
 #include "Raycasting/Nav3DRaycaster.h"
+#include "Nav3D.h"
 
 FNav3DPathStepperThetaStarParameters::FNav3DPathStepperThetaStarParameters()
 	: Raycaster(nullptr)
@@ -199,12 +200,43 @@ bool FNav3DPathStepperThetaStar::HasLineOfSight(
 	const auto FromPosition = GetAdjustedPosition(From);
 	const auto ToPosition = GetAdjustedPosition(To);
 
-	// Check if either endpoint is occluded
-	const float FromExtent = Parameters.VolumeNavigationData.GetNodeExtentFromNodeAddress(From);
-	const float ToExtent = Parameters.VolumeNavigationData.GetNodeExtentFromNodeAddress(To);
-
-	if (Parameters.VolumeNavigationData.IsPositionOccluded(FromPosition, FromExtent) ||
-		Parameters.VolumeNavigationData.IsPositionOccluded(ToPosition, ToExtent))
+	// Check if either endpoint is navigable using stored occlusion data
+	bool bFromNavigable = false;
+	bool bToNavigable = false;
+	
+	// Check From node
+	if (From.LayerIndex == 0)
+	{
+		const auto& LeafNodes = Parameters.VolumeNavigationData.GetData().GetLeafNodes();
+		if (LeafNodes.GetLeafNodes().IsValidIndex(From.NodeIndex))
+		{
+			const auto& LeafNode = LeafNodes.GetLeafNode(From.NodeIndex);
+			bFromNavigable = !LeafNode.IsSubNodeOccluded(From.SubNodeIndex);
+		}
+	}
+	else
+	{
+		const auto& Node = Parameters.VolumeNavigationData.GetNodeFromAddress(From);
+		bFromNavigable = !Node.HasChildren();
+	}
+	
+	// Check To node
+	if (To.LayerIndex == 0)
+	{
+		const auto& LeafNodes = Parameters.VolumeNavigationData.GetData().GetLeafNodes();
+		if (LeafNodes.GetLeafNodes().IsValidIndex(To.NodeIndex))
+		{
+			const auto& LeafNode = LeafNodes.GetLeafNode(To.NodeIndex);
+			bToNavigable = !LeafNode.IsSubNodeOccluded(To.SubNodeIndex);
+		}
+	}
+	else
+	{
+		const auto& Node = Parameters.VolumeNavigationData.GetNodeFromAddress(To);
+		bToNavigable = !Node.HasChildren();
+	}
+	
+	if (!bFromNavigable || !bToNavigable)
 	{
 		return false;
 	}

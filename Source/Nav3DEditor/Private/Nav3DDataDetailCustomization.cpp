@@ -3,12 +3,16 @@
 #include "DetailLayoutBuilder.h"
 #include "DetailCategoryBuilder.h"
 #include "DetailWidgetRow.h"
+#include "IPropertyUtilities.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SSeparator.h"
 #include "Nav3D/Public/Nav3DData.h"
+#include "Nav3D/Public/Nav3DUtils.h"
 #include "PropertyHandle.h"
+#include "Nav3DDataChunkActor.h"
+#include "Nav3DTacticalActor.h"
 
 TSharedRef<IDetailCustomization> FNav3DDataDetailCustomization::MakeInstance()
 {
@@ -35,8 +39,11 @@ void FNav3DDataDetailCustomization::CustomizeDetails(IDetailLayoutBuilder& Detai
         return;
     }
 
-    // Get the Nav3D category
+    // Get the Nav3D category. Force refresh when chunk revision changes.
     IDetailCategoryBuilder& Nav3DCategory = DetailBuilder.EditCategory("Nav3D");
+
+    // Listen for property changes that indicate chunk list changed
+    DetailBuilder.GetPropertyUtilities()->ForceRefresh();
     
     // Check if a build is in progress
     bool bIsBuildInProgress = false;
@@ -76,8 +83,267 @@ void FNav3DDataDetailCustomization::CustomizeDetails(IDetailLayoutBuilder& Detai
     }
     else
     {
+        // If chunks changed, refresh the panel
+        DetailBuilder.ForceRefreshDetails();
         // Generate the voxel info panel only when no build is in progress
         GenerateVoxelInfoPanel(DetailBuilder, Nav3DCategory);
+
+		// Add Volumes management panel
+		Nav3DCategory.AddCustomRow(FText::FromString("VolumesAndChunks"))
+		.WholeRowContent()
+		[
+			SNew(SVerticalBox)
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0, 10, 0, 5)
+			[
+				SNew(STextBlock)
+				.Text(FText::FromString("Volumes"))
+				.Font(FCoreStyle::GetDefaultFontStyle("Bold", 11))
+			]
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			[
+				SNew(SVerticalBox)
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				[
+					SNew(SSeparator)
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				[
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0, 5)
+					[
+						SNew(STextBlock)
+						.Text(FText::FromString("Discovered Volumes"))
+						.Font(FCoreStyle::GetDefaultFontStyle("Bold", 10))
+					]
+				]
+			]
+		];
+
+		// For each volume, add a sub-panel with a Rebuild Volume button and its chunks
+		const TArray<FBox> Volumes = Nav3DDataPtr->GetAllDiscoverableVolumes();
+		for (int32 VolumeIdx = 0; VolumeIdx < Volumes.Num(); ++VolumeIdx)
+		{
+			const FBox& VolumeBounds = Volumes[VolumeIdx];
+			FText VolumeLabel = FText::FromString(FString::Printf(TEXT("Volume %d  (%s)"), VolumeIdx,
+				*Volumes[VolumeIdx].GetCenter().ToString()));
+
+			Nav3DCategory.AddCustomRow(FText::FromString("VolumeRow"))
+			.WholeRowContent()
+			[
+				SNew(SVerticalBox)
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(0,5)
+				[
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.Padding(0,0,10,0)
+					[
+						SNew(STextBlock)
+						.Text(VolumeLabel)
+					]
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					[
+						SNew(SButton)
+						.Text(FText::FromString("Rebuild Nav"))
+						.OnClicked_Lambda([Nav3D = Nav3DDataPtr.Get(), VolumeBounds]() -> FReply
+						{
+							if (Nav3D)
+							{
+								Nav3D->BuildSingleVolume(VolumeBounds);
+							}
+							return FReply::Handled();
+						})
+					]
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.Padding(5, 0, 0, 0)
+					[
+						SNew(SButton)
+						.Text(FText::FromString("Rebuild Tactical"))
+						.OnClicked_Lambda([Nav3D = Nav3DDataPtr.Get()]() -> FReply
+						{
+							if (Nav3D)
+							{
+								Nav3D->RebuildTacticalData();
+							}
+							return FReply::Handled();
+						})
+					]
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				[
+					SNew(SVerticalBox)
+					// List chunks inside this volume
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					[
+						SNew(SVerticalBox)
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(10,2)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString("Chunks"))
+							.Font(FCoreStyle::GetDefaultFontStyle("Bold", 9))
+						]
+					]
+				]
+			];
+
+			// Build a list of chunks belonging to this volume
+			TArray<ANav3DDataChunkActor*> Chunks = Nav3DDataPtr->GetChunkActors();
+			int32 GlobalIndex = 0;
+			for (int32 ChunkIdx = 0; ChunkIdx < Chunks.Num(); ++ChunkIdx, ++GlobalIndex)
+			{
+				ANav3DDataChunkActor* ChunkActor = Chunks[ChunkIdx];
+				if (!ChunkActor) { continue; }
+				const FVector Center = ChunkActor->DataChunkActorBounds.GetCenter();
+				if (!VolumeBounds.IsInside(Center)) { continue; }
+
+				const FLinearColor Color = FNav3DUtils::GetChunkColorByIndex(ChunkIdx);
+				FText ChunkLabel = FText::FromString(FString::Printf(TEXT("Chunk %d  %s"), ChunkIdx, *ChunkActor->GetName()));
+
+				Nav3DCategory.AddCustomRow(FText::FromString("ChunkRow"))
+				.WholeRowContent()
+				[
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.Padding(20,0,8,0)
+					[
+						SNew(SBox)
+						.WidthOverride(12)
+						.HeightOverride(12)
+						[
+							SNew(SBorder)
+							.BorderBackgroundColor(Color)
+							.BorderImage(FAppStyle::GetBrush("WhiteBrush"))
+						]
+					]
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.Padding(0,0,8,0)
+					[
+						SNew(STextBlock)
+						.Text(ChunkLabel)
+					]
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					[
+						SNew(SButton)
+						.Text(FText::FromString("Rebuild Chunk"))
+						.OnClicked_Lambda([Nav3D = Nav3DDataPtr.Get(), ChunkActor]() -> FReply
+						{
+							if (Nav3D && ChunkActor)
+							{
+								const FBox Bounds = ChunkActor->DataChunkActorBounds;
+								if (UWorld* World = ChunkActor->GetWorld())
+								{
+									// Destroy the existing chunk actor first (auto-unregisters)
+									World->DestroyActor(ChunkActor);
+								}
+								// Then rebuild only this chunk
+								Nav3D->RebuildSingleChunk(Bounds);
+							}
+							return FReply::Handled();
+						})
+					]
+				];
+			}
+		}
+		
+		// Add tactical actors section with same formatting as chunks
+		GenerateTacticalActorsPanel(DetailBuilder, Nav3DCategory);
+    }
+}
+
+void FNav3DDataDetailCustomization::GenerateTacticalActorsPanel(IDetailLayoutBuilder& DetailBuilder, IDetailCategoryBuilder& CategoryBuilder) const
+{
+    if (!Nav3DDataPtr.IsValid())
+    {
+        return;
+    }
+    
+    // Get tactical actors
+    TArray<ANav3DTacticalActor*> TacticalActors = Nav3DDataPtr->GetAllTacticalActors();
+    
+    if (TacticalActors.Num() > 0)
+    {
+        // Add tactical actors section header (same formatting as chunks)
+        CategoryBuilder.AddCustomRow(FText::FromString("TacticalActorsHeader"))
+            .WholeRowContent()
+            [
+                SNew(SVerticalBox)
+                + SVerticalBox::Slot()
+                .AutoHeight()
+                .Padding(0, 5, 0, 2)
+                [
+                    SNew(STextBlock)
+                    .Text(FText::FromString("Tactical"))
+                    .Font(FCoreStyle::GetDefaultFontStyle("Bold", 9))
+                ]
+            ];
+        
+        // Display each tactical actor (same formatting as chunks)
+        for (int32 TacticalIdx = 0; TacticalIdx < TacticalActors.Num(); ++TacticalIdx)
+        {
+            ANav3DTacticalActor* TacticalActor = TacticalActors[TacticalIdx];
+            if (!TacticalActor) continue;
+            
+            const FLinearColor Color = FNav3DUtils::GetChunkColorByIndex(TacticalIdx);
+            FText TacticalLabel = FText::FromString(FString::Printf(TEXT("Tactical %d  %s"), TacticalIdx, *TacticalActor->GetName()));
+            
+            CategoryBuilder.AddCustomRow(FText::FromString("TacticalActorRow"))
+                .WholeRowContent()
+                [
+                    SNew(SHorizontalBox)
+                    + SHorizontalBox::Slot()
+                    .AutoWidth()
+                    .Padding(20, 0, 8, 0)
+                    [
+                        SNew(SBox)
+                        .WidthOverride(12)
+                        .HeightOverride(12)
+                        [
+                            SNew(SBorder)
+                            .BorderBackgroundColor(Color)
+                            .BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+                        ]
+                    ]
+                    + SHorizontalBox::Slot()
+                    .FillWidth(1.0f)
+                    [
+                        SNew(STextBlock)
+                        .Text(TacticalLabel)
+                        .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+                    ]
+                    + SHorizontalBox::Slot()
+                    .AutoWidth()
+                    [
+                        SNew(SButton)
+                        .Text(FText::FromString("Rebuild"))
+                        .OnClicked_Lambda([TacticalActor]() -> FReply
+                        {
+                            if (TacticalActor)
+                            {
+                                TacticalActor->RebuildTacticalData();
+                            }
+                            return FReply::Handled();
+                        })
+                    ]
+                ];
+        }
     }
 }
 
@@ -224,10 +490,21 @@ void FNav3DDataDetailCustomization::GenerateVoxelInfoPanel(IDetailLayoutBuilder&
                             if (Nav3DDataPtr.IsValid())
                             {
                                 int32 TotalOccluded = 0;
-                                const TArray<FNav3DVolumeNavigationData>& VolumeData = Nav3DDataPtr->GetVolumeNavigationData();
-                                for (const FNav3DVolumeNavigationData& Volume : VolumeData)
+                                for (ANav3DDataChunkActor* ChunkActor : Nav3DDataPtr->GetChunkActors())
                                 {
-                                    TotalOccluded += Volume.GetData().GetTotalOccludedLeafNodes();
+                                    if (ChunkActor)
+                                    {
+                                        for (const UNav3DDataChunk* Chunk : ChunkActor->Nav3DChunks)
+                                        {
+                                            if (Chunk)
+                                            {
+                                                if (const FNav3DVolumeNavigationData* VolumeData = Chunk->GetVolumeNavigationData())
+                                                {
+                                                    TotalOccluded += VolumeData->GetData().GetTotalOccludedLeafNodes();
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                                 return FText::AsNumber(TotalOccluded);
                             }

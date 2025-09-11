@@ -6,6 +6,9 @@
 #include "Nav3DUtils.h"
 #include "Raycasting/Nav3DRaycaster.h"
 #include "Tactical/Nav3DTacticalTypes.h"
+#include "Nav3D.h"
+#include "Nav3DDataChunkActor.h"
+#include "Nav3DTacticalActor.h"
 
 FNav3DTacticalReasoning::FNav3DTacticalReasoning()
     : NextRegionId(0)
@@ -32,13 +35,22 @@ void FNav3DTacticalReasoning::BuildTacticalData(const FBox& VolumeBounds)
 
     // Find the volume containing these bounds
     FNav3DVolumeNavigationData* VolumeData = nullptr;
-    TArray<FNav3DVolumeNavigationData>& VolumeNavData = NavDataRef->GetVolumeNavigationData();
-    for (FNav3DVolumeNavigationData& Volume : VolumeNavData)
+    for (ANav3DDataChunkActor* ChunkActor : NavDataRef->ChunkActors)
     {
-        if (Volume.GetVolumeBounds().Intersect(VolumeBounds))
+        if (ChunkActor && ChunkActor->DataChunkActorBounds.Intersect(VolumeBounds))
         {
-            VolumeData = &Volume;
-            break;
+            for (UNav3DDataChunk* Chunk : ChunkActor->Nav3DChunks)
+            {
+                if (Chunk)
+                {
+                    VolumeData = const_cast<FNav3DVolumeNavigationData*>(Chunk->GetVolumeNavigationData());
+                    if (VolumeData)
+                    {
+                        break;
+                    }
+                }
+            }
+            if (VolumeData) break;
         }
     }
 
@@ -148,7 +160,6 @@ void FNav3DTacticalReasoning::BuildTacticalData(const FBox& VolumeBounds)
                 LayerRegions.Add(Builder.ToRegion(VolumeData));
             }
             
-            // NEW STEP: Verify regions against static geometry
             UE_LOG(LogNav3D, Log, TEXT("Verifying %d layer %d regions against static geometry"), 
                 LayerRegions.Num(), LayerIdx);
             VerifyRegionsAgainstStaticGeometry(LayerRegions, VolumeData);
@@ -184,6 +195,444 @@ void FNav3DTacticalReasoning::BuildTacticalData(const FBox& VolumeBounds)
     
     NavDataRef->RequestDrawingUpdate();
     UE_LOG(LogNav3D, Log, TEXT("Tactical data built: %d regions"), VolumeData->TacticalData.Regions.Num());
+}
+
+void FNav3DTacticalReasoning::BuildGlobalTacticalData(const TArray<ANav3DDataChunkActor*>& ChunkActors)
+{
+    if (!NavDataRef.IsValid() || ChunkActors.Num() == 0)
+    {
+        UE_LOG(LogNav3D, Warning, TEXT("BuildGlobalTacticalData: Invalid NavData or no chunk actors"));
+        return;
+    }
+
+    UE_LOG(LogNav3D, Log, TEXT("Building global tactical data across %d chunk actors"), ChunkActors.Num());
+
+    // Reset global region ID counter
+    NextRegionId = 0;
+
+    // Clear all existing tactical data first
+    for (ANav3DDataChunkActor* ChunkActor : ChunkActors)
+    {
+        if (!ChunkActor) continue;
+        
+        for (UNav3DDataChunk* Chunk : ChunkActor->Nav3DChunks)
+        {
+            if (Chunk)
+            {
+                if (FNav3DVolumeNavigationData* VolumeData = const_cast<FNav3DVolumeNavigationData*>(Chunk->GetVolumeNavigationData()))
+                {
+                    VolumeData->TacticalData.Regions.Empty();
+                }
+            }
+        }
+    }
+
+    // Get settings - find first valid chunk with navigation data
+    const FNav3DData* FirstOctreeData = nullptr;
+    for (ANav3DDataChunkActor* ChunkActor : ChunkActors)
+    {
+        if (!ChunkActor) continue;
+        
+        for (UNav3DDataChunk* Chunk : ChunkActor->Nav3DChunks)
+        {
+            if (Chunk)
+            {
+                if (const FNav3DVolumeNavigationData* VolumeData = Chunk->GetVolumeNavigationData())
+                {
+                    FirstOctreeData = &VolumeData->GetData();
+                    break;
+                }
+            }
+        }
+        if (FirstOctreeData) break;
+    }
+    
+    if (!FirstOctreeData)
+    {
+        UE_LOG(LogNav3D, Warning, TEXT("BuildGlobalTacticalData: No valid navigation data found in any chunk"));
+        return;
+    }
+    
+    const int32 LayerCount = FirstOctreeData->GetLayerCount();
+    const int32 MinRegionLayer = NavDataRef->TacticalSettings.MinRegioningLayer;
+    const int32 MaxRegionLayer = NavDataRef->TacticalSettings.MaxRegioningLayer;
+    
+    UE_LOG(LogNav3D, Log, TEXT("Global tactical generation: MinRegionLayer=%d, MaxRegioningLayer=%d, LayerCount=%d"),
+          MinRegionLayer, MaxRegionLayer, LayerCount);
+    
+    // Process each layer globally across all chunks
+    for (int32 LayerIdx = MinRegionLayer; LayerIdx < LayerCount; ++LayerIdx)
+    {
+        UE_LOG(LogNav3D, Log, TEXT("Processing layer %d globally for tactical regions"), LayerIdx);
+        
+        // Extract free voxels from ALL chunks for this layer - convert to world positions
+        TArray<FVector> AllFreeVoxelPositions;
+        TMap<FVector, const FNav3DVolumeNavigationData*> PositionToVolumeData;
+        
+        for (ANav3DDataChunkActor* ChunkActor : ChunkActors)
+        {
+            if (!ChunkActor) continue;
+            
+            for (UNav3DDataChunk* Chunk : ChunkActor->Nav3DChunks)
+            {
+                if (!Chunk) continue;
+                
+                if (const FNav3DVolumeNavigationData* VolumeData = Chunk->GetVolumeNavigationData())
+                {
+                    TArray<TPair<uint64, FIntVector>> ChunkVoxels = ExtractFreeVoxelsWithCoords(LayerIdx, VolumeData);
+                    
+                    // Convert Morton codes to world positions
+                    for (const auto& VoxelPair : ChunkVoxels)
+                    {
+                        FVector WorldPosition;
+                        if (LayerIdx == 0)
+                        {
+                            WorldPosition = VolumeData->GetLeafNodePositionFromMortonCode(VoxelPair.Key);
+                        }
+                        else
+                        {
+                            WorldPosition = VolumeData->GetNodePositionFromLayerAndMortonCode(LayerIdx, VoxelPair.Key);
+                        }
+                        
+                        AllFreeVoxelPositions.Add(WorldPosition);
+                        PositionToVolumeData.Add(WorldPosition, VolumeData);
+                    }
+                }
+            }
+        }
+        
+        if (AllFreeVoxelPositions.Num() > 0)
+        {
+            UE_LOG(LogNav3D, Log, TEXT("Layer %d: Found %d free voxels across all chunks"), LayerIdx, AllFreeVoxelPositions.Num());
+            
+            // For global tactical generation, we need a different approach
+            // Instead of trying to merge across chunks, we'll build regions per chunk
+            // but ensure they can connect across chunk boundaries
+            
+            TArray<FNav3DRegion> GlobalRegions;
+            
+            // Process each chunk separately to build regions correctly
+            for (ANav3DDataChunkActor* ChunkActor : ChunkActors)
+            {
+                if (!ChunkActor) continue;
+                
+                for (UNav3DDataChunk* Chunk : ChunkActor->Nav3DChunks)
+                {
+                    if (!Chunk) continue;
+                    
+                    if (const FNav3DVolumeNavigationData* VolumeData = Chunk->GetVolumeNavigationData())
+                    {
+                        // Build tactical data for this chunk only
+                        TArray<TPair<uint64, FIntVector>> ChunkVoxels = ExtractFreeVoxelsWithCoords(LayerIdx, VolumeData);
+                        
+                        if (ChunkVoxels.Num() > 0)
+                        {
+                            TArray<FNav3DRegionBuilder> ChunkRegionBuilders;
+
+                            // Handle different layer cases based on MaxRegionLayer setting
+                            if (LayerIdx < MaxRegionLayer)
+                            {
+                                // Original processing for layers below MaxRegionLayer - merge as normal
+                                UE_LOG(LogNav3D, Verbose, TEXT("Layer %d: Chunk region merging (below MaxRegionLayer)"), LayerIdx);
+                                
+                                // Step 1: Create a 3D grid representation for more efficient operations
+                                TMap<FIntVector, bool> VoxelGrid;
+                                
+                                // Populate the grid and find bounds
+                                for (const auto& VoxelPair : ChunkVoxels)
+                                {
+                                    const FIntVector& Coord = VoxelPair.Value;
+                                    VoxelGrid.Add(Coord, true);
+                                }
+                                
+                                // Step 2: Build box regions using a greedy algorithm
+                                TArray<FBoxRegion> BoxRegions = BuildBoxRegions(VoxelGrid, LayerIdx);
+                                
+                                UE_LOG(LogNav3D, Verbose, TEXT("Built %d chunk box regions in layer %d"), BoxRegions.Num(), LayerIdx);
+                                
+                                // Step 3: Convert to region builders
+                                for (const FBoxRegion& Box : BoxRegions)
+                                {
+                                    FNav3DRegionBuilder Builder = Box.ToRegionBuilder(ChunkVoxels);
+                                    ChunkRegionBuilders.Add(Builder);
+                                }
+
+                                BuildVoxelLevelAdjacency(ChunkRegionBuilders);
+                            }
+                            else if (LayerIdx == MaxRegionLayer)
+                            {
+                                // For layer at MaxRegionLayer, create one region per voxel (no merging)
+                                UE_LOG(LogNav3D, Verbose, TEXT("Layer %d: Creating individual voxel regions (at MaxRegionLayer)"), LayerIdx);
+                                
+                                for (const auto& VoxelPair : ChunkVoxels)
+                                {
+                                    FNav3DRegionBuilder Builder;
+                                    Builder.Id = NextRegionId++;
+                                    Builder.LayerIndex = LayerIdx;
+                                    Builder.MinCoord = VoxelPair.Value;
+                                    Builder.MaxCoord = VoxelPair.Value;
+                                    Builder.MortonCodes.Add(VoxelPair.Key);
+                                    
+                                    ChunkRegionBuilders.Add(Builder);
+                                }
+                                
+                                // Build voxel-level adjacency for individual regions
+                                BuildVoxelLevelAdjacency(ChunkRegionBuilders);
+                                
+                                UE_LOG(LogNav3D, Verbose, TEXT("Created %d individual voxel regions in layer %d (MaxRegionLayer)"), 
+                                      ChunkRegionBuilders.Num(), LayerIdx);
+                            }
+                            else // LayerIdx > MaxRegionLayer
+                            {
+                                // For layers above MaxRegionLayer, subdivide voxels
+                                UE_LOG(LogNav3D, Verbose, TEXT("Layer %d: Subdividing voxels (above MaxRegionLayer)"), LayerIdx);
+                                
+                                ChunkRegionBuilders = SubdivideVoxelsForLayer(ChunkVoxels, LayerIdx, MaxRegionLayer, VolumeData);
+                                
+                                // Build voxel-level adjacency for subdivided regions
+                                BuildVoxelLevelAdjacency(ChunkRegionBuilders);
+                                
+                                UE_LOG(LogNav3D, Verbose, TEXT("Created %d subdivided regions in layer %d (above MaxRegionLayer)"), 
+                                      ChunkRegionBuilders.Num(), LayerIdx);
+                            }
+                            
+                            // Create regions from builders for this chunk
+                            TArray<FNav3DRegion> ChunkRegions;
+                            for (const FNav3DRegionBuilder& Builder : ChunkRegionBuilders)
+                            {
+                                ChunkRegions.Add(Builder.ToRegion(VolumeData));
+                            }
+                            
+                            // Verify regions against static geometry
+                            VerifyRegionsAgainstStaticGeometry(ChunkRegions, VolumeData);
+                            
+                            // Add to global regions
+                            GlobalRegions.Append(ChunkRegions);
+                        }
+                    }
+                }
+            }
+            
+            // Create tactical actor for this layer's regions
+            if (GlobalRegions.Num() > 0)
+            {
+                CreateTacticalActorForRegions(GlobalRegions, LayerIdx);
+            }
+            
+            UE_LOG(LogNav3D, Log, TEXT("Layer %d processing complete: %d free voxels → %d final verified regions"),
+                   LayerIdx, AllFreeVoxelPositions.Num(), GlobalRegions.Num());
+        }
+        else
+        {
+            UE_LOG(LogNav3D, Log, TEXT("Layer %d has no free voxels across all chunks, skipping"), LayerIdx);
+        }
+    }
+
+    NavDataRef->RequestDrawingUpdate();
+    UE_LOG(LogNav3D, Log, TEXT("Global tactical data built: %d tactical actors created"), NavDataRef->GetAllTacticalActors().Num());
+    
+    // Force debug draw update to ensure tactical regions are visible
+    NavDataRef->RequestDrawingUpdate(true);
+    UE_LOG(LogNav3D, Log, TEXT("Forced debug draw update for tactical regions"));
+}
+
+void FNav3DTacticalReasoning::CreateTacticalActorForRegions(const TArray<FNav3DRegion>& Regions, const int32 LayerIndex) const
+{
+    if (!NavDataRef.IsValid() || Regions.Num() == 0)
+    {
+        return;
+    }
+    
+    UWorld* World = NavDataRef->GetWorld();
+    if (!World)
+    {
+        return;
+    }
+    
+    // Calculate bounds for all regions
+    FBox CombinedBounds(ForceInit);
+    for (const FNav3DRegion& Region : Regions)
+    {
+        CombinedBounds += Region.Bounds;
+    }
+    
+    // Create tactical actor without specifying a name - let Unreal generate a unique one
+    FActorSpawnParameters SpawnParams;
+    SpawnParams.Owner = NavDataRef.Get();
+    SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+    if (ANav3DTacticalActor* TacticalActor = World->SpawnActor<ANav3DTacticalActor>(SpawnParams))
+    {
+        // Set bounds
+        TacticalActor->SetTacticalActorBounds(CombinedBounds);
+        TacticalActor->OwningVolumeBounds = CombinedBounds;
+        
+        // Copy regions to tactical data
+        TacticalActor->TacticalData.Regions = Regions;
+        
+        // Register with navigation data
+        NavDataRef->RegisterTacticalActor(TacticalActor);
+        
+        UE_LOG(LogNav3D, Log, TEXT("Created tactical actor '%s' for layer %d with %d regions"), 
+               *TacticalActor->GetName(), LayerIndex, Regions.Num());
+    }
+}
+
+void FNav3DTacticalReasoning::BuildTacticalDataForLayer(int32 LayerIndex, const TArray<ANav3DDataChunkActor*>& ChunkActors)
+{
+    if (!NavDataRef.IsValid() || ChunkActors.Num() == 0)
+    {
+        UE_LOG(LogNav3D, Warning, TEXT("BuildTacticalDataForLayer: Invalid NavData or no chunk actors"));
+        return;
+    }
+    
+    // Get settings
+    const int32 MinRegionLayer = NavDataRef->TacticalSettings.MinRegioningLayer;
+    const int32 MaxRegionLayer = NavDataRef->TacticalSettings.MaxRegioningLayer;
+    
+    UE_LOG(LogNav3D, Log, TEXT("BuildTacticalDataForLayer: LayerIndex=%d, MinRegionLayer=%d, MaxRegionLayer=%d"), 
+           LayerIndex, MinRegionLayer, MaxRegionLayer);
+    
+    if (LayerIndex < MinRegionLayer || LayerIndex >= MaxRegionLayer)
+    {
+        UE_LOG(LogNav3D, Log, TEXT("BuildTacticalDataForLayer: Layer %d outside range [%d, %d), skipping"), 
+               LayerIndex, MinRegionLayer, MaxRegionLayer);
+        return;
+    }
+    
+    UE_LOG(LogNav3D, Log, TEXT("Building tactical data for layer %d"), LayerIndex);
+    
+    // Extract free voxels from ALL chunks for this layer
+    TArray<FVector> AllFreeVoxelPositions;
+    
+    for (ANav3DDataChunkActor* ChunkActor : ChunkActors)
+    {
+        if (!ChunkActor) continue;
+        
+        for (UNav3DDataChunk* Chunk : ChunkActor->Nav3DChunks)
+        {
+            if (!Chunk) continue;
+            
+            if (const FNav3DVolumeNavigationData* VolumeData = Chunk->GetVolumeNavigationData())
+            {
+                TArray<TPair<uint64, FIntVector>> ChunkVoxels = ExtractFreeVoxelsWithCoords(LayerIndex, VolumeData);
+                
+                // Convert Morton codes to world positions
+                for (const auto& VoxelPair : ChunkVoxels)
+                {
+                    const FVector WorldPos = VolumeData->GetNodePositionFromLayerAndMortonCode(LayerIndex, VoxelPair.Key);
+                    AllFreeVoxelPositions.Add(WorldPos);
+                }
+            }
+        }
+    }
+    
+    if (AllFreeVoxelPositions.Num() > 0)
+    {
+        UE_LOG(LogNav3D, Log, TEXT("Layer %d: Found %d free voxels across all chunks"), LayerIndex, AllFreeVoxelPositions.Num());
+        
+        // Build regions for this layer
+        TArray<FNav3DRegion> GlobalRegions;
+        
+        // Process each chunk separately to build regions correctly
+        for (ANav3DDataChunkActor* ChunkActor : ChunkActors)
+        {
+            if (!ChunkActor) continue;
+            
+            for (UNav3DDataChunk* Chunk : ChunkActor->Nav3DChunks)
+            {
+                if (!Chunk) continue;
+                
+                if (const FNav3DVolumeNavigationData* VolumeData = Chunk->GetVolumeNavigationData())
+                {
+                    // Build tactical data for this chunk only
+                    TArray<TPair<uint64, FIntVector>> ChunkVoxels = ExtractFreeVoxelsWithCoords(LayerIndex, VolumeData);
+                    
+                    if (ChunkVoxels.Num() > 0)
+                    {
+                        TArray<FNav3DRegionBuilder> ChunkRegionBuilders;
+                        
+                        // Handle different layer cases based on MaxRegionLayer setting
+                        if (LayerIndex < MaxRegionLayer)
+                        {
+                            // Original processing for layers below MaxRegionLayer - merge as normal
+                            TMap<FIntVector, bool> VoxelGrid;
+                            
+                            // Populate the grid
+                            for (const auto& VoxelPair : ChunkVoxels)
+                            {
+                                const FIntVector& Coord = VoxelPair.Value;
+                                VoxelGrid.Add(Coord, true);
+                            }
+                            
+                            // Build box regions using a greedy algorithm
+                            TArray<FBoxRegion> BoxRegions = BuildBoxRegions(VoxelGrid, LayerIndex);
+                            
+                            // Convert box regions to region builders
+                            for (const FBoxRegion& BoxRegion : BoxRegions)
+                            {
+                                FNav3DRegionBuilder Builder;
+                                Builder.Id = NextRegionId++;
+                                Builder.LayerIndex = LayerIndex;
+                                Builder.MinCoord = BoxRegion.Min;
+                                Builder.MaxCoord = BoxRegion.Max;
+                                
+                                // Add Morton codes for this box region
+                                for (int32 X = BoxRegion.Min.X; X <= BoxRegion.Max.X; ++X)
+                                {
+                                    for (int32 Y = BoxRegion.Min.Y; Y <= BoxRegion.Max.Y; ++Y)
+                                    {
+                                        for (int32 Z = BoxRegion.Min.Z; Z <= BoxRegion.Max.Z; ++Z)
+                                        {
+                                            FIntVector Coord(X, Y, Z);
+                                            if (VoxelGrid.Contains(Coord))
+                                            {
+                                                const uint64 MortonCode = FNav3DUtils::GetMortonCodeFromVector(FVector(Coord));
+                                                Builder.MortonCodes.Add(MortonCode);
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                ChunkRegionBuilders.Add(Builder);
+                            }
+                        }
+                        else
+                        {
+                            // For layers above MaxRegionLayer, subdivide voxels
+                            ChunkRegionBuilders = SubdivideVoxelsForLayer(ChunkVoxels, LayerIndex, MaxRegionLayer, VolumeData);
+                        }
+                        
+                        // Create regions from builders for this chunk
+                        TArray<FNav3DRegion> ChunkRegions;
+                        for (const FNav3DRegionBuilder& Builder : ChunkRegionBuilders)
+                        {
+                            ChunkRegions.Add(Builder.ToRegion(VolumeData));
+                        }
+                        
+                        // Verify regions against static geometry
+                        VerifyRegionsAgainstStaticGeometry(ChunkRegions, VolumeData);
+                        
+                        // Add to global regions
+                        GlobalRegions.Append(ChunkRegions);
+                    }
+                }
+            }
+        }
+        
+        // Create tactical actor for this layer's regions
+        if (GlobalRegions.Num() > 0)
+        {
+            CreateTacticalActorForRegions(GlobalRegions, LayerIndex);
+        }
+        
+        UE_LOG(LogNav3D, Log, TEXT("Layer %d processing complete: %d free voxels → %d final verified regions"),
+               LayerIndex, AllFreeVoxelPositions.Num(), GlobalRegions.Num());
+    }
+    else
+    {
+        UE_LOG(LogNav3D, Log, TEXT("Layer %d has no free voxels across all chunks, skipping"), LayerIndex);
+    }
 }
 
 TArray<FBoxRegion> FNav3DTacticalReasoning::BuildBoxRegions(const TMap<FIntVector, bool>& VoxelGrid, int32 LayerIndex)
@@ -439,11 +888,18 @@ TArray<FVector> FNav3DTacticalReasoning::ExtractFreeVoxelsInLayer(const int32 La
         return FreeVoxels;
     }
 
-    const TArray<FNav3DVolumeNavigationData>& VolumeNavData = NavDataRef->GetVolumeNavigationData();
-    
-    for (const FNav3DVolumeNavigationData& NavVolume : VolumeNavData)
+    for (ANav3DDataChunkActor* ChunkActor : NavDataRef->GetChunkActors())
     {
-        const FNav3DData& OctreeData = NavVolume.GetData();
+        if (!ChunkActor) continue;
+        
+        for (const UNav3DDataChunk* Chunk : ChunkActor->Nav3DChunks)
+        {
+            if (!Chunk) continue;
+            
+            const FNav3DVolumeNavigationData* NavVolume = Chunk->GetVolumeNavigationData();
+            if (!NavVolume) continue;
+            
+            const FNav3DData& OctreeData = NavVolume->GetData();
         
         if (LayerIndex >= OctreeData.GetLayerCount())
         {
@@ -462,16 +918,17 @@ TArray<FVector> FNav3DTacticalReasoning::ExtractFreeVoxelsInLayer(const int32 La
                 if (LayerIndex == 0)
                 {
                     // For leaf layer
-                    NodePosition = NavVolume.GetLeafNodePositionFromMortonCode(Node.MortonCode);
+                    NodePosition = NavVolume->GetLeafNodePositionFromMortonCode(Node.MortonCode);
                 }
                 else
                 {
                     // For other layers
-                    NodePosition = NavVolume.GetNodePositionFromLayerAndMortonCode(LayerIndex, Node.MortonCode);
+                    NodePosition = NavVolume->GetNodePositionFromLayerAndMortonCode(LayerIndex, Node.MortonCode);
                 }
 
                 FreeVoxels.Add(NodePosition);
             }
+        }
         }
     }
 

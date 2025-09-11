@@ -2,6 +2,7 @@
 #include "Nav3D.h"
 #include "Nav3DData.h"
 #include "NavigationSystem.h"
+#include "Nav3DDataChunkActor.h"
 
 UNav3DDynamicOcclusion::UNav3DDynamicOcclusion()
 {
@@ -225,13 +226,23 @@ void UNav3DDynamicOcclusion::TickComponent(const float DeltaTime, const ELevelTi
 
 				// First verify the occluder is still registered
 				TArray<const AActor*> CurrentOccluders;
-				for (const auto& VolumeData : NavData->GetVolumeNavigationData())
+				for (ANav3DDataChunkActor* ChunkActor : NavData->GetChunkActors())
 				{
-					for (const auto& Occluder : VolumeData.DynamicOccluders)
+					if (!ChunkActor) continue;
+					
+					for (const UNav3DDataChunk* Chunk : ChunkActor->Nav3DChunks)
 					{
-						if (const AActor* OccluderActor = Occluder.Get())
+						if (!Chunk) continue;
+
+						if (const FNav3DVolumeNavigationData* VolumeData = Chunk->GetVolumeNavigationData())
 						{
-							CurrentOccluders.AddUnique(OccluderActor);
+							for (const auto& Occluder : VolumeData->DynamicOccluders)
+							{
+								if (const AActor* OccluderActor = Occluder.Get())
+								{
+									CurrentOccluders.AddUnique(OccluderActor);
+								}
+							}
 						}
 					}
 				}

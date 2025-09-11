@@ -142,3 +142,16 @@ FNav3DTacticalDebugData::FNav3DTacticalDebugData()
 	, bDrawBestCover(false)
 {
 }
+
+FNav3DVolumeDebugData::FNav3DVolumeDebugData()
+	: bDebugDrawBounds(false)
+	, bDebugDrawVolumes(false)
+	, bDebugDrawAdjacency(false)
+	, bDebugDrawLayers(false)
+	, LayerIndexToDraw(0)
+	, bDebugDrawOccludedVoxels(false)
+	, bDebugDrawFreeVoxels(false)
+	, bDebugDrawNodeCoords(false)
+	, bDebugDrawMortonCodes(false)
+{
+}

@@ -24,4 +24,7 @@ private:
 
     /** Generate the voxel info display panel */
     void GenerateVoxelInfoPanel(IDetailLayoutBuilder& DetailBuilder, IDetailCategoryBuilder& CategoryBuilder) const;
+    
+    /** Generate the tactical actors display panel */
+    void GenerateTacticalActorsPanel(IDetailLayoutBuilder& DetailBuilder, IDetailCategoryBuilder& CategoryBuilder) const;
 }; 

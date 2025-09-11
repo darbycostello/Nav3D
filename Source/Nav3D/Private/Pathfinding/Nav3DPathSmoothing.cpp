@@ -46,7 +46,7 @@ float FNav3DPathSmoothing::GetT(const float T, const float Alpha, const FVector&
 	const auto D = P1 - P0;
 	const auto A = D | D; // Dot product
 	const auto B = FMath::Pow(A, Alpha * 0.5f);
-	return (B + T);
+	return B + T;
 }
 
 FVector FNav3DPathSmoothing::GetPoint(const FVector& P0, const FVector& P1,

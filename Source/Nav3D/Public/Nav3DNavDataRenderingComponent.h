@@ -45,6 +45,7 @@ protected:
 	void AddNodeTextInfos(const MortonCode NodeMortonCode,
 	                      const LayerIndex NodeLayerIndex,
 	                      const FVector& NodePosition);
+	void AddVolumeTextInfos();
 	// Override to draw custom filled geometry for voxels
 	virtual void GetDynamicMeshElements(const TArray<const FSceneView*>& Views,
 	                                   const FSceneViewFamily& ViewFamily,
@@ -52,13 +53,18 @@ protected:
 	                                   FMeshElementCollector& Collector) const override;
 
 	// Helpers for translucent filled boxes
-	void RenderVoxelSurfaces(class FPrimitiveDrawInterface* PDI, class FMeshElementCollector& Collector) const;
+	void RenderVoxelSurfaces(FPrimitiveDrawInterface* PDI, FMeshElementCollector& Collector) const;
 
     
     // Tactical reasoning visualization functions
     void DebugDrawRegions();
     void DebugDrawRegionIds();
     void DebugDrawAdjacency();
+    void DebugDrawCrossVolumeAdjacency();
+    // Removed portal drawing per new requirements
+
+    // Classic octree adjacency debug (layer-0 free neighbors and parent links)
+    void DebugDrawOctreeAdjacency(const class FNav3DVolumeNavigationData& VolumeData, int32 MaxLinesToDraw = 10000);
     void DebugDrawVisibility(int32 ViewerRegionId);
     void DebugDrawBestCover(int32 ViewerRegionId);
 	

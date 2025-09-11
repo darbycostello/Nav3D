@@ -6,10 +6,3 @@ ENavigationQueryResult::Type UNav3DPathFindingSearch::GetPath(
 {
 	return ENavigationQueryResult::Error;
 }
-
-TSharedPtr<FNav3DPathStepper> UNav3DPathFindingSearch::GetDebugPathStepper(
-	FNav3DPathFinderDebugData& /*DebugData*/,
-	const FNav3DPathFindingParameters /*Params*/) const
-{
-	return nullptr;
-}

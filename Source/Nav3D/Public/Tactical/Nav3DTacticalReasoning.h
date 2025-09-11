@@ -4,6 +4,8 @@
 #include "Tactical/Nav3DTacticalTypes.h"
 
 class ANav3DData;
+class ANav3DDataChunkActor;
+class ANav3DTacticalActor;
 class FNav3DVolumeNavigationData;
 
 // Class that handles the creation and queries for the tactical data
@@ -17,6 +19,15 @@ public:
     void Initialize(ANav3DData* NavData);
 
     void BuildTacticalData(const FBox& VolumeBounds);
+    
+    // Global tactical generation that processes all chunks together
+    void BuildGlobalTacticalData(const TArray<ANav3DDataChunkActor*>& ChunkActors);
+    
+    // Create tactical actor for regions
+    void CreateTacticalActorForRegions(const TArray<FNav3DRegion>& Regions, int32 LayerIndex) const;
+    
+    // Build tactical data for a specific layer (for async processing)
+    void BuildTacticalDataForLayer(int32 LayerIndex, const TArray<ANav3DDataChunkActor*>& ChunkActors);
     
     /**
      * Finds the best positions based on tactical criteria like visibility, distance, and region size.
@@ -78,7 +89,6 @@ private:
     // Find the region with the specified ID
     static const FNav3DRegion* GetRegionById(const FNav3DTacticalData& TargetData, int32 RegionId);
 
-    // New region construction methods 
     static TArray<TPair<uint64, FIntVector>> ExtractFreeVoxelsWithCoords(int32 LayerIndex, const FNav3DVolumeNavigationData* VolumeData);
     TArray<FNav3DRegionBuilder> BuildInitialRegions(const TArray<TPair<uint64, FIntVector>>& FreeVoxels, int32 LayerIndex);
     TArray<FNav3DRegionBuilder> RefineRegionsToBoxes(const TArray<FNav3DRegionBuilder>& InitialRegions);

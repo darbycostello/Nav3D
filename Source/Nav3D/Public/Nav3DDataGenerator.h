@@ -44,7 +44,7 @@ struct NAV3D_API FNav3DBoxGeneratorWrapper : FNonAbandonableTask
 
 	void DoWork() const { BoxNavigationDataGenerator->DoWork(); }
 
-	FORCEINLINE static TStatId GetStatId();
+	FORCEINLINE static TStatId GetStatId() { return TStatId(); }
 };
 
 using FNav3DBoxGeneratorTask = FAsyncTask<FNav3DBoxGeneratorWrapper>;
@@ -113,7 +113,20 @@ public:
 	ANav3DData* GetOwner() const;
 	UWorld* GetWorld() const;
 	const FNav3DDataGenerationSettings& GetGenerationSettings() const;
+	TSharedRef<FNav3DVolumeNavigationDataGenerator> CreateBoxNavigationGenerator(const FBox& Box);
 
+	// Enhanced build management
+	ANav3DDataChunkActor* CreateChunkActorForVolume(
+		const FBox& VolumeBounds, const FNav3DVolumeNavigationData& NavData) const;
+	void BuildAdjacencyBetweenChunkActors(const TArray<ANav3DDataChunkActor*>& ChunkActors) const;
+	static void BuildAdjacencyBetweenTwoChunkActors(
+		ANav3DDataChunkActor* ActorA, ANav3DDataChunkActor* ActorB, float VoxelSize);
+
+	// Single volume build support
+	void SetBuildTargetVolume(const FBox& VolumeBounds);
+	void RestoreAllVolumes();
+	bool IsSingleVolumeBuild() const { return bIsSingleVolumeBuild; }
+	
 	void Init();
 
 	virtual bool RebuildAll() override;
@@ -127,7 +140,13 @@ public:
 	virtual int32 GetNumRunningBuildTasks() const override;
 
 	// Exposed for cooperative cancellation checks in nested work if needed
-	bool ShouldCancelBuild() const { return false; }
+	static bool ShouldCancelBuild() { return false; }
+	
+	// Tactical generation support
+	void StartTacticalGeneration();
+	void ProcessTacticalGeneration();
+	void ResetTacticalGenerationFlag();
+	bool IsTacticalGenerationInProgress() const { return bTacticalGenerationInProgress; }
 
 private:
 	void StartChunkedBuildCompletion();
@@ -138,13 +157,20 @@ private:
 	void SortPendingBounds();
 	void UpdateNavigationBounds();
 	TArray<FBox> ProcessAsyncTasks(int32 TaskToProcessCount);
-	TSharedRef<FNav3DVolumeNavigationDataGenerator>
-	CreateBoxNavigationGenerator(const FBox& Box);
-
+	
+	// Volume partitioning support
+	TArray<FBox> GetOriginalNavigationBounds() const;
+	static TArray<FBox> PartitionVolumeIfNeeded(const FBox& OriginalVolume);
+	static void ValidatePartitionedVolumes(const TArray<FBox>& Volumes);
+	
 	ANav3DData& NavigationData;
 	FNav3DDataGenerationSettings GenerationSettings;
 	int MaximumGeneratorTaskCount;
 	uint8 IsInitialized : 1;
+	
+	// Single volume build support
+	TNavStatArray<FBox> OriginalNavigationBounds;
+	bool bIsSingleVolumeBuild = false;
 
 	/** Total bounding box that includes all volumes, in unreal units. */
 	FBox TotalNavigationBounds;
@@ -156,6 +182,12 @@ private:
 	RunningBoundsDataGenerationElements;
 
 	FTimerHandle ChunkedBuildTimerHandle;
+	
+	// Tactical generation state
+	bool bTacticalGenerationInProgress = false;
+	FTimerHandle TacticalGenerationTimerHandle;
+	int32 CurrentTacticalLayer = 0;
+	TArray<ANav3DDataChunkActor*> TacticalChunkActors;
 };
 
 FORCEINLINE ANav3DData* FNav3DDataGenerator::GetOwner() const

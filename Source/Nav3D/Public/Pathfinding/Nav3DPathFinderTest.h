@@ -5,14 +5,12 @@
 #include <CoreMinimal.h>
 #include <DebugRenderSceneProxy.h>
 #include <GameFramework/Actor.h>
-#include "Stepper/Nav3DPathStepper.h"
 #include "Nav3DPathFinderTest.generated.h"
 
 class FNav3DPathFinder;
 class USphereComponent;
 class ANav3DPathFinderTest;
 class UNav3DPathFindingRenderingComponent;
-class FNav3DPathStepper;
 
 USTRUCT()
 struct NAV3D_API FNav3DPathRenderingDebugDrawOptions
@@ -56,9 +54,8 @@ struct NAV3D_API FNav3DPathFindingSceneProxyData final
 
 	FVector StartLocation;
 	FVector EndLocation;
-	FNav3DPathFinderDebugData DebugInfos;
 	TOptional<EGraphAStarResult> PathFindingResult;
-	TSharedPtr<const FNav3DPathStepper> Stepper;
+	FNav3DPath NavigationPath;
 };
 
 class NAV3D_API FNav3DPathFindingSceneProxy final
@@ -104,35 +101,19 @@ public:
 
 	FVector GetStartLocation() const;
 	FVector GetEndLocation() const;
-	const FNav3DPathFinderDebugData& GetPathFinderDebugInfos() const;
 	const FNav3DPathRenderingDebugDrawOptions& GetDebugDrawOptions() const;
-	const TSharedPtr<FNav3DPathStepper>& GetStepper() const;
-	ENav3DPathStepperStatus GetStepperLastStatus() const;
 	EGraphAStarResult GetPathFindingResult() const;
+	const FNav3DPath& GetNavigationPath() const;
 	virtual void BeginDestroy() override;
 
 private:
 	void UpdateDrawing() const;
-	void InitPathFinding();
-	void InitPathFindingIfNotDone();
 
-	UFUNCTION(CallInEditor)
-	void ResetPathFinding();
+	UFUNCTION(CallInEditor, meta = (DisplayName = "Find Path"))
+	void FindPath();
 
-	UFUNCTION(CallInEditor)
-	void Step();
-
-	UFUNCTION(CallInEditor)
-	void AutoCompleteStepByStep();
-
-	UFUNCTION(CallInEditor)
-	void AutoCompleteUntilNextNode();
-
-	UFUNCTION(CallInEditor)
-	void AutoCompleteInstantly();
-
-	UFUNCTION(CallInEditor)
-	void PauseAutoCompletion();
+	UFUNCTION(CallInEditor, meta = (DisplayName = "Clear Paths"))
+	void ClearPaths();
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, meta = (AllowPrivateAccess = "true"))
 	USphereComponent* SphereComponent;
@@ -154,11 +135,6 @@ private:
 	UPROPERTY(EditAnywhere)
 	FNav3DPathRenderingDebugDrawOptions DebugDrawOptions;
 
-	TSharedPtr<FNav3DPathStepper> Stepper;
-
-	UPROPERTY(EditAnywhere)
-	float AutoStepTimer;
-
 	UPROPERTY(EditInstanceOnly)
 	ANav3DPathFinderTest* OtherActor;
 
@@ -166,10 +142,6 @@ private:
 
 	UPROPERTY(VisibleInstanceOnly, AdvancedDisplay)
 	FNav3DPathFinderDebugData PathFinderDebugInfos;
-
-	uint8 bAutoComplete : 1;
-	FTimerHandle AutoCompleteTimerHandle;
-	ENav3DPathStepperStatus LastStatus;
 	EGraphAStarResult PathFindingResult;
 };
 
@@ -185,32 +157,20 @@ FORCEINLINE FVector ANav3DPathFinderTest::GetEndLocation() const
 		       : FVector::ZeroVector;
 }
 
-FORCEINLINE const FNav3DPathFinderDebugData&
-ANav3DPathFinderTest::GetPathFinderDebugInfos() const
-{
-	return PathFinderDebugInfos;
-}
-
 FORCEINLINE const FNav3DPathRenderingDebugDrawOptions&
 ANav3DPathFinderTest::GetDebugDrawOptions() const
 {
 	return DebugDrawOptions;
 }
 
-FORCEINLINE const TSharedPtr<FNav3DPathStepper>&
-ANav3DPathFinderTest::GetStepper() const
-{
-	return Stepper;
-}
-
-FORCEINLINE ENav3DPathStepperStatus
-ANav3DPathFinderTest::GetStepperLastStatus() const
-{
-	return LastStatus;
-}
-
 FORCEINLINE EGraphAStarResult
 ANav3DPathFinderTest::GetPathFindingResult() const
 {
 	return PathFindingResult;
+}
+
+FORCEINLINE const FNav3DPath&
+ANav3DPathFinderTest::GetNavigationPath() const
+{
+	return NavigationPath;
 }

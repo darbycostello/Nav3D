@@ -11,6 +11,9 @@
 
 class UNav3DDataChunk;
 class UNav3DNavDataRenderingComponent;
+class ANav3DDataChunkActor;
+class ANav3DTacticalActor;
+class UNav3DWorldSubsystem;
 struct FNav3DBounds;
 class FNav3DTacticalReasoning;
 struct FNav3DTacticalData;
@@ -40,13 +43,80 @@ public:
 	UPROPERTY(EditAnywhere, Category="Nav3D", config)
 	FNav3DDataGenerationSettings GenerationSettings;
 
-	UPROPERTY(EditAnywhere, Category="Nav3D", config, meta = (ClampMin = "0", UIMin = "0"), AdvancedDisplay)
-	int32 MaxSimultaneousBoxGenerationJobsCount;
+	// Deprecated: moved to GenerationSettings.MaxSimultaneousBoxGenerationJobsCount
 
 	FNav3DVolumeDebugData GetDebugData() const;
 	FNav3DDataGenerationSettings GetGenerationSettings() const;
-	const TArray<FNav3DVolumeNavigationData>& GetVolumeNavigationData() const;
-	TArray<FNav3DVolumeNavigationData>& GetVolumeNavigationData();
+	
+	// Chunk actor management (single source of truth)
+	void RegisterChunkActor(ANav3DDataChunkActor* ChunkActor);
+	void UnregisterChunkActor(ANav3DDataChunkActor* ChunkActor);
+	TArray<ANav3DDataChunkActor*> GetAllChunkActors() const;
+	
+	// Cleanup methods for invalid actors
+	void CleanupInvalidChunkActors();
+	int32 GetInvalidChunkActorCount() const;
+	
+	// Blueprint-callable cleanup method
+	UFUNCTION(BlueprintCallable, meta=(DisplayName="Cleanup Invalid Chunk Actors", Category="Nav3D"))
+	void CleanupInvalidChunkActorsBP();
+	
+	// Tactical actor management
+	void RegisterTacticalActor(ANav3DTacticalActor* TacticalActor);
+	void UnregisterTacticalActor(ANav3DTacticalActor* TacticalActor);
+	void ClearAllTacticalActors();
+	TArray<ANav3DTacticalActor*> GetAllTacticalActors() const;
+	
+	// Cleanup methods for invalid tactical actors
+	void CleanupInvalidTacticalActors();
+	int32 GetInvalidTacticalActorCount() const;
+	
+	// Blueprint-callable cleanup method for tactical actors
+	UFUNCTION(BlueprintCallable, meta=(DisplayName="Cleanup Invalid Tactical Actors", Category="Nav3D"))
+	void CleanupInvalidTacticalActorsBP();
+	
+	// Comprehensive cleanup method for both types of invalid actors
+	UFUNCTION(BlueprintCallable, meta=(DisplayName="Cleanup All Invalid Actors", Category="Nav3D"))
+	void CleanupAllInvalidActors();
+	
+	// Navigation data access (queries chunk actors)
+	const FNav3DVolumeNavigationData* GetVolumeNavigationDataContainingPoint(const FVector& Point) const;
+	const FNav3DVolumeNavigationData* GetVolumeNavigationDataContainingPoints(const TArray<FVector>& Points) const;
+	
+	// Bounds calculation (computed from chunk actors)
+	FBox GetBoundingBox() const;
+	
+	// Navigation queries
+	bool HasNavigationData() const { return ChunkActors.Num() > 0; }
+	int32 GetChunkCount() const { return ChunkActors.Num(); }
+	TArray<TObjectPtr<ANav3DDataChunkActor>> GetChunkActors() const { return ChunkActors; }
+	
+	// Volume information (read-only)
+	UFUNCTION(BlueprintCallable, meta=(DisplayName="Show Partitioned Volumes", Category="Nav3D"))
+	TArray<FBox> GetPartitionedVolumes() const;
+	
+	// Get all discoverable volumes from the world (built and unbuilt)
+	TArray<FBox> GetAllDiscoverableVolumes() const;
+
+	UFUNCTION(BlueprintCallable, meta=(DisplayName="Validate", Category="Nav3D"))
+	void ValidateNavigationSystem();
+	
+	void ShowBuildStatus();
+
+	UFUNCTION(BlueprintCallable, meta=(DisplayName="Analyse", Category="Nav3D"))
+	void Analyse() const;
+
+	// Build operations (moved to Build Controls section in details panel)
+	void BuildNavigationData() const;
+	void ClearNavigationData();
+	void BuildSingleVolume(const FBox& VolumeBounds);
+
+	// Build operations (chunk-scoped)
+	void RebuildSingleChunk(const FBox& ChunkBounds);
+	void RebuildSingleChunk(const class ANav3DDataChunkActor* ChunkActor);
+	
+	// Tactical build operations
+	void RebuildTacticalData();
 
 	UFUNCTION(BlueprintCallable, Category = "Nav3D")
 	bool FindBestLocation(
@@ -59,17 +129,12 @@ public:
 		bool bForceNewRegion,
 		bool bUseRaycasting) const;
     
-	// Debug helper to get current reference count status
-	UFUNCTION(BlueprintCallable, Category = "Nav3D", CallInEditor)
-	void LogVolumeReferenceCounts() const;
-    
 	void RebuildDirtyBounds(const TArray<FBox>& DirtyBounds);
 	void RegisterDynamicOccluder(const AActor* Occluder);
 	void UnregisterDynamicOccluder(const AActor* Occluder);
 	virtual void PostInitProperties() override;
-	virtual void OnRegistered() override;
 	virtual void PostLoad() override;
-	virtual void Serialize(FArchive& Archive) override;
+	virtual void OnRegistered() override;
 	virtual void CleanUp() override;
 	virtual bool NeedsRebuild() const override;
 	virtual void EnsureBuildCompletion() override;
@@ -141,51 +206,47 @@ public:
 
 	virtual void ConditionalConstructGenerator() override;
 	void RequestDrawingUpdate(bool Force = false);
-	FBox GetBoundingBox() const;
-	void RemoveDataInBounds(const FBox& Bounds);
-
-	template <typename Allocator_Type_>
-	void RemoveDataInBounds(const TArray<FBox, Allocator_Type_>& BoundsArray)
-	{
-		for (const auto& Bounds : BoundsArray)
-		{
-			RemoveDataInBounds(Bounds);
-		}
-	}
-
-	void AddVolumeNavigationData(FNav3DVolumeNavigationData Data);
-	const FNav3DVolumeNavigationData*
-	GetVolumeNavigationDataContainingPoints(const TArray<FVector>& Points) const;
-	void UpdateNavVersion();
 	bool InitializeTacticalReasoning();
 	void BuildTacticalData();
 	const FNav3DTacticalData& GetTacticalDataAtPosition(const FVector& Position) const;
-	const FNav3DVolumeNavigationData* GetVolumeNavigationDataContainingPoint(const FVector& Point) const;
 
 	// Get the voxel extent based on the agent radius from NavConfig
 	float GetVoxelExtent() const;
 	int32 GetLayerCount() const;
+	UNav3DWorldSubsystem* GetSubsystem() const;
+
+#if WITH_EDITORONLY_DATA
+	// Editor-only: increments whenever chunks are added/removed so details panel can refresh
+	UPROPERTY(Transient, VisibleAnywhere, Category="Nav3D")
+	int32 ChunkRevision = 0;
+#endif
 
 protected:
-	float TimeSinceLastUpdate;
+	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 private:
-	void SerializeNav3DData(FArchive& Archive, ENav3DVersion Version);
-	void
-	CheckToDiscardSubLevelNavData(const UNavigationSystemBase& NavigationSystem);
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Navigation", meta=(AllowPrivateAccess="true"))
+	TArray<TObjectPtr<ANav3DDataChunkActor>> ChunkActors;
+	
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Tactical", meta=(AllowPrivateAccess="true"))
+	TArray<TObjectPtr<ANav3DTacticalActor>> TacticalActors;
+	
+	// Spatial query caching (transient)
+	mutable TWeakObjectPtr<UNav3DWorldSubsystem> CachedSubsystem;
+	
+	void CheckToDiscardSubLevelNavData(const UNavigationSystemBase& NavigationSystem);
 	void RecreateDefaultFilter() const;
 	void UpdateDrawing() const;
 	void ResetGenerator(bool CancelBuild = true);
 	void OnNavigationDataUpdatedInBounds(const TArray<FBox>& UpdatedBounds);
-	
-	UFUNCTION(CallInEditor, meta=(DisplayName="Clear", Category="Nav3D"))
-	void ClearNavigationData();
+	void DiscoverExistingChunkActors();
+	void NotifyChunksChanged();
 
-	UFUNCTION(CallInEditor, meta=(DisplayName="Analyse", Category="Nav3D"))
-	void Analyse() const;
-
-	UFUNCTION(CallInEditor, meta=(DisplayName="Build", Category="Nav3D"))
-	void BuildNavigationData() const;
+	static void AnalyzeActualSpatialDistribution(const FBox& VolumeBounds, const TArray<FOverlapResult>& OverlappingObjects);
+	static void AnalyzeSpatialClustering(const TArray<FVector>& ObjectPositions, const TArray<FBox>& ObjectBounds, const FBox& VolumeBounds, int32 NumCandidateObjects);
+	static void EstimateOctreeSize(const FBox& VolumeBounds, float EmptyGridRatio, int32 MaxLayers, float LeafNodeSize);
 
 	void InvalidateAffectedPaths(const TArray<FBox>& UpdatedBounds);
 	void OnNavigationDataGenerationFinished();
@@ -198,9 +259,6 @@ private:
 
 	static FNav3DGenerationFinishedDelegate GenerationFinishedDelegate;
 
-	TArray<FNav3DVolumeNavigationData> VolumeNavigationData;
-	ENav3DVersion Version;
-    
     // Empty tactical to return when tactical reasoning is not enabled
     static const FNav3DTacticalData EmptyTacticalData;
 
@@ -208,16 +266,6 @@ private:
 	TMap<FBox, int32> LoadedVolumeReferenceCounts;  // Volume bounds → ref count
 	mutable FCriticalSection VolumeLoadingMutex;    // Thread safety
 };
-
-FORCEINLINE const TArray<FNav3DVolumeNavigationData>& ANav3DData::GetVolumeNavigationData() const
-{
-	return VolumeNavigationData;
-}
-
-FORCEINLINE TArray<FNav3DVolumeNavigationData>& ANav3DData::GetVolumeNavigationData() 
-{
-	return VolumeNavigationData;
-}
 
 FORCEINLINE FNav3DVolumeDebugData ANav3DData::GetDebugData() const
 {

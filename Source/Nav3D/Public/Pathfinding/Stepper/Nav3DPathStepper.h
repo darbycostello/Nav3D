@@ -1,6 +1,6 @@
 ﻿#pragma once
 #include "Pathfinding/Nav3DPathFindingTypes.h"
-#include "Pathfinding/Search/Nav3DGraphAStar.h"
+#include "Pathfinding/Search/Nav3DAStar.h"
 #include "Pathfinding/Search/Nav3DPathFindingSearch.h"
 
 enum class NAV3D_API ENav3DPathStepperStatus : uint8

@@ -15,9 +15,6 @@ public:
 	virtual ENavigationQueryResult::Type
 	GetPath(FNav3DPath& NavigationPath,
 	        const FNav3DPathFindingParameters& Params) const override;
-	virtual TSharedPtr<FNav3DPathStepper>
-	GetDebugPathStepper(FNav3DPathFinderDebugData& DebugData,
-	                    const FNav3DPathFindingParameters Params) const override;
 
 private:
 	UPROPERTY(EditAnywhere)

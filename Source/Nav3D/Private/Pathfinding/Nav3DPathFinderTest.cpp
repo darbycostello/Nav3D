@@ -9,7 +9,6 @@
 #include "Nav3D.h"
 #include "NavFilters/NavigationQueryFilter.h"
 #include "Pathfinding/Stepper/Nav3DPathFindingRenderingComponent.h"
-#include "Pathfinding/Stepper/Nav3DPathStepper.h"
 
 #if WITH_EDITOR
 #endif
@@ -19,19 +18,8 @@ void FNav3DPathFindingSceneProxyData::GatherData(
 {
 	StartLocation = PathFinderTest.GetStartLocation();
 	EndLocation = PathFinderTest.GetEndLocation();
-	DebugInfos = PathFinderTest.GetPathFinderDebugInfos();
-	Stepper = PathFinderTest.GetStepper();
-
-	if (PathFinderTest.GetStepperLastStatus() ==
-		ENav3DPathStepperStatus::IsStopped)
-	{
-		PathFindingResult =
-			TOptional(PathFinderTest.GetPathFindingResult());
-	}
-	else
-	{
-		PathFindingResult.Reset();
-	}
+	NavigationPath = PathFinderTest.GetNavigationPath();
+	PathFindingResult = TOptional(PathFinderTest.GetPathFindingResult());
 }
 
 FNav3DPathFindingSceneProxy::FNav3DPathFindingSceneProxy(
@@ -53,98 +41,45 @@ FNav3DPathFindingSceneProxy::FNav3DPathFindingSceneProxy(
 	DebugDrawOptions = PathFinderTest->GetDebugDrawOptions();
 	ActorOwner = Component.GetOwner();
 
-	if (!ProxyData.Stepper.IsValid())
+	// Check if we have a valid pathfinding result
+	if (!ProxyData.PathFindingResult.IsSet() || ProxyData.PathFindingResult.GetValue() != SearchSuccess)
 	{
 		return;
 	}
 
-	const auto AddText = [Texts = &Texts](
-		const FNav3DPathFinderDebugNodeCost& DebugNodeCost)
+	// Draw start and end points
+	const FVector StartLocation = ProxyData.StartLocation;
+	const FVector EndLocation = ProxyData.EndLocation;
+
+	// Start point (green sphere)
+	Boxes.Emplace(FBox::BuildAABB(StartLocation, FVector(100.0f)), FColor::Green);
+	Texts.Emplace(FText3d(TEXT("Start"), StartLocation + FVector(0.0f, 0.0f, 150.0f), FLinearColor::Green));
+
+	// End point (red sphere)
+	Boxes.Emplace(FBox::BuildAABB(EndLocation, FVector(100.0f)), FColor::Red);
+	Texts.Emplace(FText3d(TEXT("End"), EndLocation + FVector(0.0f, 0.0f, 150.0f), FLinearColor::Red));
+
+	// Draw the navigation path
+	const auto& PathPoints = ProxyData.NavigationPath.GetPathPoints();
+	if (PathPoints.Num() > 1)
 	{
-		Texts->Emplace(FText3d(
-			FString::SanitizeFloat(DebugNodeCost.Cost),
-			FVector(0.0f, 0.0f, 50.0f) +
-			(DebugNodeCost.From.Location + DebugNodeCost.To.Location) / 2.0f,
-			FLinearColor::White));
-	};
-
-	const auto VisualizeDebugNodeCost =
-		[this, AddText,
-			ProxyData](const FNav3DPathFinderDebugNodeCost& DebugNodeCost,
-			           const FColor& Color)
-	{
-		if (!DebugNodeCost.From.NodeAddress.IsValid() ||
-			!DebugNodeCost.To.NodeAddress.IsValid())
+		// Draw path lines
+		for (int32 i = 0; i < PathPoints.Num() - 1; ++i)
 		{
-			return;
+			Lines.Emplace(FDebugLine(PathPoints[i], PathPoints[i + 1], FColor::Green, 3.0f));
+			ArrowHeadLocations.Emplace(PathPoints[i], PathPoints[i + 1]);
 		}
-
-		const auto& VolumeNavigationData =
-			ProxyData.Stepper->GetParameters().VolumeNavigationData;
-
-		if (DebugDrawOptions.bDrawNodes)
+		
+		// Draw path points as small spheres
+		for (int32 i = 0; i < PathPoints.Num(); ++i)
 		{
-			const auto FromNodeExtent =
-				VolumeNavigationData.GetNodeExtentFromNodeAddress(DebugNodeCost.From.NodeAddress);
-			Boxes.Emplace(FBox::BuildAABB(DebugNodeCost.From.Location,
-			                              FVector(FromNodeExtent)),
-			              Color);
-
-			const auto ToNodeExtent =
-				VolumeNavigationData.GetNodeExtentFromNodeAddress(
-					DebugNodeCost.To.NodeAddress);
-			Boxes.Emplace(
-				FBox::BuildAABB(DebugNodeCost.To.Location, FVector(ToNodeExtent)),
-				Color);
-		}
-
-		if (DebugDrawOptions.bDrawConnections)
-		{
-			Lines.Emplace(FDebugLine(DebugNodeCost.From.Location,
-			                         DebugNodeCost.To.Location, FColor::Blue,
-			                         2.0f));
-		}
-
-		if (DebugDrawOptions.bDrawCosts)
-		{
-			AddText(ProxyData.DebugInfos.LastProcessedSingleNode);
-		}
-	};
-
-	if (DebugDrawOptions.bDrawLastProcessedNode)
-	{
-		VisualizeDebugNodeCost(ProxyData.DebugInfos.LastProcessedSingleNode,
-		                       FColor::Blue);
-	}
-
-	if (DebugDrawOptions.bDrawLastProcessedNeighbours)
-	{
-		for (const auto& Neighbour : ProxyData.DebugInfos.ProcessedNeighbours)
-		{
-			VisualizeDebugNodeCost(Neighbour, Neighbour.bIsClosed
-				                                  ? FColor::Orange
-				                                  : FColor::Green);
+			FVector Extent(50.0f); // Small sphere size
+			Boxes.Emplace(FBox::BuildAABB(PathPoints[i], Extent), FColor::Yellow);
 		}
 	}
 
-	if (ProxyData.PathFindingResult.Get(SearchFail) == SearchSuccess ||
-		DebugDrawOptions.bDrawBestPath)
-	{
-		const auto& BestPathPoints =
-			ProxyData.DebugInfos.CurrentBestPath.GetPathPoints();
-
-		ArrowHeadLocations.Reserve(BestPathPoints.Num());
-
-		for (auto Index = 0; Index < BestPathPoints.Num() - 1; Index++)
-		{
-			const auto From = BestPathPoints[Index];
-			const auto To = BestPathPoints[Index + 1];
-
-			Lines.Emplace(From, To, FColor::Blue, 3.0f);
-			Boxes.Emplace(FBox::BuildAABB(From, FVector(20.0f)), FColor::Cyan);
-			ArrowHeadLocations.Emplace(From, To);
-		}
-	}
+	// Draw direct line between start and end (for reference)
+	Lines.Emplace(FDebugLine(StartLocation, EndLocation, FColor::Blue, 1.0f));
 }
 
 SIZE_T FNav3DPathFindingSceneProxy::GetTypeHash() const
@@ -175,7 +110,7 @@ void FNav3DPathFindingSceneProxy::GetDynamicMeshElements(
 	for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 	{
 		FPrimitiveDrawInterface* PDI = Collector.GetPDI(ViewIndex);
-		if (VisibilityMap & (1 << ViewIndex))
+		if (VisibilityMap & 1 << ViewIndex)
 		{
 			for (const auto& Pair : ArrowHeadLocations)
 			{
@@ -249,9 +184,8 @@ ANav3DPathFinderTest::ANav3DPathFinderTest()
 #endif
 
 	NavAgentProperties = FNavAgentProperties::DefaultProperties;
-	AutoStepTimer = 0.2f;
-	bAutoComplete = false;
 	bUpdatePathAfterMoving = false;
+	PathFindingResult = SearchFail;
 }
 
 #if WITH_EDITOR
@@ -289,7 +223,7 @@ void ANav3DPathFinderTest::PostEditChangeProperty(
 		const FName PropertyName = PropertyChangedEvent.MemberProperty->GetFName();
 		if (PropertyName == NAME_NavigationQueryFilter)
 		{
-			InitPathFinding();
+			FindPath();
 		}
 		else if (PropertyName == NAME_OtherActor)
 		{
@@ -333,13 +267,11 @@ void ANav3DPathFinderTest::PostEditMove(const bool IsFinished)
 	{
 		if (bUpdatePathAfterMoving)
 		{
-			InitPathFinding();
-			AutoCompleteInstantly();
+			FindPath();
 		}
 		else if (OtherActor->bUpdatePathAfterMoving)
 		{
-			OtherActor->InitPathFinding();
-			OtherActor->AutoCompleteInstantly();
+			OtherActor->FindPath();
 		}
 	}
 }
@@ -380,184 +312,98 @@ void ANav3DPathFinderTest::UpdateDrawing() const
 #endif // WITH_EDITORONLY_DATA
 }
 
-void ANav3DPathFinderTest::InitPathFinding()
+void ANav3DPathFinderTest::FindPath()
 {
-	Stepper.Reset();
+	if (OtherActor == nullptr)
+	{
+		UE_LOG(LogNav3D, Warning, TEXT("FindPath: No OtherActor set"));
+		return;
+	}
 
 	UWorld* World = GetWorld();
 	UNavigationSystemV1* NavigationSystem = UNavigationSystemV1::GetCurrent(World);
-	if (const UNavigationSystemV1* NavSys = UNavigationSystemV1::GetCurrent(World))
+	if (!NavigationSystem)
 	{
-		UE_LOG(LogNav3D, Verbose, TEXT("Navigation System has %d supported agents"),
-		       NavSys->GetSupportedAgents().Num());
-	}
-
-	if (NavigationSystem)
-	{
-		// Log the nav agent properties
-		UE_LOG(LogNav3D, Log, TEXT("Nav Agent Properties:"));
-		UE_LOG(LogNav3D, Log, TEXT("  - AgentRadius: %f"), NavAgentProperties.AgentRadius);
-		UE_LOG(LogNav3D, Log, TEXT("  - AgentHeight: %f"), NavAgentProperties.AgentHeight);
-
-		const auto SupportedAgents = NavigationSystem->GetSupportedAgents();
-		UE_LOG(LogNav3D, Log, TEXT("SupportedAgents: %d"), SupportedAgents.Num());
-
-
-		if (auto* NavigationData = NavigationSystem->GetNavDataForProps(NavAgentProperties))
-		{
-			// Log all available nav data
-			UE_LOG(LogNav3D, Log, TEXT("Available Nav Data:"));
-			for (const ANavigationData* NavData : NavigationSystem->NavDataSet)
-			{
-				UE_LOG(LogNav3D, Log, TEXT("  - %s (%s)"),
-				       *GetNameSafe(NavData),
-				       *GetNameSafe(NavData->GetClass()));
-			}
-
-			if (const auto* N3dNavigationData = Cast<ANav3DData>(NavigationData))
-			{
-				if (OtherActor != nullptr)
-				{
-					const auto PathStart = GetActorLocation();
-					const auto PathEnd = OtherActor->GetActorLocation();
-
-					const auto QueryFilter = UNavigationQueryFilter::GetQueryFilter(
-						*N3dNavigationData, this, NavigationQueryFilter);
-					Stepper = FNav3DPathFinder::GetDebugPathStepper(
-						PathFinderDebugInfos,
-						*N3dNavigationData,
-						PathStart, PathEnd,
-						NavAgentProperties,
-						QueryFilter);
-
-					if (!Stepper.IsValid())
-					{
-						return;
-					}
-
-					PathFinderDebugInfos.Reset();
-					PathFinderDebugInfos.StartNodeAddress =
-						Stepper->GetParameters().StartNodeAddress.ToString();
-					PathFinderDebugInfos.EndNodeAddress =
-						Stepper->GetParameters().EndNodeAddress.ToString();
-					NavigationPath.ResetForRepath();
-					LastStatus = ENav3DPathStepperStatus::MustContinue;
-					PathFindingResult = SearchFail;
-					bAutoComplete = false;
-
-					UpdateDrawing();
-					return;
-				}
-			}
-		}
-		else
-		{
-			UE_LOG(LogNav3D, Error,
-			       TEXT("InitPathFinding failed - GetNavDataForProps did not return nav data for NavAgentProperties"));
-		}
-	}
-
-	ensureAlwaysMsgf(false, TEXT("Impossible to get the Nav3D navigation data. Check NavAgentProperties"));
-}
-
-void ANav3DPathFinderTest::InitPathFindingIfNotDone()
-{
-	if (Stepper.IsValid())
-	{
+		UE_LOG(LogNav3D, Error, TEXT("FindPath: No navigation system found"));
 		return;
 	}
 
-	InitPathFinding();
-}
-
-void ANav3DPathFinderTest::ResetPathFinding() { InitPathFinding(); }
-
-void ANav3DPathFinderTest::Step()
-{
-	if (!Stepper.IsValid())
+	auto* NavigationData = NavigationSystem->GetNavDataForProps(NavAgentProperties);
+	if (!NavigationData)
 	{
+		UE_LOG(LogNav3D, Error, TEXT("FindPath: No navigation data found for agent properties"));
 		return;
 	}
 
-	if (LastStatus != ENav3DPathStepperStatus::IsStopped)
+	const auto* N3dNavigationData = Cast<ANav3DData>(NavigationData);
+	if (!N3dNavigationData)
 	{
-		LastStatus = Stepper->Step(PathFindingResult);
-		if (LastStatus == ENav3DPathStepperStatus::MustContinue)
-		{
-			UpdateDrawing();
-
-			if (bAutoComplete)
-			{
-				GetWorld()->GetTimerManager().SetTimer(AutoCompleteTimerHandle, this,
-				                                       &ANav3DPathFinderTest::Step,
-				                                       AutoStepTimer, false);
-				return;
-			}
-		}
-		else if (PathFindingResult == SearchSuccess)
-		{
-			UpdateDrawing();
-		}
-	}
-
-	bAutoComplete = false;
-	GetWorld()->GetTimerManager().ClearAllTimersForObject(this);
-}
-
-void ANav3DPathFinderTest::AutoCompleteStepByStep()
-{
-	InitPathFinding();
-	bAutoComplete = true;
-	Step();
-}
-
-void ANav3DPathFinderTest::AutoCompleteUntilNextNode()
-{
-	InitPathFindingIfNotDone();
-
-	if (!Stepper.IsValid())
-	{
+		UE_LOG(LogNav3D, Error, TEXT("FindPath: Navigation data is not Nav3D data"));
 		return;
 	}
 
-	if (LastStatus != ENav3DPathStepperStatus::IsStopped)
-	{
-		do
-		{
-			LastStatus = Stepper->Step(PathFindingResult);
-		}
-		while (
-			LastStatus == ENav3DPathStepperStatus::MustContinue &&
-			Stepper->GetState() != ENav3DPathFindingState::ProcessNode);
+	const FVector PathStart = GetActorLocation();
+	const FVector PathEnd = OtherActor->GetActorLocation();
 
-		UpdateDrawing();
+	UE_LOG(LogNav3D, Log, TEXT("FindPath: Finding path from %s to %s"), 
+	       *PathStart.ToString(), *PathEnd.ToString());
+
+	const auto QueryFilter = UNavigationQueryFilter::GetQueryFilter(
+		*N3dNavigationData, this, NavigationQueryFilter);
+
+	// Reset the path and debug info
+	NavigationPath.ResetForRepath();
+	PathFinderDebugInfos.Reset();
+	PathFindingResult = SearchFail;
+
+	// Perform pathfinding
+	const ENavigationQueryResult::Type Result = FNav3DPathFinder::GetPath(
+		NavigationPath,
+		*N3dNavigationData,
+		PathStart,
+		PathEnd,
+		NavAgentProperties,
+		QueryFilter);
+
+	// Convert result
+	if (Result == ENavigationQueryResult::Success)
+	{
+		PathFindingResult = SearchSuccess;
+		UE_LOG(LogNav3D, Log, TEXT("FindPath: Pathfinding successful! Found %d path points"), 
+		       NavigationPath.GetPathPoints().Num());
+	}
+	else
+	{
+		PathFindingResult = SearchFail;
+		UE_LOG(LogNav3D, Warning, TEXT("FindPath: Pathfinding failed with result: %d"), (int32)Result);
 	}
 
-	GetWorld()->GetTimerManager().ClearAllTimersForObject(this);
+	UpdateDrawing();
 }
 
-void ANav3DPathFinderTest::AutoCompleteInstantly()
+void ANav3DPathFinderTest::ClearPaths()
 {
-	InitPathFindingIfNotDone();
-
-	if (!Stepper.IsValid())
-	{
-		return;
-	}
-
-	if (LastStatus != ENav3DPathStepperStatus::IsStopped)
-	{
-		do
-		{
-			LastStatus = Stepper->Step(PathFindingResult);
-		}
-		while (LastStatus ==
-			ENav3DPathStepperStatus::MustContinue);
-
-		UpdateDrawing();
-	}
-
-	GetWorld()->GetTimerManager().ClearAllTimersForObject(this);
+    NavigationPath.ResetForRepath();
+    PathFinderDebugInfos.Reset();
+    PathFindingResult = SearchFail;
+    if (OtherActor && OtherActor->OtherActor == this)
+    {
+        OtherActor->NavigationPath.ResetForRepath();
+        OtherActor->PathFinderDebugInfos.Reset();
+        OtherActor->PathFindingResult = SearchFail;
+#if WITH_EDITORONLY_DATA
+        if (OtherActor->RenderingComponent)
+        {
+            OtherActor->RenderingComponent->MarkRenderStateDirty();
+        }
+#endif
+    }
+#if WITH_EDITORONLY_DATA
+    if (RenderingComponent)
+    {
+        RenderingComponent->MarkRenderStateDirty();
+    }
+#endif
 }
 
-void ANav3DPathFinderTest::PauseAutoCompletion() { bAutoComplete = false; }
+// Removed redundant stepper-related method implementations

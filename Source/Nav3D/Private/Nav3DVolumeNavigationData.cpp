@@ -2,26 +2,29 @@
 #include "LandscapeProxy.h"
 #include "Nav3DUtils.h"
 #include "Nav3DTypes.h"
-#include "Nav3DVersion.h"
 #include "TriBoxOverlap.h"
 #include "Async/ParallelFor.h"
 #include "HAL/CriticalSection.h"
 #include "HAL/PlatformAtomics.h"
+#include "HAL/PlatformProcess.h"
+#include "HAL/PlatformMisc.h"
 #include "Engine/OverlapResult.h"
+#include "Engine/World.h"
 #include <ThirdParty/libmorton/morton.h>
-
 #include "LandscapeMeshCollisionComponent.h"
 #include "Nav3D.h"
 #include "Nav3DData.h"
 #include "Components/BoxComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/InstancedStaticMeshComponent.h"
+#include "Components/PrimitiveComponent.h"
 #include "Components/SphereComponent.h"
 #include "PhysicsEngine/BodySetup.h"
 
 #if !UE_BUILD_SHIPPING
 #include <DrawDebugHelpers.h>
 #endif
+
 
 FNav3DVolumeNavigationDataSettings::
 FNav3DVolumeNavigationDataSettings()
@@ -30,7 +33,7 @@ FNav3DVolumeNavigationDataSettings()
 }
 
 // Static cancel flag definition
-TAtomic<bool> FNav3DVolumeNavigationData::sCancelRequested{false};
+TAtomic<bool> FNav3DVolumeNavigationData::bSCancelRequested{false};
 
 FVector FNav3DVolumeNavigationData::GetNodePositionFromAddress(
 	const FNav3DNodeAddress& Address,
@@ -164,6 +167,8 @@ bool FNav3DVolumeNavigationData::GetNodeAddressFromPosition(
 
 	if (!NavigationBounds.IsInside(Position))
 	{
+		UE_LOG(LogNav3D, VeryVerbose, TEXT("GetNodeAddressFromPosition: Position %s is outside navigation bounds %s"), 
+			*Position.ToString(), *NavigationBounds.ToString());
 		return false;
 	}
 
@@ -537,6 +542,33 @@ void FNav3DVolumeNavigationData::GenerateNavigationData(
     UpdateCoreProgress(1.0f);
 }
 
+static FString FormatElapsedTime(double ElapsedSeconds)
+{
+	const int32 TotalSeconds = static_cast<int32>(ElapsedSeconds);
+	const int32 Minutes = TotalSeconds / 60;
+	const int32 Seconds = TotalSeconds % 60;
+	
+	if (Minutes > 0)
+	{
+		if (Seconds > 0)
+		{
+			return FString::Printf(TEXT("%d %s, %d %s"), 
+				Minutes, Minutes == 1 ? TEXT("min") : TEXT("mins"),
+				Seconds, Seconds == 1 ? TEXT("sec") : TEXT("secs"));
+		}
+		else
+		{
+			return FString::Printf(TEXT("%d %s"), 
+				Minutes, Minutes == 1 ? TEXT("min") : TEXT("mins"));
+		}
+	}
+	else
+	{
+		return FString::Printf(TEXT("%d %s"), 
+			Seconds, Seconds == 1 ? TEXT("sec") : TEXT("secs"));
+	}
+}
+
 void FNav3DVolumeNavigationData::UpdateCoreProgress(const float Fraction0To1) const
 {
 	const float ClampedFrac = FMath::Clamp(Fraction0To1, 0.0f, 1.0f);
@@ -545,8 +577,38 @@ void FNav3DVolumeNavigationData::UpdateCoreProgress(const float Fraction0To1) co
 	{
 		return;
 	}
+	
+	const double CurrentTime = FPlatformTime::Seconds();
+	
+	// Initialize timing on first progress update
+	if (LastLoggedCorePercent == -1)
+	{
+		BuildStartTime = CurrentTime;
+		LastProgressUpdateTime = CurrentTime;
+	}
+	
+	// Calculate elapsed time since last update
+	const double ElapsedSinceLastUpdate = CurrentTime - LastProgressUpdateTime;
+	LastProgressUpdateTime = CurrentTime;
 	LastLoggedCorePercent = CoreRounded;
-	UE_LOG(LogNav3D, Log, TEXT("Nav3D build core progress: %d%%"), CoreRounded);
+	
+	// Log progress with elapsed time (only show time for progress > 0%)
+	if (CoreRounded > 0)
+	{
+		UE_LOG(LogNav3D, Log, TEXT("Nav3D build core progress: %d%% (%s)"), 
+			CoreRounded, *FormatElapsedTime(ElapsedSinceLastUpdate));
+	}
+	else
+	{
+		UE_LOG(LogNav3D, Log, TEXT("Nav3D build core progress: %d%%"), CoreRounded);
+	}
+	
+	// Log total build time when complete
+	if (CoreRounded >= 100)
+	{
+		const double TotalBuildTime = CurrentTime - BuildStartTime;
+		UE_LOG(LogNav3D, Log, TEXT("Nav3D build completed in %s"), *FormatElapsedTime(TotalBuildTime));
+	}
 }
 
 void FNav3DVolumeNavigationData::Serialize(FArchive& Archive, const ENav3DVersion Version)
@@ -584,6 +646,9 @@ void FNav3DVolumeNavigationData::Reset()
 {
 	VolumeBounds.Init();
 	Nav3DData.Reset();
+	
+	// Clear optimization cache
+	ClearOverlapCache();
 }
 
 void FNav3DVolumeNavigationData::GatherOverlappingObjects()
@@ -1249,6 +1314,15 @@ void FNav3DVolumeNavigationData::LogNavigationStats() const
 	UE_LOG(LogNav3D, Log, TEXT("Number of Candidate Objects: %d"), NumCandidateObjects);
 	UE_LOG(LogNav3D, Log, TEXT("Number of Occluded Voxels: %d"), NumOccludedVoxels);
 
+	const int32 CachedVoxels = Layer1VoxelOverlapCache.Num();
+	const int32 VoxelsWithOverlaps = Layer1VoxelOverlapCache.FilterByPredicate([](const auto& Pair) { 
+		return Pair.Value.OverlappingActors.Num() > 0; 
+	}).Num();
+		
+	UE_LOG(LogNav3D, Log, TEXT("Optimized First Pass: %d cached voxels, %d with overlaps (%.1f%% reduction)"), 
+		CachedVoxels, VoxelsWithOverlaps, 
+		(1.0f - static_cast<float>(VoxelsWithOverlaps) / FMath::Max(1, CachedVoxels)) * 100.0f);
+
 	const FVector VolumeSize = VolumeBounds.GetSize();
 	UE_LOG(LogNav3D, Log, TEXT("Volume Size: X=%.2f, Y=%.2f, Z=%.2f"), VolumeSize.X, VolumeSize.Y, VolumeSize.Z);
 	UE_LOG(LogNav3D, Log, TEXT("Voxel Extent: %.2f"), Settings.VoxelExtent);
@@ -1258,31 +1332,11 @@ void FNav3DVolumeNavigationData::FirstPass()
 {
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_Nav3DBoundsNavigationData_FirstPassRasterization);
 
-	const auto& Layer = Nav3DData.GetLayer(1);
-	const auto LayerMaxNodeCount = Layer.GetMaxNodeCount();
-	const auto LayerNodeExtent = Layer.GetNodeExtent();
+	// Always use optimized physics-based approach
+	UE_LOG(LogNav3D, Log, TEXT("FirstPass: Using optimized physics-based approach"));
+	FirstPassOptimized();
 
-	FCriticalSection CriticalSection;
-
-	UE_LOG(LogNav3D, Log, TEXT("FirstPass: Processing %d nodes in parallel (extent=%.2f)"), LayerMaxNodeCount, LayerNodeExtent);
-
-	int32 ProcessedFirstPass = 0;
-	const int32 TotalFirstPass = LayerMaxNodeCount;
-
-	ParallelFor(LayerMaxNodeCount, [&](const int32 NodeIndex)
-	{
-		if (IsCancelRequested()) { return; }
-		const auto Position = GetNodePositionFromLayerAndMortonCode(1, NodeIndex);
-		if (IsPositionOccluded(Position, LayerNodeExtent))
-		{
-			FScopeLock Lock(&CriticalSection);
-			Nav3DData.AddBlockedNode(0, NodeIndex);
-		}
-
-		const int32 Done = FPlatformAtomics::InterlockedIncrement(&ProcessedFirstPass);
-		const float Fraction = static_cast<float>(Done) / FMath::Max(1, TotalFirstPass);
-	});
-
+	// Common continuation for higher layers
 	for (int32 LayerIndex = 1; LayerIndex < GetLayerCount(); LayerIndex++)
 	{
 		const auto& ParentLayerBlockedNodes =
@@ -1294,7 +1348,334 @@ void FNav3DVolumeNavigationData::FirstPass()
 		}
 	}
 
+	UpdateCoreProgress(0.2f);
+
 	UE_LOG(LogNav3D, Log, TEXT("FirstPass: Complete"));
+}
+
+void FNav3DVolumeNavigationData::FirstPassOptimized()
+{
+	const double StartTime = FPlatformTime::Seconds();
+	
+	// Step 1: Cache all Layer 1 voxel overlaps using physics queries
+	CacheLayer1Overlaps();
+	
+	// Step 2: Process Layer 1 nodes using cached data
+	const auto& Layer1 = Nav3DData.GetLayer(1);
+	const auto LayerMaxNodeCount = Layer1.GetMaxNodeCount();
+	const auto LayerNodeExtent = Layer1.GetNodeExtent();
+	
+	UE_LOG(LogNav3D, Log, TEXT("FirstPassOptimized: Processing %d Layer 1 nodes using cached overlaps"), LayerMaxNodeCount);
+	
+	int32 ProcessedNodes = 0;
+	const int32 TotalNodes = LayerMaxNodeCount;
+	
+	// Single-threaded processing since we're using cached data
+	for (uint32 NodeIndex = 0; NodeIndex < LayerMaxNodeCount; NodeIndex++)
+	{
+		if (IsCancelRequested()) 
+		{
+			ClearOverlapCache();
+			return;
+		}
+		
+		const auto Position = GetNodePositionFromLayerAndMortonCode(1, NodeIndex);
+		
+		// Check if this Layer 1 voxel has any overlapping actors
+		const FVoxelOverlapCache* CacheEntry = Layer1VoxelOverlapCache.Find(NodeIndex);
+		if (CacheEntry && CacheEntry->OverlappingActors.Num() > 0)
+		{
+			// Use optimized occlusion check with cached actors
+			if (IsPositionOccludedOptimized(Position, LayerNodeExtent, NodeIndex))
+			{
+				Nav3DData.AddBlockedNode(0, NodeIndex);
+			}
+		}
+		
+		ProcessedNodes++;
+		const float Fraction = static_cast<float>(ProcessedNodes) / FMath::Max(1, TotalNodes);
+		UpdateCoreProgress(Fraction * 0.05f);
+	}
+	
+	const double EndTime = FPlatformTime::Seconds();
+	const double Duration = EndTime - StartTime;
+	UE_LOG(LogNav3D, Log, TEXT("FirstPassOptimized: Complete (%s)"), *FormatElapsedTime(Duration));
+}
+
+void FNav3DVolumeNavigationData::CacheLayer1Overlaps()
+{
+	const double StartTime = FPlatformTime::Seconds();
+	
+	const auto& Layer1 = Nav3DData.GetLayer(1);
+	const auto LayerMaxNodeCount = Layer1.GetMaxNodeCount();
+	const auto LayerNodeExtent = Layer1.GetNodeExtent();
+	
+	UE_LOG(LogNav3D, Log, TEXT("CacheLayer1Overlaps: Preparing to cache overlaps for %d Layer 1 voxels"), LayerMaxNodeCount);
+	
+	// Clear any existing cache
+	Layer1VoxelOverlapCache.Empty(LayerMaxNodeCount);
+	
+	UWorld* World = Settings.World;
+	if (!World)
+	{
+		UE_LOG(LogNav3D, Error, TEXT("CacheLayer1Overlaps: No valid world found"));
+		return;
+	}
+	
+	// Pre-allocate cache entries to avoid race conditions
+	for (uint32 NodeIndex = 0; NodeIndex < LayerMaxNodeCount; NodeIndex++)
+	{
+		const FVector Position = GetNodePositionFromLayerAndMortonCode(1, NodeIndex);
+		const FVector BoxExtent(LayerNodeExtent + Settings.GenerationSettings.Clearance);
+		const FBox VoxelBox = FBox::BuildAABB(Position, BoxExtent);
+		Layer1VoxelOverlapCache.Add(NodeIndex, FVoxelOverlapCache(NodeIndex, VoxelBox));
+	}
+	
+	FCriticalSection CriticalSection;
+	int32 ProcessedVoxels = 0;
+
+	UE_LOG(LogNav3D, Log, TEXT("CacheLayer1Overlaps: Using sequential overlap queries"));
+	for (uint32 NodeIndex = 0; NodeIndex < LayerMaxNodeCount; ++NodeIndex)
+	{
+		if (IsCancelRequested())
+		{
+			break;
+		}
+		const FVector Position = GetNodePositionFromLayerAndMortonCode(1, NodeIndex);
+		const FVector BoxExtent(LayerNodeExtent + Settings.GenerationSettings.Clearance);
+		
+		TArray<FOverlapResult> OverlapResults;
+		FCollisionQueryParams QueryParams = Settings.GenerationSettings.CollisionQueryParameters;
+		QueryParams.bTraceComplex = false;
+		const bool bHasOverlaps = World->OverlapMultiByChannel(
+			OverlapResults,
+			Position,
+			FQuat::Identity,
+			Settings.GenerationSettings.CollisionChannel,
+			FCollisionShape::MakeBox(BoxExtent),
+			QueryParams
+		);
+		if (bHasOverlaps)
+		{
+			TArray<TWeakObjectPtr<AActor>> OverlappingActors;
+			for (const FOverlapResult& Result : OverlapResults)
+			{
+				if (AActor* Actor = Result.GetActor())
+				{
+					if (UPrimitiveComponent* PrimComponent = Result.Component.Get())
+					{
+						const bool bRelevant =
+							Cast<ULandscapeComponent>(PrimComponent) != nullptr ||
+							Cast<UInstancedStaticMeshComponent>(PrimComponent) != nullptr ||
+							Cast<UStaticMeshComponent>(PrimComponent) != nullptr ||
+							PrimComponent->CanEverAffectNavigation();
+						if (bRelevant)
+						{
+							OverlappingActors.AddUnique(Actor);
+						}
+					}
+				}
+			}
+			if (FVoxelOverlapCache* CacheEntry = Layer1VoxelOverlapCache.Find(NodeIndex))
+			{
+				CacheEntry->OverlappingActors = MoveTemp(OverlappingActors);
+			}
+		}
+		ProcessedVoxels++;
+		if (ProcessedVoxels % 1000 == 0)
+		{
+			const float Progress = static_cast<float>(ProcessedVoxels) / LayerMaxNodeCount;
+			UE_LOG(LogNav3D, Log, TEXT("CacheLayer1Overlaps: %d/%d voxels processed (%.1f%%)"), 
+				ProcessedVoxels, LayerMaxNodeCount, Progress * 100.0f);
+		}
+	}
+	
+	const double EndTime = FPlatformTime::Seconds();
+	const double Duration = EndTime - StartTime;
+	
+	UE_LOG(LogNav3D, Log, TEXT("CacheLayer1Overlaps: Complete (%s). Cached %d voxels, %d with overlaps"), 
+		*FormatElapsedTime(Duration),
+		Layer1VoxelOverlapCache.Num(), 
+		Layer1VoxelOverlapCache.FilterByPredicate([](const auto& Pair) { 
+			return Pair.Value.OverlappingActors.Num() > 0; 
+		}).Num());
+}
+
+bool FNav3DVolumeNavigationData::IsPositionOccludedOptimized(const FVector& Position, float BoxExtent, MortonCode Layer1Parent) const
+{
+	
+	// Get cached overlapping actors for this Layer 1 parent
+	const FVoxelOverlapCache* CacheEntry = Layer1VoxelOverlapCache.Find(Layer1Parent);
+	if (!CacheEntry || CacheEntry->OverlappingActors.Num() == 0)
+	{
+		return false; // No cached actors means no occlusion
+	}
+	
+	const FBox PositionBox = FBox::BuildAABB(Position, FVector(BoxExtent + Settings.GenerationSettings.Clearance));
+	
+	// Test only against cached actors (much smaller set than full world)
+	for (const TWeakObjectPtr<AActor>& ActorWeak : CacheEntry->OverlappingActors)
+	{
+		if (IsCancelRequested())
+		{
+			return false;
+		}
+		
+		const AActor* Actor = ActorWeak.Get();
+		if (!Actor || !IsValid(Actor))
+		{
+			continue;
+		}
+		
+		// Quick bounds check first
+		const FBox ActorBounds = Actor->GetComponentsBoundingBox(true);
+		if (!ActorBounds.Intersect(PositionBox))
+		{
+			continue;
+		}
+		
+		// Landscapes
+		if (const ALandscapeProxy* LandscapeProxy = Cast<ALandscapeProxy>(Actor))
+		{
+			if (CheckLandscapeProxyOcclusion(LandscapeProxy, Position, BoxExtent))
+			{
+				if (FMath::IsNearlyEqual(BoxExtent, Nav3DData.GetLeafNodes().GetLeafSubNodeExtent()))
+				{
+					FPlatformAtomics::InterlockedIncrement(&NumOccludedVoxels);
+				}
+				return true;
+			}
+		}
+		
+		// Instanced static meshes
+		TInlineComponentArray<UInstancedStaticMeshComponent*> ISMComponents;
+		Actor->GetComponents<UInstancedStaticMeshComponent>(ISMComponents);
+		for (const UInstancedStaticMeshComponent* ISMComp : ISMComponents)
+		{
+			if (!ISMComp) { continue; }
+			if (CheckInstancedStaticMeshOcclusion(ISMComp, Position, BoxExtent))
+			{
+				if (FMath::IsNearlyEqual(BoxExtent, Nav3DData.GetLeafNodes().GetLeafSubNodeExtent()))
+				{
+					FPlatformAtomics::InterlockedIncrement(&NumOccludedVoxels);
+				}
+				return true;
+			}
+		}
+		
+		// Regular static meshes (exclude ISMs already handled)
+		TInlineComponentArray<UStaticMeshComponent*> StaticMeshComponents;
+		Actor->GetComponents<UStaticMeshComponent>(StaticMeshComponents);
+		for (const UStaticMeshComponent* SMC : StaticMeshComponents)
+		{
+			if (!SMC || SMC->IsA<UInstancedStaticMeshComponent>()) { continue; }
+			if (CheckStaticMeshOcclusion(SMC, Position, BoxExtent))
+			{
+				if (FMath::IsNearlyEqual(BoxExtent, Nav3DData.GetLeafNodes().GetLeafSubNodeExtent()))
+				{
+					FPlatformAtomics::InterlockedIncrement(&NumOccludedVoxels);
+				}
+				return true;
+			}
+		}
+	}
+	
+	return false;
+}
+
+bool FNav3DVolumeNavigationData::IsPositionOccludedPhysics(const FVector& Position, float BoxExtent) const
+{
+	// Use physics overlap query instead of tri-box testing for much better performance
+	UWorld* World = Settings.World;
+	if (!World)
+	{
+		return false;
+	}
+	
+	const FVector BoxExtentVector(BoxExtent + Settings.GenerationSettings.Clearance);
+	
+	// Perform physics box overlap query
+	TArray<FOverlapResult> OverlapResults;
+	FCollisionQueryParams QueryParams = Settings.GenerationSettings.CollisionQueryParameters;
+	QueryParams.bTraceComplex = false; // Use simple collision for faster queries
+	
+	bool bHasOverlaps = World->OverlapMultiByChannel(
+		OverlapResults,
+		Position,
+		FQuat::Identity,
+		Settings.GenerationSettings.CollisionChannel,
+		FCollisionShape::MakeBox(BoxExtentVector),
+		QueryParams
+	);
+	
+	if (!bHasOverlaps)
+	{
+		return false; // No overlaps means no occlusion
+	}
+	
+	// Check if any overlapping objects actually occlude the position
+	for (const FOverlapResult& Result : OverlapResults)
+	{
+		if (IsCancelRequested())
+		{
+			return false;
+		}
+		
+		UPrimitiveComponent* PrimComponent = Result.Component.Get();
+		if (!PrimComponent || !IsValid(PrimComponent))
+		{
+			continue;
+		}
+		
+		if (!PrimComponent->CanEverAffectNavigation())
+		{
+			continue;
+		}
+		
+		// Quick bounds check first
+		const FBox ObjectBounds = PrimComponent->Bounds.GetBox();
+		const FBox PositionBox = FBox::BuildAABB(Position, BoxExtentVector);
+		if (!ObjectBounds.Intersect(PositionBox))
+		{
+			continue;
+		}
+		
+		// Detailed occlusion check using existing methods
+		bool bIsOccluded = false;
+		
+		if (const UStaticMeshComponent* StaticMeshComp = Cast<UStaticMeshComponent>(PrimComponent))
+		{
+			if (const UInstancedStaticMeshComponent* InstancedMeshComp = Cast<UInstancedStaticMeshComponent>(StaticMeshComp))
+			{
+				bIsOccluded = CheckInstancedStaticMeshOcclusion(InstancedMeshComp, Position, BoxExtent);
+			}
+			else
+			{
+				bIsOccluded = CheckStaticMeshOcclusion(StaticMeshComp, Position, BoxExtent);
+			}
+		}
+		else if (const ALandscapeProxy* LandscapeProxy = Cast<ALandscapeProxy>(PrimComponent->GetOwner()))
+		{
+			bIsOccluded = CheckLandscapeProxyOcclusion(LandscapeProxy, Position, BoxExtent);
+		}
+		
+		if (bIsOccluded)
+		{
+			if (FMath::IsNearlyEqual(BoxExtent, Nav3DData.GetLeafNodes().GetLeafSubNodeExtent()))
+			{
+				FPlatformAtomics::InterlockedIncrement(&NumOccludedVoxels);
+			}
+			return true;
+		}
+	}
+	
+	return false;
+}
+
+void FNav3DVolumeNavigationData::ClearOverlapCache()
+{
+	Layer1VoxelOverlapCache.Empty();
+	UE_LOG(LogNav3D, VeryVerbose, TEXT("Layer 1 overlap cache cleared"));
 }
 
 void FNav3DVolumeNavigationData::RasterizeLeaf(const FVector& NodePosition,
@@ -1312,7 +1693,7 @@ void FNav3DVolumeNavigationData::RasterizeLeaf(const FVector& NodePosition,
 	{
 		const auto MortonCoords = FNav3DUtils::GetVectorFromMortonCode(SubNodeIndex);
 		const auto LeafNodeLocation = Location + MortonCoords * LeafSubNodeSize + LeafSubNodeExtent;
-		const bool bIsSubNodeOccluded = IsPositionOccluded(LeafNodeLocation, LeafSubNodeExtent);
+		const bool bIsSubNodeOccluded = IsPositionOccludedPhysics(LeafNodeLocation, LeafSubNodeExtent);
 		Nav3DData.GetLeafNodes().AddLeafNode(LeafIndex, SubNodeIndex, bIsSubNodeOccluded);
 	}
 }
@@ -1349,7 +1730,8 @@ void FNav3DVolumeNavigationData::RasterizeInitialLayer(
 		const auto LeafNodePosition = GetLeafNodePositionFromMortonCode(LayerZeroNode.MortonCode);
 		const auto LeafNodeExtent = Nav3DData.GetLeafNodes().GetLeafNodeExtent();
 
-		if (IsPositionOccluded(LeafNodePosition, LeafNodeExtent))
+		// Always use optimized approach with cached data
+		if (IsPositionOccludedOptimized(LeafNodePosition, LeafNodeExtent, ParentMortonCode))
 		{
 			LayerZeroNode.FirstChild.LayerIndex = 0;
 			LayerZeroNode.FirstChild.NodeIndex = INDEX_NONE;
@@ -1951,4 +2333,20 @@ void FNav3DVolumeNavigationData::RemoveDynamicOccluder(const AActor* Occluder)
 		UE_LOG(LogNav3D, Verbose, TEXT("Removed dynamic occluder %s from volume. Remaining occluders: %d"),
 		       *Occluder->GetActorNameOrLabel(), DynamicOccluders.Num());
 	}
+}
+
+MortonCode FNav3DVolumeNavigationData::GetParentMortonCodeAtLayer(MortonCode ChildCode, LayerIndex TargetLayer, LayerIndex ChildLayer)
+{
+	if (TargetLayer >= ChildLayer)
+	{
+		return ChildCode;
+	}
+	LayerIndex Current = ChildLayer;
+	MortonCode Code = ChildCode;
+	while (Current > TargetLayer)
+	{
+		Code = FNav3DUtils::GetParentMortonCode(Code);
+		--Current;
+	}
+	return Code;
 }

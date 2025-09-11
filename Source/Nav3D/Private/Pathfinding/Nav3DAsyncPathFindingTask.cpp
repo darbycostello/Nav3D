@@ -56,7 +56,7 @@ protected:
 			NavAgentProperties,
 			Filter);
 
-		const bool bSuccess = (Result == ENavigationQueryResult::Success);
+		const bool bSuccess = Result == ENavigationQueryResult::Success;
 
 		UE_LOG(LogNav3D, Verbose, TEXT("Pathfinding completed - Success: %d, Result: %d"),
 		       bSuccess, static_cast<int32>(Result));

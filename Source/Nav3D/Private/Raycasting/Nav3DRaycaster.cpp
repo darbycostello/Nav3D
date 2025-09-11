@@ -1,6 +1,7 @@
 #include "Raycasting/Nav3DRaycaster.h"
 #include "Nav3DUtils.h"
 #include "Nav3DVolumeNavigationData.h"
+#include "Nav3D.h"
 #include <DrawDebugHelpers.h>
 
 FNav3DRaycasterProcessor_GenerateDebugInfos::

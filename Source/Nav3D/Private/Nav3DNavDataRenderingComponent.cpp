@@ -6,8 +6,13 @@
 #include <Materials/Material.h>
 #include <Engine/Engine.h>
 #include <PrimitiveSceneProxy.h>
+#include <libmorton/morton.h>
 
+#include "Nav3D.h"
 #include "Materials/MaterialRenderProxy.h"
+#include "Nav3DDataChunkActor.h"
+#include "Nav3DTacticalActor.h"
+#include "Pathfinding/Nav3DCrossVolumeGraph.h"
 
 #if !UE_BUILD_SHIPPING && !UE_BUILD_TEST
 #endif
@@ -19,6 +24,9 @@
 
 static constexpr FColor OccludedVoxelColor = FColor(128, 0, 0);
 static constexpr FColor FreeVoxelColor = FColor(0, 128, 0);
+
+// Performance threshold for automatic wireframe rendering (8^6 = 262,144 voxels)
+static constexpr int32 MaxVoxelsForSolidRendering = 262144;
 
 // Colors for tactical reasoning visualization
 static const FColor RegionColors[32] = {
@@ -37,7 +45,48 @@ FNav3DMeshSceneProxy::FNav3DMeshSceneProxy(
 	const FNav3DMeshSceneProxyData& ProxyData)
 	: FDebugRenderSceneProxy(&Component)
 {
-	DrawType = SolidAndWireMeshes;
+	// Determine rendering mode based on voxel count (estimate from volumes + voxel extent)
+	int32 TotalVoxelCount = 0;
+	if (ProxyData.NavigationData != nullptr)
+	{
+		const ANav3DData* NavData = ProxyData.NavigationData.Get();
+		const TArray<FBox> Volumes = NavData->GetAllDiscoverableVolumes();
+		const auto& DebugInfos = NavData->GetDebugData();
+		const int32 LayerCount = NavData->GetLayerCount();
+		if (LayerCount > 0 && Volumes.Num() > 0)
+		{
+			const int32 SelectedLayer = DebugInfos.bDebugDrawLayers
+				? FMath::Clamp(static_cast<int32>(DebugInfos.LayerIndexToDraw), 0, LayerCount - 1)
+				: 0; // default to leaf estimate if no specific layer requested
+			const float LeafNodeSize = NavData->GetVoxelExtent() * 4.0f; // matches generation
+			const float NodeSize = LeafNodeSize * static_cast<float>(1 << SelectedLayer);
+			for (const FBox& B : Volumes)
+			{
+				if (!B.IsValid) { continue; }
+				const FVector Size = B.GetSize();
+				const int32 Nx = FMath::Max(1, FMath::CeilToInt(Size.X / NodeSize));
+				const int32 Ny = FMath::Max(1, FMath::CeilToInt(Size.Y / NodeSize));
+				const int32 Nz = FMath::Max(1, FMath::CeilToInt(Size.Z / NodeSize));
+				TotalVoxelCount += Nx * Ny * Nz;
+			}
+		}
+	}
+	
+	// Default to wireframe until we have a reliable voxel count; wireframe is safer for large scenes
+	const bool bUnknownVoxelCount = (TotalVoxelCount <= 0);
+	DrawType = (bUnknownVoxelCount || TotalVoxelCount > MaxVoxelsForSolidRendering) ? WireMesh : SolidAndWireMeshes;
+	
+	// Log when wireframe mode is used (either unknown or too large)
+	if (bUnknownVoxelCount)
+	{
+		UE_LOG(LogNav3D, Verbose, TEXT("Nav3D Rendering: Using wireframe by default (voxel count unknown)"));
+	}
+	else if (TotalVoxelCount > MaxVoxelsForSolidRendering)
+	{
+		UE_LOG(LogNav3D, Verbose, TEXT("Nav3D Rendering: Using wireframe mode for performance (voxel count: %d > %d)"), 
+			TotalVoxelCount, MaxVoxelsForSolidRendering);
+	}
+	
 	TextWithoutShadowDistance = 1500;
 	bWantsSelectionOutline = false;
 	ViewFlagName = TEXT("Navigation");
@@ -52,91 +101,111 @@ FNav3DMeshSceneProxy::FNav3DMeshSceneProxy(
 	}
 
 	const auto& DebugInfos = NavigationData->GetDebugData();
-	const auto& AllNavigationBoundsData = NavigationData->GetVolumeNavigationData();
 
 	// Reserve for filled voxel surfaces to reduce reallocations
 	VoxelSurfaces.Reserve(1000);
 
-	for (const auto& NavigationBoundsData : AllNavigationBoundsData)
+	if (DebugInfos.bDebugDrawVolumes)
 	{
-		const auto& OctreeData = NavigationBoundsData.GetData();
-		const auto LayerCount = OctreeData.GetLayerCount();
+		AddVolumeTextInfos();
+	}
 
-		if (LayerCount == 0)
+	for (ANav3DDataChunkActor* ChunkActor : NavigationData->GetChunkActors())
+	{
+		if (!ChunkActor) continue;
+		
+		for (const UNav3DDataChunk* Chunk : ChunkActor->Nav3DChunks)
 		{
-			continue;
-		}
+			if (!Chunk) continue;
+			
+			const FNav3DVolumeNavigationData* NavigationBoundsData = Chunk->GetVolumeNavigationData();
+			if (!NavigationBoundsData) continue;
+			
+			const auto& OctreeData = NavigationBoundsData->GetData();
+			const auto LayerCount = OctreeData.GetLayerCount();
 
-		if (DebugInfos.bDebugDrawBounds)
-		{
-			Boxes.Emplace(NavigationBoundsData.GetData().GetNavigationBounds(), FColor::White);
-		}
-
-		if (DebugInfos.bDebugDrawLayers)
-		{
-			const auto CorrectedLayerIndex = FMath::Clamp(
-				static_cast<int>(DebugInfos.LayerIndexToDraw), 0, LayerCount - 1);
-			const auto NodeExtent = NavigationBoundsData.GetData()
-			                                            .GetLayer(CorrectedLayerIndex)
-			                                            .GetNodeExtent();
-
-			for (const auto& Node : OctreeData.GetLayer(CorrectedLayerIndex).GetNodes())
+			if (LayerCount == 0)
 			{
-				const auto Code = Node.MortonCode;
+				continue;
+			}
 
-				if (CorrectedLayerIndex == 0)
+			if (DebugInfos.bDebugDrawBounds)
+			{
+				Boxes.Emplace(NavigationBoundsData->GetData().GetNavigationBounds(), FColor::White);
+			}
+
+			if (DebugInfos.bDebugDrawLayers)
+			{
+				const auto CorrectedLayerIndex = FMath::Clamp(
+					static_cast<int>(DebugInfos.LayerIndexToDraw), 0, LayerCount - 1);
+				const auto NodeExtent = NavigationBoundsData->GetData()
+				                                            .GetLayer(CorrectedLayerIndex)
+				                                            .GetNodeExtent();
+
+				for (const auto& Node : OctreeData.GetLayer(CorrectedLayerIndex).GetNodes())
 				{
-					if (const auto LeafNodePosition =
-						NavigationBoundsData.GetLeafNodePositionFromMortonCode(Code);
-						AddVoxelToBoxes(LeafNodePosition, NodeExtent, Node.HasChildren()))
+					const auto Code = Node.MortonCode;
+
+					if (CorrectedLayerIndex == 0)
 					{
-						AddNodeTextInfos(Code, 0, LeafNodePosition);
+						if (const auto LeafNodePosition =
+							NavigationBoundsData->GetLeafNodePositionFromMortonCode(Code);
+							AddVoxelToBoxes(LeafNodePosition, NodeExtent, Node.HasChildren()))
+						{
+							AddNodeTextInfos(Code, 0, LeafNodePosition);
+						}
 					}
-				}
-				else
-				{
-					const auto Position =
-						NavigationBoundsData.GetNodePositionFromLayerAndMortonCode(CorrectedLayerIndex, Code);
-
-					if (AddVoxelToBoxes(Position, NodeExtent, Node.HasChildren()))
+					else
 					{
-						AddNodeTextInfos(Code, CorrectedLayerIndex, Position);
+						const auto Position =
+							NavigationBoundsData->GetNodePositionFromLayerAndMortonCode(CorrectedLayerIndex, Code);
+
+						if (AddVoxelToBoxes(Position, NodeExtent, Node.HasChildren()))
+						{
+							AddNodeTextInfos(Code, CorrectedLayerIndex, Position);
+						}
 					}
 				}
 			}
+	        
+	        // Tactical reasoning visualization
+	        if (NavigationData->TacticalSettings.bEnableTacticalReasoning)
+	        {
+	            const auto& TacticalDebugData = NavigationData->TacticalSettings.TacticalDebugData;
+	            
+	            // Draw regions if enabled
+	            if (TacticalDebugData.bDebugDrawRegions)
+	            {
+	                DebugDrawRegions();
+	            }
+	            
+	            if (TacticalDebugData.bDebugDrawRegionIds)
+	            {
+	                DebugDrawRegionIds();
+	            }
+	            
+	            if (TacticalDebugData.bDebugDrawVisibility && TacticalDebugData.VisibilityViewRegionId >= 0)
+	            {
+	                DebugDrawVisibility(TacticalDebugData.VisibilityViewRegionId);
+	            }
+	            
+	            if (TacticalDebugData.bDrawBestCover && TacticalDebugData.VisibilityViewRegionId >= 0)
+	            {
+	                DebugDrawBestCover(TacticalDebugData.VisibilityViewRegionId);
+	            }
+	            
+	            if (TacticalDebugData.bDebugDrawAdjacencyGraph)
+	            {
+	                DebugDrawAdjacency();
+	            }
+	        }
+
+		// Cross-volume adjacency graph debug rendering
+		if (NavigationData->DebugData.bDebugDrawAdjacency)
+		{
+			DebugDrawCrossVolumeAdjacency();
 		}
-        
-        // Tactical reasoning visualization
-        if (NavigationData->TacticalSettings.bEnableTacticalReasoning)
-        {
-            const auto& TacticalDebugData = NavigationData->TacticalSettings.TacticalDebugData;
-            
-            // Draw regions if enabled
-            if (TacticalDebugData.bDebugDrawRegions)
-            {
-                DebugDrawRegions();
-            }
-            
-            if (TacticalDebugData.bDebugDrawRegionIds)
-            {
-                DebugDrawRegionIds();
-            }
-            
-            if (TacticalDebugData.bDebugDrawVisibility && TacticalDebugData.VisibilityViewRegionId >= 0)
-            {
-                DebugDrawVisibility(TacticalDebugData.VisibilityViewRegionId);
-            }
-            
-            if (TacticalDebugData.bDrawBestCover && TacticalDebugData.VisibilityViewRegionId >= 0)
-            {
-                DebugDrawBestCover(TacticalDebugData.VisibilityViewRegionId);
-            }
-            
-            if (TacticalDebugData.bDebugDrawAdjacencyGraph)
-            {
-                DebugDrawAdjacency();
-            }
-        }
+		}
 	}
 }
 
@@ -251,6 +320,52 @@ void FNav3DMeshSceneProxy::DebugDrawAdjacency()
     }
 }
 
+void FNav3DMeshSceneProxy::DebugDrawCrossVolumeAdjacency()
+{
+    if (!NavigationData.IsValid())
+    {
+        return;
+    }
+
+    const bool bDrawPortals = false; // portal drawing removed
+
+    for (const ANav3DTacticalActor* Ta : NavigationData->GetAllTacticalActors())
+    {
+        if (!Ta) { continue; }
+        const FNav3DCrossVolumeGraph& Graph = Ta->GetCrossVolumeGraph();
+        const TArray<ANav3DDataChunkActor*>& Actors = Graph.GetCachedChunkActors();
+
+        // Iterate buckets indirectly by sampling each chunk's boundary voxels
+        for (int32 ChunkIdx = 0; ChunkIdx < Actors.Num(); ++ChunkIdx)
+        {
+            const ANav3DDataChunkActor* ChunkActor = Actors[ChunkIdx];
+            if (!ChunkActor || ChunkActor->Nav3DChunks.Num() == 0) { continue; }
+            const UNav3DDataChunk* Chunk = ChunkActor->Nav3DChunks[0];
+            if (!Chunk) { continue; }
+
+            for (const FNav3DEdgeVoxel& Edge : Chunk->BoundaryVoxels)
+            {
+                if (!Edge.bIsNavigable) { continue; }
+                FNav3DVoxelID Id; Id.ChunkIndex = ChunkIdx; Id.VolumeIndex = Edge.VolumeIndex; Id.Layer = Edge.LayerIndex; Id.Morton = Edge.Morton;
+
+                TArray<FNav3DCrossVolumeConnection> Neigh;
+                Graph.GetNeighbors(Id, Neigh);
+                if (Neigh.Num() == 0) { continue; }
+
+                const FVector FromPos = FNav3DUtils::GetVoxelWorldPosition(Id, Actors);
+                for (const FNav3DCrossVolumeConnection& Conn : Neigh)
+                {
+                    const FVector ToPos = FNav3DUtils::GetVoxelWorldPosition(Conn.RemoteVoxel, Actors);
+                    Lines.Emplace(FromPos, ToPos, FColor::Yellow);
+                    // portal drawing removed
+                }
+            }
+        }
+    }
+}
+
+// Portal drawing function removed
+
 void FNav3DMeshSceneProxy::DebugDrawVisibility(const int32 ViewerRegionId)
 {
     if (!NavigationData.IsValid())
@@ -357,6 +472,100 @@ void FNav3DMeshSceneProxy::GetDynamicMeshElements(const TArray<const FSceneView*
 	}
 }
 
+void FNav3DMeshSceneProxy::AddVolumeTextInfos()
+{
+	if (!NavigationData.IsValid())
+	{
+		return;
+	}
+
+	const TArray<ANav3DDataChunkActor*> ChunkActors = NavigationData->GetAllChunkActors();
+	const TArray<FBox> OriginalVolumes = NavigationData->GetAllDiscoverableVolumes();
+
+	static const TArray VolumeColors = {
+		FLinearColor(0.0f, 1.0f, 1.0f),
+		FLinearColor::Green,
+		FLinearColor::Blue,
+		FLinearColor::Yellow,
+		FLinearColor(1.0f, 0.5f, 0.0f),
+		FLinearColor(0.5f, 0.0f, 1.0f),
+		FLinearColor(0.0f, 1.0f, 0.5f),
+		FLinearColor(1.0f, 0.0f, 0.5f),
+		FLinearColor(0.5f, 1.0f, 0.0f),
+		FLinearColor(0.0f, 0.5f, 1.0f),
+	};
+
+	for (int32 ChunkIndex = 0; ChunkIndex < ChunkActors.Num(); ++ChunkIndex)
+	{
+		const ANav3DDataChunkActor* ChunkActor = ChunkActors[ChunkIndex];
+		if (!ChunkActor || !IsValid(ChunkActor))
+		{
+			continue;
+		}
+
+		const FBox ChunkBounds = ChunkActor->DataChunkActorBounds;
+		const FVector ChunkCenter = ChunkBounds.GetCenter();
+
+		int32 ParentVolumeIndex = INDEX_NONE;
+		for (int32 VolumeIndex = 0; VolumeIndex < OriginalVolumes.Num(); ++VolumeIndex)
+		{
+			if (OriginalVolumes[VolumeIndex].IsInside(ChunkCenter))
+			{
+				ParentVolumeIndex = VolumeIndex;
+				break;
+			}
+		}
+
+		int32 ChunkIndexInVolume = 0;
+		if (ParentVolumeIndex != INDEX_NONE)
+		{
+			for (int32 PrevChunkIndex = 0; PrevChunkIndex < ChunkIndex; ++PrevChunkIndex)
+			{
+				const ANav3DDataChunkActor* PrevChunkActor = ChunkActors[PrevChunkIndex];
+				if (PrevChunkActor && IsValid(PrevChunkActor))
+				{
+					const FVector PrevCenter = PrevChunkActor->DataChunkActorBounds.GetCenter();
+					if (OriginalVolumes[ParentVolumeIndex].IsInside(PrevCenter))
+					{
+						ChunkIndexInVolume++;
+					}
+				}
+			}
+		}
+
+		FString VolumeText;
+		FLinearColor TextColor = FNav3DUtils::GetChunkColorByIndex(ChunkIndex);
+		if (ParentVolumeIndex != INDEX_NONE)
+		{
+			VolumeText = FString::Printf(TEXT("Chunk %d (Vol %d)"), ChunkIndexInVolume, ParentVolumeIndex);
+		}
+		else
+		{
+			VolumeText = FString::Printf(TEXT("Chunk %d (Orphan)"), ChunkIndex);
+		}
+
+		const FVector ChunkSize = ChunkBounds.GetSize();
+		VolumeText += FString::Printf(TEXT("\n%.0f x %.0f x %.0f"), ChunkSize.X, ChunkSize.Y, ChunkSize.Z);
+
+		const FVector TextPosition = ChunkCenter + FVector(0.0f, 0.0f, ChunkBounds.GetExtent().Z * 0.1f);
+		Texts.Emplace(VolumeText, TextPosition, TextColor);
+
+		const FColor WireColor = TextColor.ToFColor(true);
+		Boxes.Emplace(ChunkBounds, WireColor);
+	}
+
+	if (ChunkActors.Num() > 0)
+	{
+		FVector SummaryPosition = FVector::ZeroVector;
+		if (OriginalVolumes.Num() > 0)
+		{
+			SummaryPosition = OriginalVolumes[0].GetCenter() + FVector(0.0f, 0.0f, OriginalVolumes[0].GetExtent().Z * 1.5f);
+		}
+		const FString SummaryText = FString::Printf(TEXT("Nav3D Volumes: %d original, %d chunks"), OriginalVolumes.Num(), ChunkActors.Num());
+		Texts.Emplace(SummaryText, SummaryPosition, FLinearColor::White);
+	}
+}
+
 void FNav3DMeshSceneProxy::RenderVoxelSurfaces(FPrimitiveDrawInterface* PDI, FMeshElementCollector& Collector) const
 {
 	if (VoxelSurfaces.Num() == 0)
@@ -410,7 +619,7 @@ void FNav3DMeshSceneProxy::RenderVoxelSurfaces(FPrimitiveDrawInterface* PDI, FMe
 
 	for (const FVoxelSurfaceData& Surface : VoxelSurfaces)
 	{
-		FColoredMaterialRenderProxy* ColoredProxy = GetProxyForColor(Surface.Color, Surface.Opacity);
+		const FColoredMaterialRenderProxy* ColoredProxy = GetProxyForColor(Surface.Color, Surface.Opacity);
 
 		GetBoxMesh(FTransform(Surface.Bounds.GetCenter()).ToMatrixNoScale(),
 			   Surface.Bounds.GetExtent(),
@@ -441,7 +650,7 @@ void FNav3DMeshSceneProxy::AddNodeTextInfos(const MortonCode NodeMortonCode,
 	{
 		const FIntVector MortonCoords =
 			FIntVector(FNav3DUtils::GetVectorFromMortonCode(NodeMortonCode));
-		Texts.Emplace(FString::Printf(TEXT("%s"), *MortonCoords.ToString()),
+		Texts.Emplace(FString::Printf(TEXT("%d, %d, %d"), MortonCoords.X, MortonCoords.Y, MortonCoords.Z),
 		              NodePosition + FVector(0.0f, 0.0f, VerticalOffset),
 		              FLinearColor::Black);
 	}
@@ -510,8 +719,25 @@ FPrimitiveSceneProxy* UNav3DNavDataRenderingComponent::CreateSceneProxy()
 	// Get owner and gather data
 	if (ANav3DData* NavData = Cast<ANav3DData>(GetOwner()))
 	{
-		// Create proxy data with the volume navigation data reference first
-		FNav3DMeshSceneProxyData ProxyData(NavData->GetVolumeNavigationData());
+		// Collect all navigation data from chunk actors
+		TArray<FNav3DVolumeNavigationData> AllVolumeData;
+		for (ANav3DDataChunkActor* ChunkActor : NavData->GetChunkActors())
+		{
+			if (!ChunkActor) continue;
+			
+			for (const UNav3DDataChunk* Chunk : ChunkActor->Nav3DChunks)
+			{
+				if (!Chunk) continue;
+
+				if (const FNav3DVolumeNavigationData* VolumeData = Chunk->GetVolumeNavigationData())
+				{
+					AllVolumeData.Add(*VolumeData);
+				}
+			}
+		}
+		
+		// Create proxy data with the collected volume navigation data
+		FNav3DMeshSceneProxyData ProxyData(AllVolumeData);
 
 		// Then set the other members
 		ProxyData.NavigationData = NavData;
@@ -652,4 +878,97 @@ void FNav3DMeshSceneProxy::DebugDrawBestCover(const int32 ViewerRegionId)
 	Spheres.Emplace(200.0f, StartPosition, DrawColor, SolidMesh);
 	Spheres.Emplace(200.0f, CoverPositions[0].Position, DrawColor, SolidMesh);
 	Lines.Emplace(StartPosition, CoverPositions[0].Position, DrawColor);
+}
+
+void FNav3DMeshSceneProxy::DebugDrawOctreeAdjacency(const FNav3DVolumeNavigationData& VolumeData, const int32 MaxLinesToDraw)
+{
+    const FNav3DData& Data = VolumeData.GetData();
+    if (!Data.IsValid()) { return; }
+
+    int32 LinesDrawn = 0;
+
+    // Layer 0: free leaf subnode neighbors
+    if (Data.GetLayerCount() > 0)
+    {
+        const auto& LayerZero = Data.GetLayer(0);
+        const auto& LeafNodes = Data.GetLeafNodes();
+        for (int32 NodeIdx = 0; NodeIdx < LayerZero.GetNodes().Num() && LinesDrawn < MaxLinesToDraw; ++NodeIdx)
+        {
+            const auto& Node = LayerZero.GetNode(NodeIdx);
+            if (!Node.FirstChild.IsValid()) { continue; }
+            const auto& Leaf = LeafNodes.GetLeafNode(Node.FirstChild.NodeIndex);
+            // For each free sub-node, draw face-adjacent neighbors in same node
+            for (uint8 Sub = 0; Sub < 64 && LinesDrawn < MaxLinesToDraw; ++Sub)
+            {
+                if (Leaf.IsSubNodeOccluded(Sub)) { continue; }
+                FVector APos = VolumeData.GetNodePositionFromAddress(FNav3DNodeAddress(0, Node.FirstChild.NodeIndex, Sub), true);
+
+                // 6 directions within the leaf
+                static constexpr int Dx[6] = {1,-1,0,0,0,0};
+                static constexpr int Dy[6] = {0,0,1,-1,0,0};
+                static constexpr int Dz[6] = {0,0,0,0,1,-1};
+
+                uint_fast32_t Sx, Sy, Sz;
+                morton3D_64_decode(Sub, Sx, Sy, Sz);
+
+                for (int d = 0; d < 6 && LinesDrawn < MaxLinesToDraw; ++d)
+                {
+                    int nx = static_cast<int>(Sx) + Dx[d];
+                    int ny = static_cast<int>(Sy) + Dy[d];
+                    int nz = static_cast<int>(Sz) + Dz[d];
+                    if (nx < 0 || nx > 3 || ny < 0 || ny > 3 || nz < 0 || nz > 3) { continue; }
+                    uint64 nsub = morton3D_64_encode(nx, ny, nz);
+                    if (Leaf.IsSubNodeOccluded(nsub)) { continue; }
+                    FVector BPos = VolumeData.GetNodePositionFromAddress(FNav3DNodeAddress(0, Node.FirstChild.NodeIndex, nsub), true);
+                    Lines.Emplace(APos, BPos, FColor::Cyan);
+                    LinesDrawn++;
+                }
+
+                // parent link (child to parent node center)
+                if (LinesDrawn < MaxLinesToDraw)
+                {
+                    if (Node.FirstChild.IsValid())
+                    {
+                        FVector ParentPos = VolumeData.GetNodePositionFromLayerAndMortonCode(1, FNav3DUtils::GetParentMortonCode(Node.MortonCode));
+                        Lines.Emplace(APos, ParentPos, FColor::White);
+                        LinesDrawn++;
+                    }
+                }
+            }
+        }
+    }
+
+    // Higher layers: free node neighbors and parent links
+    for (int32 L = 1; L < Data.GetLayerCount() && LinesDrawn < MaxLinesToDraw; ++L)
+    {
+        const auto& Layer = Data.GetLayer(L);
+        for (int32 NodeIdx = 0; NodeIdx < Layer.GetNodes().Num() && LinesDrawn < MaxLinesToDraw; ++NodeIdx)
+        {
+            const auto& Node = Layer.GetNode(NodeIdx);
+            if (Node.HasChildren()) { continue; } // only free nodes
+            // draw neighbors (the data layer stores neighbor links in volume data)
+            FNav3DNodeAddress Addr; Addr.LayerIndex = L; Addr.NodeIndex = NodeIdx; Addr.SubNodeIndex = 0;
+            TArray<FNav3DNodeAddress> Neigh;
+            VolumeData.GetNodeNeighbours(Neigh, Addr);
+            const FVector APos = VolumeData.GetNodePositionFromLayerAndMortonCode(L, Node.MortonCode);
+            for (const auto& N : Neigh)
+            {
+                if (LinesDrawn >= MaxLinesToDraw) break;
+                if (N.LayerIndex != L) continue; // same layer neighbors only here
+                const auto& NNode = Data.GetLayer(N.LayerIndex).GetNode(N.NodeIndex);
+                if (NNode.HasChildren()) continue; // neighbor must be free
+                const FVector BPos = VolumeData.GetNodePositionFromLayerAndMortonCode(N.LayerIndex, NNode.MortonCode);
+                Lines.Emplace(APos, BPos, FColor::Cyan);
+                LinesDrawn++;
+            }
+            // parent link
+            if (L + 1 < Data.GetLayerCount() && LinesDrawn < MaxLinesToDraw)
+            {
+                const MortonCode ParentCode = FNav3DUtils::GetParentMortonCode(Node.MortonCode);
+                const FVector ParentPos = VolumeData.GetNodePositionFromLayerAndMortonCode(L + 1, ParentCode);
+                Lines.Emplace(APos, ParentPos, FColor::White);
+                LinesDrawn++;
+            }
+        }
+    }
 }
