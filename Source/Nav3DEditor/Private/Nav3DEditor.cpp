@@ -15,7 +15,7 @@ void FNav3DEditorModule::StartupModule()
 	// Add the Nav3D filter button to the Details panel
 	FPropertyEditorModule& PropertyModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
 	{
-		TSharedRef<FPropertySection> Section = PropertyModule.FindOrCreateSection("Actor", "Nav3D", LOCTEXT("Nav3D", "Nav3D"));
+		const TSharedRef<FPropertySection> Section = PropertyModule.FindOrCreateSection("Actor", "Nav3D", LOCTEXT("Nav3D", "Nav3D"));
 		Section->AddCategory("Nav3D");
 	}
 

@@ -6,13 +6,10 @@
 #include <Materials/Material.h>
 #include <Engine/Engine.h>
 #include <PrimitiveSceneProxy.h>
-#include <libmorton/morton.h>
-
 #include "Nav3D.h"
 #include "Materials/MaterialRenderProxy.h"
 #include "Nav3DDataChunkActor.h"
-#include "Nav3DTacticalActor.h"
-#include "Pathfinding/Nav3DCrossVolumeGraph.h"
+#include "Tactical/Nav3DTacticalDataConverter.h"
 
 #if !UE_BUILD_SHIPPING && !UE_BUILD_TEST
 #endif
@@ -39,6 +36,36 @@ static const FColor RegionColors[32] = {
     FColor(0, 128, 128), FColor(128, 0, 128), FColor(255, 128, 128), FColor(128, 255, 128),
     FColor(128, 128, 255), FColor(192, 192, 64), FColor(64, 192, 192), FColor(192, 64, 192)
 };
+
+void FNav3DMeshSceneProxy::EnsureConsolidatedDataForDebugDrawing() const
+{
+	if (!NavigationData.IsValid())
+	{
+		return;
+	}
+
+#if WITH_EDITOR || !UE_BUILD_SHIPPING
+	const bool bHasCompactData = !NavigationData->ConsolidatedCompactTacticalData.IsEmpty();
+
+	if (const bool bHasConsolidatedData = !NavigationData->GetConsolidatedTacticalData().IsEmpty();
+		NavigationData->TacticalSettings.bEnableTacticalReasoning && bHasCompactData && !bHasConsolidatedData)
+	{
+		UE_LOG(LogNav3D, Verbose, TEXT("Converting compact tactical data to consolidated format for superior debug rendering"));
+		NavigationData->RebuildConsolidatedTacticalDataFromCompact();
+		const int32 ConvertedRegions = NavigationData->GetConsolidatedTacticalData().AllLoadedRegions.Num();
+		const int32 ConvertedAdjacency = NavigationData->GetConsolidatedTacticalData().RegionAdjacency.Num();
+		const int32 ConvertedVisibility = NavigationData->GetConsolidatedTacticalData().RegionVisibility.Num();
+		if (ConvertedRegions > 0)
+		{
+			UE_LOG(LogNav3D, Verbose, TEXT("Tactical data conversion successful - %d regions, %d adjacency entries, %d visibility entries available for original debug rendering"), ConvertedRegions, ConvertedAdjacency, ConvertedVisibility);
+		}
+		else
+		{
+			UE_LOG(LogNav3D, Warning, TEXT("Tactical data conversion produced no regions - debug rendering may not work"));
+		}
+	}
+#endif
+}
 
 FNav3DMeshSceneProxy::FNav3DMeshSceneProxy(
 	const UPrimitiveComponent& Component,
@@ -100,6 +127,9 @@ FNav3DMeshSceneProxy::FNav3DMeshSceneProxy(
 		return;
 	}
 
+	// Ensure we have consolidated data for debug paths
+	EnsureConsolidatedDataForDebugDrawing();
+
 	const auto& DebugInfos = NavigationData->GetDebugData();
 
 	// Reserve for filled voxel surfaces to reduce reallocations
@@ -113,6 +143,12 @@ FNav3DMeshSceneProxy::FNav3DMeshSceneProxy(
 	for (ANav3DDataChunkActor* ChunkActor : NavigationData->GetChunkActors())
 	{
 		if (!ChunkActor) continue;
+		
+		// Skip rendering if this chunk is still building to prevent access violations
+		if (ChunkActor->bIsBuilding)
+		{
+			continue;
+		}
 		
 		for (const UNav3DDataChunk* Chunk : ChunkActor->Nav3DChunks)
 		{
@@ -173,38 +209,156 @@ FNav3DMeshSceneProxy::FNav3DMeshSceneProxy(
 	        {
 	            const auto& TacticalDebugData = NavigationData->TacticalSettings.TacticalDebugData;
 	            
-	            // Draw regions if enabled
-	            if (TacticalDebugData.bDebugDrawRegions)
-	            {
-	                DebugDrawRegions();
-	            }
+	            // Always ensure we have consolidated data for the superior debug rendering methods
+	            EnsureConsolidatedDataForDebugDrawing();
 	            
-	            if (TacticalDebugData.bDebugDrawRegionIds)
+	            // Now we can always use the original, high-quality debug drawing methods
+	            if (!NavigationData->GetConsolidatedTacticalData().IsEmpty())
 	            {
-	                DebugDrawRegionIds();
+	                // Draw regions if enabled
+	                if (TacticalDebugData.bDebugDrawRegions)
+	                {
+	                    DebugDrawRegions();
+	                }
+	                
+	                if (TacticalDebugData.bDebugDrawRegionIds)
+	                {
+	                    DebugDrawRegionIds();
+	                }
+	                
+	                if (TacticalDebugData.bDebugDrawVisibility && TacticalDebugData.VisibilityViewRegionId >= 0)
+	                {
+	                    DebugDrawVisibility(TacticalDebugData.VisibilityViewRegionId);
+	                }
+	                
+	                if (TacticalDebugData.bDrawBestCover && TacticalDebugData.VisibilityViewRegionId >= 0)
+	                {
+	                    DebugDrawBestCover(TacticalDebugData.VisibilityViewRegionId);
+	                }
+	                
+	                if (TacticalDebugData.bDebugDrawRegionAdjacency)
+	                {
+	                    DebugDrawAdjacency();
+	                }
+	                
+	                if (TacticalDebugData.bDebugDrawPortals)
+	                {
+		                DebugDrawPortals();
+	                }
 	            }
-	            
-	            if (TacticalDebugData.bDebugDrawVisibility && TacticalDebugData.VisibilityViewRegionId >= 0)
+	            else
 	            {
-	                DebugDrawVisibility(TacticalDebugData.VisibilityViewRegionId);
-	            }
-	            
-	            if (TacticalDebugData.bDrawBestCover && TacticalDebugData.VisibilityViewRegionId >= 0)
-	            {
-	                DebugDrawBestCover(TacticalDebugData.VisibilityViewRegionId);
-	            }
-	            
-	            if (TacticalDebugData.bDebugDrawAdjacencyGraph)
-	            {
-	                DebugDrawAdjacency();
+	                UE_LOG(LogNav3D, Warning, TEXT("Failed to convert compact tactical data for debug rendering"));
 	            }
 	        }
-
-		// Cross-volume adjacency graph debug rendering
-		if (NavigationData->DebugData.bDebugDrawAdjacency)
-		{
-			DebugDrawCrossVolumeAdjacency();
 		}
+	}
+}
+
+void FNav3DMeshSceneProxy::DebugDrawRegionInfo(int32 RegionId)
+{
+	if (!NavigationData.IsValid())
+	{
+		return;
+	}
+	
+	// Find the region with the specified ID
+	const FNav3DRegion* SelectedRegion = nullptr;
+	for (const FNav3DRegion& Region : NavigationData->GetConsolidatedTacticalData().AllLoadedRegions)
+	{
+		if (Region.Id == RegionId)
+		{
+			SelectedRegion = &Region;
+			break;
+		}
+	}
+	
+	if (!SelectedRegion)
+	{
+		return;
+	}
+	
+	// Draw the region bounds with a special color (bright green)
+	FVector RegionCenter = SelectedRegion->Bounds.GetCenter();
+	
+	// Draw a wireframe box around the selected region
+	FColor RegionColor = FColor::Green;
+	FVector Min = SelectedRegion->Bounds.Min;
+	FVector Max = SelectedRegion->Bounds.Max;
+	
+	// Draw the 12 edges of the box
+	Lines.Emplace(FVector(Min.X, Min.Y, Min.Z), FVector(Max.X, Min.Y, Min.Z), RegionColor);
+	Lines.Emplace(FVector(Min.X, Min.Y, Min.Z), FVector(Min.X, Max.Y, Min.Z), RegionColor);
+	Lines.Emplace(FVector(Min.X, Min.Y, Min.Z), FVector(Min.X, Min.Y, Max.Z), RegionColor);
+	Lines.Emplace(FVector(Max.X, Max.Y, Min.Z), FVector(Min.X, Max.Y, Min.Z), RegionColor);
+	Lines.Emplace(FVector(Max.X, Max.Y, Min.Z), FVector(Max.X, Min.Y, Min.Z), RegionColor);
+	Lines.Emplace(FVector(Max.X, Max.Y, Min.Z), FVector(Max.X, Max.Y, Max.Z), RegionColor);
+	Lines.Emplace(FVector(Min.X, Max.Y, Max.Z), FVector(Min.X, Min.Y, Max.Z), RegionColor);
+	Lines.Emplace(FVector(Min.X, Max.Y, Max.Z), FVector(Min.X, Max.Y, Min.Z), RegionColor);
+	Lines.Emplace(FVector(Min.X, Max.Y, Max.Z), FVector(Max.X, Max.Y, Max.Z), RegionColor);
+	Lines.Emplace(FVector(Max.X, Min.Y, Max.Z), FVector(Min.X, Min.Y, Max.Z), RegionColor);
+	Lines.Emplace(FVector(Max.X, Min.Y, Max.Z), FVector(Max.X, Min.Y, Min.Z), RegionColor);
+	Lines.Emplace(FVector(Max.X, Min.Y, Max.Z), FVector(Max.X, Max.Y, Max.Z), RegionColor);
+	
+	// Draw center point
+	FColor CenterColor = FColor::Yellow;
+	FVector CenterOffset = FVector(5.0f, 0.0f, 0.0f);
+	Lines.Emplace(RegionCenter - CenterOffset, RegionCenter + CenterOffset, CenterColor);
+	CenterOffset = FVector(0.0f, 5.0f, 0.0f);
+	Lines.Emplace(RegionCenter - CenterOffset, RegionCenter + CenterOffset, CenterColor);
+	CenterOffset = FVector(0.0f, 0.0f, 5.0f);
+	Lines.Emplace(RegionCenter - CenterOffset, RegionCenter + CenterOffset, CenterColor);
+	
+	// Draw connections to adjacent regions
+	if (const FRegionIdArray* AdjacentIds = NavigationData->GetConsolidatedTacticalData().RegionAdjacency.Find(RegionId))
+	{
+		FColor ConnectionColor = FColor::Cyan;
+		for (int32 AdjacentId : AdjacentIds->GetArray())
+		{
+			// Find the adjacent region
+			for (const FNav3DRegion& AdjacentRegion : NavigationData->GetConsolidatedTacticalData().AllLoadedRegions)
+			{
+				if (AdjacentRegion.Id == AdjacentId)
+				{
+					FVector AdjacentCenter = AdjacentRegion.Bounds.GetCenter();
+					Lines.Emplace(RegionCenter, AdjacentCenter, ConnectionColor);
+					break;
+				}
+			}
+		}
+	}
+	
+	// Draw visibility connections
+	if (const FRegionIdArray* VisibleIds = NavigationData->GetConsolidatedTacticalData().RegionVisibility.Find(RegionId))
+	{
+		FColor VisibilityColor = FColor::Magenta;
+		for (int32 VisibleId : VisibleIds->GetArray())
+		{
+			if (VisibleId != RegionId) // Skip self-visibility
+			{
+				// Find the visible region
+				for (const FNav3DRegion& VisibleRegion : NavigationData->GetConsolidatedTacticalData().AllLoadedRegions)
+				{
+					if (VisibleRegion.Id == VisibleId)
+					{
+						FVector VisibleCenter = VisibleRegion.Bounds.GetCenter();
+						// Draw a dashed line for visibility (approximated with multiple short segments)
+						FVector Direction = (VisibleCenter - RegionCenter).GetSafeNormal();
+						float Distance = FVector::Dist(RegionCenter, VisibleCenter);
+						int32 Segments = FMath::Max(3, FMath::RoundToInt(Distance / 50.0f));
+						
+						for (int32 i = 0; i < Segments; i += 2)
+						{
+							float StartT = static_cast<float>(i) / Segments;
+							float EndT = static_cast<float>(i + 1) / Segments;
+							FVector Start = RegionCenter + Direction * Distance * StartT;
+							FVector End = RegionCenter + Direction * Distance * EndT;
+							Lines.Emplace(Start, End, VisibilityColor);
+						}
+						break;
+					}
+				}
+			}
 		}
 	}
 }
@@ -221,43 +375,32 @@ SIZE_T FNav3DMeshSceneProxy::GetTypeHash() const
 
 void FNav3DMeshSceneProxy::DebugDrawRegions()
 {
-	if (!NavigationData.IsValid())
-	{
-		return;
-	}
+	if (!NavigationData.IsValid()) return;
     
-	const auto& [Regions] = NavigationData->GetTacticalDataAtPosition(FVector::Zero());
+	// Convert compact → build for debug drawing with source chunks
+	const FConsolidatedTacticalData BuildData = FNav3DTacticalDataConverter::CompactToBuild(
+		NavigationData->ConsolidatedCompactTacticalData, NavigationData->GetAllChunkActors());
     
-	for (int32 i = 0; i < Regions.Num(); ++i)
+	// Use existing working code with proper bounds
+	for (const FNav3DRegion& Region : BuildData.AllLoadedRegions)
 	{
-		const FNav3DRegion& Region = Regions[i];
-        
-		// Map the region ID to a color using modulo to cycle through the available colors
 		const FColor& RegionColor = RegionColors[Region.Id % 32];
-        
-		// Convert from min/max box to center/extent for consistency with voxel rendering
 		FVector RegionCenter = Region.Bounds.GetCenter();
-		FVector RegionExtent = Region.Bounds.GetExtent() - FVector(10, 10, 10); // Shrink slightly
-        
-		// Add box for this region using center and extent (same approach as voxels)
+		FVector RegionExtent = Region.Bounds.GetExtent();
 		Boxes.Emplace(FBox::BuildAABB(RegionCenter, RegionExtent), RegionColor);
 	}
 }
 
 void FNav3DMeshSceneProxy::DebugDrawRegionIds()
 {
-    if (!NavigationData.IsValid())
-    {
-        return;
-    }
+    if (!NavigationData.IsValid()) return;
     
-    const auto& [Regions] = NavigationData->GetTacticalDataAtPosition(FVector::Zero());
+    // Convert compact → build for debug drawing
+    const FConsolidatedTacticalData BuildData = FNav3DTacticalDataConverter::CompactToBuild(
+        NavigationData->ConsolidatedCompactTacticalData, NavigationData->GetAllChunkActors());
     
-    for (int32 i = 0; i < Regions.Num(); ++i)
+    for (const FNav3DRegion& Region : BuildData.AllLoadedRegions)
     {
-        const FNav3DRegion& Region = Regions[i];
-        
-        // Draw region ID as text at the center of the region
         FVector RegionCenter = Region.Bounds.GetCenter();
         FString RegionIdText = FString::Printf(TEXT("%d"), Region.Id);
         Texts.Emplace(RegionIdText, RegionCenter, FLinearColor::White);
@@ -266,105 +409,58 @@ void FNav3DMeshSceneProxy::DebugDrawRegionIds()
 
 void FNav3DMeshSceneProxy::DebugDrawAdjacency()
 {
-    if (!NavigationData.IsValid())
-    {
-        return;
-    }
+    if (!NavigationData.IsValid()) return;
     
-    const auto& [Regions] = NavigationData->GetTacticalDataAtPosition(FVector::Zero());
+    // Convert compact → build for debug drawing
+    const FConsolidatedTacticalData BuildData = FNav3DTacticalDataConverter::CompactToBuild(
+        NavigationData->ConsolidatedCompactTacticalData, NavigationData->GetAllChunkActors());
     
-    // Keep track of which connections we've already drawn
+    // Use existing working adjacency drawing code
     TSet<TPair<int32, int32>> DrawnConnections;
     
-    for (const FNav3DRegion& Region : Regions)
+    for (const auto& AdjPair : BuildData.RegionAdjacency)
     {
-        // Get the center of this region
-        FVector RegionCenter = Region.Bounds.GetCenter();
+        const int32 RegionId = AdjPair.Key;
+        const FRegionIdArray& AdjacentIds = AdjPair.Value;
         
-        for (const int32 AdjacentId : Region.AdjacentRegionIds)
+        // Find the region
+        const FNav3DRegion* Region = nullptr;
+        for (const FNav3DRegion& R : BuildData.AllLoadedRegions)
         {
-            // Create a connection pair (using min/max to ensure consistent ordering)
+            if (R.Id == RegionId)
+            {
+                Region = &R;
+                break;
+            }
+        }
+        
+        if (!Region) continue;
+        
+        FVector RegionCenter = Region->Bounds.GetCenter();
+        
+        for (int32 AdjacentId : AdjacentIds.RegionIds)
+        {
             TPair<int32, int32> Connection(
-                FMath::Min(Region.Id, AdjacentId),
-                FMath::Max(Region.Id, AdjacentId)
+                FMath::Min(RegionId, AdjacentId),
+                FMath::Max(RegionId, AdjacentId)
             );
             
-            // Skip if we've already drawn this connection
-            if (DrawnConnections.Contains(Connection))
-            {
-                continue;
-            }
+            if (DrawnConnections.Contains(Connection)) continue;
             
-            // Find the adjacent region to get its center
-            const FNav3DRegion* AdjacentRegion = nullptr;
-            for (const FNav3DRegion& OtherRegion : Regions)
+            // Find adjacent region
+            for (const FNav3DRegion& AdjacentRegion : BuildData.AllLoadedRegions)
             {
-                if (OtherRegion.Id == AdjacentId)
+                if (AdjacentRegion.Id == AdjacentId)
                 {
-                    AdjacentRegion = &OtherRegion;
+                    FVector AdjacentCenter = AdjacentRegion.Bounds.GetCenter();
+                    Lines.Emplace(RegionCenter, AdjacentCenter, FColor::Black);
+                    DrawnConnections.Add(Connection);
                     break;
                 }
             }
-            
-            if (AdjacentRegion)
-            {
-                FVector AdjacentCenter = AdjacentRegion->Bounds.GetCenter();
-                
-                // Draw a line connecting the centers of adjacent regions
-                Lines.Emplace(RegionCenter, AdjacentCenter, FColor::Black);
-                
-                // Add to the set of drawn connections
-                DrawnConnections.Add(Connection);
-            }
         }
     }
 }
-
-void FNav3DMeshSceneProxy::DebugDrawCrossVolumeAdjacency()
-{
-    if (!NavigationData.IsValid())
-    {
-        return;
-    }
-
-    const bool bDrawPortals = false; // portal drawing removed
-
-    for (const ANav3DTacticalActor* Ta : NavigationData->GetAllTacticalActors())
-    {
-        if (!Ta) { continue; }
-        const FNav3DCrossVolumeGraph& Graph = Ta->GetCrossVolumeGraph();
-        const TArray<ANav3DDataChunkActor*>& Actors = Graph.GetCachedChunkActors();
-
-        // Iterate buckets indirectly by sampling each chunk's boundary voxels
-        for (int32 ChunkIdx = 0; ChunkIdx < Actors.Num(); ++ChunkIdx)
-        {
-            const ANav3DDataChunkActor* ChunkActor = Actors[ChunkIdx];
-            if (!ChunkActor || ChunkActor->Nav3DChunks.Num() == 0) { continue; }
-            const UNav3DDataChunk* Chunk = ChunkActor->Nav3DChunks[0];
-            if (!Chunk) { continue; }
-
-            for (const FNav3DEdgeVoxel& Edge : Chunk->BoundaryVoxels)
-            {
-                if (!Edge.bIsNavigable) { continue; }
-                FNav3DVoxelID Id; Id.ChunkIndex = ChunkIdx; Id.VolumeIndex = Edge.VolumeIndex; Id.Layer = Edge.LayerIndex; Id.Morton = Edge.Morton;
-
-                TArray<FNav3DCrossVolumeConnection> Neigh;
-                Graph.GetNeighbors(Id, Neigh);
-                if (Neigh.Num() == 0) { continue; }
-
-                const FVector FromPos = FNav3DUtils::GetVoxelWorldPosition(Id, Actors);
-                for (const FNav3DCrossVolumeConnection& Conn : Neigh)
-                {
-                    const FVector ToPos = FNav3DUtils::GetVoxelWorldPosition(Conn.RemoteVoxel, Actors);
-                    Lines.Emplace(FromPos, ToPos, FColor::Yellow);
-                    // portal drawing removed
-                }
-            }
-        }
-    }
-}
-
-// Portal drawing function removed
 
 void FNav3DMeshSceneProxy::DebugDrawVisibility(const int32 ViewerRegionId)
 {
@@ -373,11 +469,13 @@ void FNav3DMeshSceneProxy::DebugDrawVisibility(const int32 ViewerRegionId)
         return;
     }
     
-    const auto& [Regions] = NavigationData->GetTacticalDataAtPosition(FVector::Zero());
+    // Convert compact → build for debug drawing
+    const FConsolidatedTacticalData BuildData = FNav3DTacticalDataConverter::CompactToBuild(
+        NavigationData->ConsolidatedCompactTacticalData, NavigationData->GetAllChunkActors());
     
     // Find the viewer region
     const FNav3DRegion* ViewerRegion = nullptr;
-    for (const FNav3DRegion& Region : Regions)
+    for (const FNav3DRegion& Region : BuildData.AllLoadedRegions)
     {
         if (Region.Id == ViewerRegionId)
         {
@@ -394,11 +492,11 @@ void FNav3DMeshSceneProxy::DebugDrawVisibility(const int32 ViewerRegionId)
     // Get the center of the viewer region
     FVector ViewerCenter = ViewerRegion->Bounds.GetCenter();
     
-    // Access the visibility set directly from the region
-    const TArray<int32>& VisibilitySet = ViewerRegion->VisibilitySet;
+    // Access the visibility set from converted legacy data
+    const FRegionIdArray* VisibilitySet = BuildData.RegionVisibility.Find(ViewerRegionId);
     
     // Draw lines to ALL regions (not just visible ones) with appropriate colors
-    for (const FNav3DRegion& Region : Regions)
+    for (const FNav3DRegion& Region : BuildData.AllLoadedRegions)
     {
         // Skip self
         if (Region.Id == ViewerRegionId)
@@ -410,19 +508,19 @@ void FNav3DMeshSceneProxy::DebugDrawVisibility(const int32 ViewerRegionId)
         FVector TargetCenter = Region.Bounds.GetCenter();
         
         // Check if the target region is in the visibility set
-        const bool bIsVisible = VisibilitySet.Contains(Region.Id);
+        const bool bIsVisible = VisibilitySet && VisibilitySet->Contains(Region.Id);
         
         // Green for visible, Red for not visible
         FColor LineColor = bIsVisible ? FColor(0, 255, 0) : FColor(255, 0, 0);
         
         // Add the line - always draw regardless of visibility
         Lines.Emplace(ViewerCenter, TargetCenter, LineColor);
-    	
-    	// Add small sphere at start position
-    	Spheres.Emplace(25.0f, ViewerCenter, LineColor, SolidMesh);
         
-    	// Add small sphere at target position
-    	Spheres.Emplace(25.0f, TargetCenter, LineColor, SolidMesh);
+        // Add small sphere at start position
+        Spheres.Emplace(25.0f, ViewerCenter, LineColor, SolidMesh);
+        
+        // Add small sphere at target position
+        Spheres.Emplace(25.0f, TargetCenter, LineColor, SolidMesh);
     }
 }
 
@@ -832,7 +930,7 @@ void FNav3DMeshSceneProxy::DebugDrawBestCover(const int32 ViewerRegionId)
         return;
     }
     
-    const auto& [Regions] = NavigationData->GetTacticalDataAtPosition(FVector::Zero());
+    const TArray<FNav3DRegion>& Regions = NavigationData->GetConsolidatedTacticalData().AllLoadedRegions;
     
     // Find the viewer region
     const FNav3DRegion* ViewerRegion = nullptr;
@@ -874,100 +972,113 @@ void FNav3DMeshSceneProxy::DebugDrawBestCover(const int32 ViewerRegionId)
 		return;
 	}
 	
-	const FColor DrawColor = FColor::White;
+	const FColor DrawColor = FColor::Yellow;
 	Spheres.Emplace(200.0f, StartPosition, DrawColor, SolidMesh);
 	Spheres.Emplace(200.0f, CoverPositions[0].Position, DrawColor, SolidMesh);
-	Lines.Emplace(StartPosition, CoverPositions[0].Position, DrawColor);
+	Lines.Emplace(StartPosition, CoverPositions[0].Position, DrawColor, 5.f);
 }
 
-void FNav3DMeshSceneProxy::DebugDrawOctreeAdjacency(const FNav3DVolumeNavigationData& VolumeData, const int32 MaxLinesToDraw)
+void FNav3DMeshSceneProxy::DebugDrawPortals()
 {
-    const FNav3DData& Data = VolumeData.GetData();
-    if (!Data.IsValid()) { return; }
-
-    int32 LinesDrawn = 0;
-
-    // Layer 0: free leaf subnode neighbors
-    if (Data.GetLayerCount() > 0)
+    if (!NavigationData.IsValid())
     {
-        const auto& LayerZero = Data.GetLayer(0);
-        const auto& LeafNodes = Data.GetLeafNodes();
-        for (int32 NodeIdx = 0; NodeIdx < LayerZero.GetNodes().Num() && LinesDrawn < MaxLinesToDraw; ++NodeIdx)
-        {
-            const auto& Node = LayerZero.GetNode(NodeIdx);
-            if (!Node.FirstChild.IsValid()) { continue; }
-            const auto& Leaf = LeafNodes.GetLeafNode(Node.FirstChild.NodeIndex);
-            // For each free sub-node, draw face-adjacent neighbors in same node
-            for (uint8 Sub = 0; Sub < 64 && LinesDrawn < MaxLinesToDraw; ++Sub)
-            {
-                if (Leaf.IsSubNodeOccluded(Sub)) { continue; }
-                FVector APos = VolumeData.GetNodePositionFromAddress(FNav3DNodeAddress(0, Node.FirstChild.NodeIndex, Sub), true);
-
-                // 6 directions within the leaf
-                static constexpr int Dx[6] = {1,-1,0,0,0,0};
-                static constexpr int Dy[6] = {0,0,1,-1,0,0};
-                static constexpr int Dz[6] = {0,0,0,0,1,-1};
-
-                uint_fast32_t Sx, Sy, Sz;
-                morton3D_64_decode(Sub, Sx, Sy, Sz);
-
-                for (int d = 0; d < 6 && LinesDrawn < MaxLinesToDraw; ++d)
-                {
-                    int nx = static_cast<int>(Sx) + Dx[d];
-                    int ny = static_cast<int>(Sy) + Dy[d];
-                    int nz = static_cast<int>(Sz) + Dz[d];
-                    if (nx < 0 || nx > 3 || ny < 0 || ny > 3 || nz < 0 || nz > 3) { continue; }
-                    uint64 nsub = morton3D_64_encode(nx, ny, nz);
-                    if (Leaf.IsSubNodeOccluded(nsub)) { continue; }
-                    FVector BPos = VolumeData.GetNodePositionFromAddress(FNav3DNodeAddress(0, Node.FirstChild.NodeIndex, nsub), true);
-                    Lines.Emplace(APos, BPos, FColor::Cyan);
-                    LinesDrawn++;
-                }
-
-                // parent link (child to parent node center)
-                if (LinesDrawn < MaxLinesToDraw)
-                {
-                    if (Node.FirstChild.IsValid())
-                    {
-                        FVector ParentPos = VolumeData.GetNodePositionFromLayerAndMortonCode(1, FNav3DUtils::GetParentMortonCode(Node.MortonCode));
-                        Lines.Emplace(APos, ParentPos, FColor::White);
-                        LinesDrawn++;
-                    }
-                }
-            }
-        }
+        return;
     }
+    
+    const FColor PortalColor = FColor::Yellow;
 
-    // Higher layers: free node neighbors and parent links
-    for (int32 L = 1; L < Data.GetLayerCount() && LinesDrawn < MaxLinesToDraw; ++L)
+    // Iterate all source chunks from consolidated data
+    for (const TWeakObjectPtr<ANav3DDataChunkActor>& ChunkPtr : NavigationData->GetConsolidatedTacticalData().SourceChunks)
     {
-        const auto& Layer = Data.GetLayer(L);
-        for (int32 NodeIdx = 0; NodeIdx < Layer.GetNodes().Num() && LinesDrawn < MaxLinesToDraw; ++NodeIdx)
+        const ANav3DDataChunkActor* SourceChunk = ChunkPtr.Get();
+        if (!SourceChunk) { continue; }
+
+        for (const FNav3DChunkAdjacency& Adjacency : SourceChunk->ChunkAdjacency)
         {
-            const auto& Node = Layer.GetNode(NodeIdx);
-            if (Node.HasChildren()) { continue; } // only free nodes
-            // draw neighbors (the data layer stores neighbor links in volume data)
-            FNav3DNodeAddress Addr; Addr.LayerIndex = L; Addr.NodeIndex = NodeIdx; Addr.SubNodeIndex = 0;
-            TArray<FNav3DNodeAddress> Neigh;
-            VolumeData.GetNodeNeighbours(Neigh, Addr);
-            const FVector APos = VolumeData.GetNodePositionFromLayerAndMortonCode(L, Node.MortonCode);
-            for (const auto& N : Neigh)
+            // Use compact portals only
+            for (const FCompactPortal& CP : Adjacency.CompactPortals)
             {
-                if (LinesDrawn >= MaxLinesToDraw) break;
-                if (N.LayerIndex != L) continue; // same layer neighbors only here
-                const auto& NNode = Data.GetLayer(N.LayerIndex).GetNode(N.NodeIndex);
-                if (NNode.HasChildren()) continue; // neighbor must be free
-                const FVector BPos = VolumeData.GetNodePositionFromLayerAndMortonCode(N.LayerIndex, NNode.MortonCode);
-                Lines.Emplace(APos, BPos, FColor::Cyan);
-                LinesDrawn++;
-            }
-            // parent link
-            if (L + 1 < Data.GetLayerCount() && LinesDrawn < MaxLinesToDraw)
-            {
-                const MortonCode ParentCode = FNav3DUtils::GetParentMortonCode(Node.MortonCode);
-                const FVector ParentPos = VolumeData.GetNodePositionFromLayerAndMortonCode(L + 1, ParentCode);
-                Lines.Emplace(APos, ParentPos, FColor::White);
-                LinesDrawn++;
+	            // Resolve local endpoint in source chunk
+                const UNav3DDataChunk* AnyChunk = SourceChunk->Nav3DChunks.Num() > 0 ? SourceChunk->Nav3DChunks[0] : nullptr;
+                const FNav3DVolumeNavigationData* Vol = AnyChunk ? AnyChunk->GetVolumeNavigationData() : nullptr;
+                const FVector A = Vol ? Vol->GetLeafNodePositionFromMortonCode(CP.Local) : FVector::ZeroVector;
+
+                // Resolve remote endpoint using adjacent chunk
+                const ANav3DDataChunkActor* TargetChunk = Adjacency.OtherChunkActor.Get();
+                const UNav3DDataChunk* TargetAnyChunk = (TargetChunk && TargetChunk->Nav3DChunks.Num() > 0) ? TargetChunk->Nav3DChunks[0] : nullptr;
+                const FNav3DVolumeNavigationData* TargetVol = TargetAnyChunk ? TargetAnyChunk->GetVolumeNavigationData() : nullptr;
+                const FVector B = TargetVol ? TargetVol->GetLeafNodePositionFromMortonCode(CP.Remote) : FVector::ZeroVector;
+
+            	auto ProjectToFace = [](const FVector& P, const FBox& BoxBounds, const FVector& FaceNormal) -> FVector
+            	{
+            		FVector Out = P;
+            		if (FaceNormal.X > 0.5f)   Out.X = BoxBounds.Max.X;
+            		else if (FaceNormal.X < -0.5f) Out.X = BoxBounds.Min.X;
+            		else if (FaceNormal.Y > 0.5f)  Out.Y = BoxBounds.Max.Y;
+            		else if (FaceNormal.Y < -0.5f) Out.Y = BoxBounds.Min.Y;
+            		else if (FaceNormal.Z > 0.5f)  Out.Z = BoxBounds.Max.Z;
+            		else if (FaceNormal.Z < -0.5f) Out.Z = BoxBounds.Min.Z;
+            		return Out;
+            	};
+            	
+            	const FVector N = Adjacency.SharedFaceNormal.GetSafeNormal();
+            	
+                // Lightweight cross markers instead of spheres
+	            constexpr float Length = 500.0f;
+                const FBox& SrcBounds = SourceChunk->DataChunkActorBounds;
+                const FBox TgtBounds = TargetChunk ? TargetChunk->DataChunkActorBounds : FBox(ForceInit);
+
+                const FVector AProj = (!A.IsNearlyZero() && !N.IsNearlyZero()) ? ProjectToFace(A, SrcBounds, N) : A;
+                const FVector BProj = (!B.IsNearlyZero() && TargetChunk && !N.IsNearlyZero()) ? ProjectToFace(B, TgtBounds, -N) : B;
+
+                // Slight offset onto the face to avoid z-fighting
+	            constexpr float Eps = 1.0f;
+                const FVector Aon = AProj + N * Eps;
+                const FVector Bon = BProj - N * Eps;
+
+                auto MakeFaceBasis = [](const FVector& Normal, FVector& U, FVector& V)
+                {
+                    // Snap normal to principal axis to keep basis orthogonal to world axes
+                    FVector N = Normal;
+                    const float ax = FMath::Abs(N.X);
+                    const float ay = FMath::Abs(N.Y);
+                    const float az = FMath::Abs(N.Z);
+                    if (ax >= ay && ax >= az)
+                    {
+                        N = FVector((N.X >= 0.f) ? 1.f : -1.f, 0.f, 0.f);
+                        U = FVector(0.f, 1.f, 0.f);
+                        V = FVector(0.f, 0.f, 1.f);
+                    }
+                    else if (ay >= ax && ay >= az)
+                    {
+                        N = FVector(0.f, (N.Y >= 0.f) ? 1.f : -1.f, 0.f);
+                        U = FVector(1.f, 0.f, 0.f);
+                        V = FVector(0.f, 0.f, 1.f);
+                    }
+                    else
+                    {
+                        N = FVector(0.f, 0.f, (N.Z >= 0.f) ? 1.f : -1.f);
+                        U = FVector(1.f, 0.f, 0.f);
+                        V = FVector(0.f, 1.f, 0.f);
+                    }
+                };
+
+                FVector UAxis, VAxis; MakeFaceBasis(N, UAxis, VAxis);
+
+                auto DrawSquare = [&](const FVector& C)
+                {
+                    const FVector P0 = C + UAxis * Length + VAxis * Length;
+                    const FVector P1 = C - UAxis * Length + VAxis * Length;
+                    const FVector P2 = C - UAxis * Length - VAxis * Length;
+                    const FVector P3 = C + UAxis * Length - VAxis * Length;
+                    Lines.Emplace(P0, P1, PortalColor, 5.f);
+                    Lines.Emplace(P1, P2, PortalColor, 5.f);
+                    Lines.Emplace(P2, P3, PortalColor, 5.f);
+                    Lines.Emplace(P3, P0, PortalColor, 5.f);
+                };
+
+                if (!Aon.IsNearlyZero()) { DrawSquare(Aon); }
+                if (!Bon.IsNearlyZero()) { DrawSquare(Bon); }
             }
         }
     }

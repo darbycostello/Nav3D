@@ -1,11 +1,16 @@
 ﻿
 #include "Tests/Nav3DTestVolume.h"
 
+#include "EngineUtils.h"
 #include "Nav3D.h"
+#include "Nav3DData.h"
+#include "Nav3DDataChunkActor.h"
+#include "Nav3DTypes.h"
 #include "UObject/ConstructorHelpers.h"
 #include "AI/Navigation/NavigationTypes.h"
 #include "Components/InstancedStaticMeshComponent.h"
 #include "Math/UnrealMathUtility.h"
+#include "Engine/World.h"
 
 ANav3DTestVolume::ANav3DTestVolume()
 {
@@ -167,7 +172,7 @@ void ANav3DTestVolume::PostEditChangeProperty(FPropertyChangedEvent& PropertyCha
 }
 #endif
 
-void ANav3DTestVolume::GenerateObstacles()
+void ANav3DTestVolume::GenerateObstacles() const
 {
     // Clear any existing obstacles first
     ClearObstacles();
@@ -277,7 +282,7 @@ void ANav3DTestVolume::GenerateUniformDistribution(const FRandomStream& RandomSt
     }
 }
 
-void ANav3DTestVolume::GenerateRandomSpline()
+void ANav3DTestVolume::GenerateRandomSpline() const
 {
     const FRandomStream RandomStream(RandomSeed);
     GenerateRandomSpline(RandomStream);
@@ -983,4 +988,146 @@ void ANav3DTestVolume::ClampPointToVolumeBox(FVector& Point) const
 FVector ANav3DTestVolume::WorldToLocalPosition(const FVector& WorldPosition) const
 {
     return GetActorTransform().InverseTransformPosition(WorldPosition);
+}
+
+void ANav3DTestVolume::TestTacticalDataGeneration() const
+{
+    UE_LOG(LogNav3D, Display, TEXT("=== Testing Tactical Data Generation ==="));
+    
+    // Find the Nav3DData in the world
+    const ANav3DData* NavData = nullptr;
+    if (const UWorld* World = GetWorld())
+    {
+        for (const TActorIterator<ANav3DData> ActorItr(World); ActorItr;)
+        {
+            NavData = *ActorItr;
+            break;
+        }
+    }
+    
+    if (!NavData)
+    {
+        UE_LOG(LogNav3D, Error, TEXT("No Nav3DData found in world for tactical testing"));
+        return;
+    }
+    
+    // Check if tactical reasoning is enabled
+    if (!NavData->TacticalSettings.bEnableTacticalReasoning)
+    {
+        UE_LOG(LogNav3D, Warning, TEXT("Tactical reasoning is disabled. Enable it in Nav3DData settings."));
+        return;
+    }
+    
+    // Get all chunk actors
+    const TArray<ANav3DDataChunkActor*>& ChunkActors = NavData->GetAllChunkActors();
+    UE_LOG(LogNav3D, Display, TEXT("Found %d chunk actors"), ChunkActors.Num());
+    
+    int32 TotalRegions = 0;
+    int32 ChunksWithTacticalData = 0;
+    
+    for (const ANav3DDataChunkActor* ChunkActor : ChunkActors)
+    {
+        if (ChunkActor && ChunkActor->HasTacticalData())
+        {
+            ChunksWithTacticalData++;
+            const int32 RegionCount = ChunkActor->GetTacticalRegionCount();
+            TotalRegions += RegionCount;
+            
+            UE_LOG(LogNav3D, Display, TEXT("Chunk %s: %d regions, %d boundary interfaces"), 
+                   *ChunkActor->GetName(), RegionCount, ChunkActor->ConnectionInterfaces.Num());
+        }
+    }
+    
+    UE_LOG(LogNav3D, Display, TEXT("Tactical Data Summary:"));
+    UE_LOG(LogNav3D, Display, TEXT("  - Chunks with tactical data: %d/%d"), ChunksWithTacticalData, ChunkActors.Num());
+    UE_LOG(LogNav3D, Display, TEXT("  - Total regions: %d"), TotalRegions);
+    UE_LOG(LogNav3D, Display, TEXT("  - Consolidated regions: %d"), NavData->ConsolidatedTacticalData.GetRegionCount());
+    
+    if (TotalRegions > 0)
+    {
+        UE_LOG(LogNav3D, Display, TEXT("✅ Tactical data generation test PASSED"));
+    }
+    else
+    {
+        UE_LOG(LogNav3D, Error, TEXT("❌ Tactical data generation test FAILED - No regions found"));
+    }
+}
+
+void ANav3DTestVolume::TestTacticalQueries() const
+{
+    UE_LOG(LogNav3D, Display, TEXT("=== Testing Tactical Queries ==="));
+    
+    // Find the Nav3DData in the world
+    const ANav3DData* NavData = nullptr;
+    if (const UWorld* World = GetWorld())
+    {
+        for (const TActorIterator<ANav3DData> ActorItr(World); ActorItr;)
+        {
+            NavData = *ActorItr;
+            break;
+        }
+    }
+    
+    if (!NavData)
+    {
+        UE_LOG(LogNav3D, Error, TEXT("No Nav3DData found in world for tactical testing"));
+        return;
+    }
+    
+    if (NavData->ConsolidatedTacticalData.IsEmpty())
+    {
+        UE_LOG(LogNav3D, Warning, TEXT("No consolidated tactical data available for testing"));
+        return;
+    }
+    
+    // Test basic tactical queries
+    const FVector TestPosition = GetActorLocation();
+    const TArray<FVector> ObserverPositions = {TestPosition + FVector(100, 0, 0)};
+    TArray<FPositionCandidate> Candidates;
+
+    const bool bQuerySuccess = NavData->FindBestLocation(
+        TestPosition,
+        ObserverPositions,
+        Candidates,
+        ETacticalVisibility::TargetVisible,
+        ETacticalDistance::Closest,
+        ETacticalRegion::Largest,
+        true, // Force new region
+        false // Don't use raycasting for this test
+    );
+    
+    if (bQuerySuccess && Candidates.Num() > 0)
+    {
+        UE_LOG(LogNav3D, Display, TEXT("✅ Tactical query test PASSED - Found %d candidate positions"), Candidates.Num());
+        
+        // Log the best candidate
+        const FPositionCandidate& BestCandidate = Candidates[0];
+        UE_LOG(LogNav3D, Display, TEXT("  Best position: %s (Score: %.3f, Distance: %.1f)"), 
+               *BestCandidate.Position.ToString(), BestCandidate.Score, BestCandidate.DirectDistance);
+    }
+    else
+    {
+        UE_LOG(LogNav3D, Error, TEXT("❌ Tactical query test FAILED - No candidates found"));
+    }
+}
+
+int32 ANav3DTestVolume::GetTacticalRegionCount() const
+{
+    // Find the Nav3DData in the world
+    const ANav3DData* NavData = nullptr;
+    if (const UWorld* World = GetWorld())
+    {
+        for (const TActorIterator<ANav3DData> ActorItr(World); ActorItr;)
+        {
+            NavData = *ActorItr;
+            break;
+        }
+    }
+    
+    if (!NavData)
+    {
+        return 0;
+    }
+    
+    return NavData->ConsolidatedTacticalData.GetRegionCount();
 }

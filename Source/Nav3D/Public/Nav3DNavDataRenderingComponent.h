@@ -34,6 +34,7 @@ class NAV3D_API FNav3DMeshSceneProxy final : public FDebugRenderSceneProxy
 public:
 	friend class FNav3DDebugDrawDelegateHelper;
 
+	void EnsureConsolidatedDataForDebugDrawing() const;
 	explicit FNav3DMeshSceneProxy(const UPrimitiveComponent& Component, const FNav3DMeshSceneProxyData& ProxyData);
 	virtual ~FNav3DMeshSceneProxy() override;
 
@@ -52,24 +53,16 @@ protected:
 	                                   const uint32 VisibilityMap,
 	                                   FMeshElementCollector& Collector) const override;
 
-	// Helpers for translucent filled boxes
 	void RenderVoxelSurfaces(FPrimitiveDrawInterface* PDI, FMeshElementCollector& Collector) const;
-
-    
-    // Tactical reasoning visualization functions
     void DebugDrawRegions();
     void DebugDrawRegionIds();
     void DebugDrawAdjacency();
-    void DebugDrawCrossVolumeAdjacency();
-    // Removed portal drawing per new requirements
-
-    // Classic octree adjacency debug (layer-0 free neighbors and parent links)
-    void DebugDrawOctreeAdjacency(const class FNav3DVolumeNavigationData& VolumeData, int32 MaxLinesToDraw = 10000);
     void DebugDrawVisibility(int32 ViewerRegionId);
     void DebugDrawBestCover(int32 ViewerRegionId);
+	void DebugDrawPortals();
+	void DebugDrawRegionInfo(int32 RegionId);
+	virtual FPrimitiveViewRelevance GetViewRelevance(const FSceneView* View) const override;
 	
-	virtual FPrimitiveViewRelevance
-	GetViewRelevance(const FSceneView* View) const override;
 	TWeakObjectPtr<UNav3DNavDataRenderingComponent> RenderingComponent;
 	TWeakObjectPtr<ANav3DData> NavigationData;
 

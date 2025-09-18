@@ -4,9 +4,6 @@
 #include "Nav3DNavDataRenderingComponent.h"
 #include "Nav3DDataChunkActor.h"
 #include "Nav3DWorldSubsystem.h"
-#include "Pathfinding/Nav3DPathFinder.h"
-#include "Pathfinding/Search/Nav3DPathFindingSearch.h"
-#include "Pathfinding/Nav3DQueryFilter.h"
 #include <AI/NavDataGenerator.h>
 #include <DrawDebugHelpers.h>
 #include <NavigationSystem.h>
@@ -16,6 +13,8 @@
 #include "Nav3DUtils.h"
 #include "Raycasting/Nav3DRaycaster.h"
 #include "Tactical/Nav3DTacticalReasoning.h"
+#include "Tactical/Nav3DTacticalDataConverter.h"
+#include "Nav3DVolumeIDSystem.h"
 #include "Components/PrimitiveComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/InstancedStaticMeshComponent.h"
@@ -25,19 +24,184 @@
 #include "LandscapeMeshCollisionComponent.h"
 #include "LandscapeHeightfieldCollisionComponent.h"
 #include "Nav3DBoundsVolume.h"
-#include "Nav3DTacticalActor.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/OverlapResult.h"
 #include "Internationalization/Text.h"
 #include "Internationalization/Internationalization.h"
+#include "Pathfinding/Core/Nav3DPath.h"
 
 #if WITH_EDITOR
 #include <ObjectEditorUtils.h>
 #endif
 
 FNav3DGenerationFinishedDelegate ANav3DData::GenerationFinishedDelegate;
-const FNav3DTacticalData ANav3DData::EmptyTacticalData;
+
+// ============================================================================
+// CONSOLE COMMANDS
+// ============================================================================
+
+static FAutoConsoleCommand CCmd_ConsolidateTactical(
+	TEXT("Nav3D.ConsolidateTactical"),
+	TEXT("Manually consolidate tactical data and force draw update"),
+	FConsoleCommandDelegate::CreateLambda([]()
+	{
+		// Find all Nav3DData instances in the world
+		if (const UWorld* World = GEngine->GetWorldFromContextObject(nullptr, EGetWorldErrorMode::LogAndReturnNull))
+		{
+			for (TActorIterator<ANav3DData> It(World); It; ++It)
+			{
+				ANav3DData* Nav3DData = *It;
+				if (Nav3DData && Nav3DData->TacticalSettings.bEnableTacticalReasoning)
+				{
+					UE_LOG(LogNav3D, Log, TEXT("Manually consolidating tactical data for %s"), *Nav3DData->GetName());
+					Nav3DData->RefreshConsolidatedTacticalData();
+					Nav3DData->RequestDrawingUpdate();
+				}
+			}
+		}
+	})
+);
+
+static FAutoConsoleCommand CCmd_LogPerformanceStats(
+	TEXT("Nav3D.LogPerformanceStats"),
+	TEXT("Log performance statistics for all Nav3D instances"),
+	FConsoleCommandDelegate::CreateLambda([]()
+	{
+		// Find all Nav3DData instances in the world
+		if (const UWorld* World = GEngine->GetWorldFromContextObject(nullptr, EGetWorldErrorMode::LogAndReturnNull))
+		{
+			for (TActorIterator<ANav3DData> It(World); It; ++It)
+			{
+				const ANav3DData* Nav3DData = *It;
+				if (Nav3DData && Nav3DData->TacticalSettings.bEnableTacticalReasoning)
+				{
+					UE_LOG(LogNav3D, Log, TEXT("Performance stats for %s:"), *Nav3DData->GetName());
+					Nav3DData->LogPerformanceStats();
+				}
+			}
+		}
+	})
+);
+
+static FAutoConsoleCommand CCmd_LogLoadedRegions(
+	TEXT("Nav3D.LogLoadedRegions"),
+	TEXT("Log all loaded region IDs for tactical filtering"),
+	FConsoleCommandDelegate::CreateLambda([]()
+	{
+		// Find all Nav3DData instances in the world
+		if (const UWorld* World = GEngine->GetWorldFromContextObject(nullptr, EGetWorldErrorMode::LogAndReturnNull))
+		{
+			for (TActorIterator<ANav3DData> It(World); It; ++It)
+			{
+				ANav3DData* Nav3DData = *It;
+				if (Nav3DData && Nav3DData->TacticalSettings.bEnableTacticalReasoning)
+				{
+					UE_LOG(LogNav3D, Log, TEXT("Loaded regions for %s:"), *Nav3DData->GetName());
+					Nav3DData->UpdateLoadedRegionIds();
+					const TSet<int32>& LoadedRegions = Nav3DData->GetLoadedRegionIds();
+					
+					FString RegionList;
+					for (const int32 RegionId : LoadedRegions)
+					{
+						RegionList += FString::Printf(TEXT("%d "), RegionId);
+					}
+					UE_LOG(LogNav3D, Log, TEXT("Loaded region IDs: %s"), *RegionList);
+					UE_LOG(LogNav3D, Log, TEXT("Total loaded regions: %d"), LoadedRegions.Num());
+				}
+			}
+		}
+	})
+);
+
+static FAutoConsoleCommand CCmd_RebuildCompactTactical(
+	TEXT("Nav3D.RebuildCompactTactical"),
+	TEXT("Manually rebuild consolidated compact tactical data"),
+	FConsoleCommandDelegate::CreateLambda([]()
+	{
+		// Find all Nav3DData instances in the world
+		if (const UWorld* World = GEngine->GetWorldFromContextObject(nullptr, EGetWorldErrorMode::LogAndReturnNull))
+		{
+			for (TActorIterator<ANav3DData> It(World); It; ++It)
+			{
+				ANav3DData* Nav3DData = *It;
+				if (Nav3DData && Nav3DData->TacticalSettings.bEnableTacticalReasoning)
+				{
+					UE_LOG(LogNav3D, Log, TEXT("Manually rebuilding consolidated compact tactical data for %s"), *Nav3DData->GetName());
+					Nav3DData->RebuildConsolidatedCompactTacticalData();
+					Nav3DData->RequestDrawingUpdate();
+				}
+			}
+		}
+	})
+);
+
+static FAutoConsoleCommand CCmd_ListVolumeIDs(
+	TEXT("Nav3D.ListVolumeIDs"),
+	TEXT("List all currently loaded Nav3DBoundsVolume IDs and GUIDs"),
+	FConsoleCommandDelegate::CreateLambda([]()
+	{
+		if (UWorld* World = GWorld)
+		{
+			TMap<uint16, FGuid> VolumeMap = FNav3DVolumeIDSystem::GetLoadedVolumeIDs(World);
+			
+			UE_LOG(LogNav3D, Display, TEXT("=== Currently Loaded Nav3DBoundsVolumes ==="));
+			for (const auto& Pair : VolumeMap)
+			{
+				const uint16 VolumeID = Pair.Key;
+				const FGuid& VolumeGUID = Pair.Value;
+				
+				if (const ANav3DBoundsVolume* Volume = FNav3DVolumeIDSystem::FindVolumeByID(World, VolumeID))
+				{
+					UE_LOG(LogNav3D, Display, TEXT("Volume ID: %d | GUID: %s | Name: %s"), 
+					   VolumeID, *VolumeGUID.ToString(), *Volume->GetName());
+				}
+			}
+			
+			// Check for collisions
+			if (!FNav3DVolumeIDSystem::ValidateNoCollisions(World))
+			{
+				UE_LOG(LogNav3D, Error, TEXT("Volume ID collisions detected! See log above."));
+			}
+			else
+			{
+				UE_LOG(LogNav3D, Display, TEXT("No volume ID collisions detected."));
+			}
+		}
+	})
+);
+
+static FAutoConsoleCommand CCmd_TestTacticalConversion(
+	TEXT("Nav3D.TestTacticalConversion"),
+	TEXT("Test conversion from compact to consolidated tactical data"),
+	FConsoleCommandDelegate::CreateLambda([]()
+	{
+		if (const UWorld* World = GWorld)
+		{
+			for (TActorIterator<ANav3DData> It(World); It; ++It)
+			{
+				ANav3DData* NavData = *It;
+				if (NavData && IsValid(NavData))
+				{
+					const int32 CompactRegions = NavData->ConsolidatedCompactTacticalData.GetRegionCount();
+					const int32 ConsolidatedRegions = NavData->ConsolidatedTacticalData.GetRegionCount();
+					
+					UE_LOG(LogNav3D, Display, TEXT("Nav3DData '%s': Compact regions: %d, Consolidated regions: %d"), 
+					   *NavData->GetName(), CompactRegions, ConsolidatedRegions);
+					
+					if (CompactRegions > 0 && ConsolidatedRegions == 0)
+					{
+						UE_LOG(LogNav3D, Display, TEXT("Testing conversion..."));
+						NavData->RebuildConsolidatedTacticalDataFromCompact();
+						
+						const int32 NewConsolidatedRegions = NavData->ConsolidatedTacticalData.GetRegionCount();
+						UE_LOG(LogNav3D, Display, TEXT("Conversion result: %d consolidated regions"), NewConsolidatedRegions);
+					}
+				}
+			}
+		}
+	})
+);
 
 // ============================================================================
 // INITIALIZATION METHODS
@@ -143,25 +307,6 @@ void ANav3DData::ValidateNavigationSystem()
 	UE_LOG(LogNav3D, Display, TEXT("Chunk Actors - Valid: %d, No Nav Data: %d, Total: %d"), 
 	       ValidChunkActors, ActorsWithNoNavData, ChunkActors.Num());
 	
-	// Check tactical actor integrity and clean up invalid actors
-	const int32 InvalidTacticalCount = GetInvalidTacticalActorCount();
-	if (InvalidTacticalCount > 0)
-	{
-		UE_LOG(LogNav3D, Warning, TEXT("Found %d invalid tactical actors, cleaning up"), InvalidTacticalCount);
-		CleanupInvalidTacticalActors();
-	}
-	
-	// Count valid tactical actors after cleanup
-	int32 ValidTacticalActors = 0;
-	for (const ANav3DTacticalActor* TacticalActor : TacticalActors)
-	{
-		if (TacticalActor && IsValid(TacticalActor))
-		{
-			ValidTacticalActors++;
-		}
-	}
-	UE_LOG(LogNav3D, Display, TEXT("Tactical Actors - Valid: %d, Total: %d"), 
-	       ValidTacticalActors, TacticalActors.Num());
 	
 	// Check volume coverage
 	const TArray<FBox> PartitionedVolumes = GetPartitionedVolumes();
@@ -222,7 +367,7 @@ void ANav3DData::ShowBuildStatus()
 }
 
 // Helper functions for clean analysis output
-static FString FormatNumber(int32 Number)
+static FString FormatNumber(const int32 Number)
 {
     return FText::AsNumber(Number, &FNumberFormattingOptions::DefaultWithGrouping()).ToString();
 }
@@ -289,22 +434,157 @@ void ANav3DData::OnRegistered()
 void ANav3DData::PostLoad()
 {
 	Super::PostLoad();
-
-	if (const auto* World = GetWorld())
+    
+	if (TacticalSettings.bEnableTacticalReasoning)
 	{
-		if (const auto* NavigationSystemBase = World->GetNavigationSystem();
-			NavigationSystemBase != nullptr && NavigationSystemBase->IsWorldInitDone())
+		UE_LOG(LogNav3D, Verbose, TEXT("PostLoad: Converting compact tactical data for debug rendering"));
+        
+		// Find chunks with compact data
+		TArray<ANav3DDataChunkActor*> ChunksWithCompactData;
+		for (ANav3DDataChunkActor* Chunk : GetChunkActors())
 		{
-			CheckToDiscardSubLevelNavData(*NavigationSystemBase);
+			if (Chunk && !Chunk->CompactTacticalData.IsEmpty())
+			{
+				ChunksWithCompactData.Add(Chunk);
+				UE_LOG(LogNav3D, VeryVerbose, TEXT("Found chunk %s with %d compact regions"),
+					*Chunk->GetName(), Chunk->CompactTacticalData.Regions.Num());
+			}
+		}
+        
+		if (ChunksWithCompactData.Num() == 0)
+		{
+			UE_LOG(LogNav3D, VeryVerbose, TEXT("No compact tactical data to convert"));
+			return;
+		}
+        
+		// Build consolidated compact data from chunks
+		BuildConsolidatedCompactFromChunks(ChunksWithCompactData);
+        
+		if (!ConsolidatedCompactTacticalData.IsEmpty())
+		{
+			// Convert to Build format for debug rendering only
+			ConsolidatedTacticalData = FNav3DTacticalDataConverter::CompactToBuild(
+				ConsolidatedCompactTacticalData, ChunksWithCompactData);
+                
+			UE_LOG(LogNav3D, Verbose, TEXT("Tactical data conversion successful - %d regions, %d adjacency entries, %d visibility entries available for original debug rendering"),
+				ConsolidatedTacticalData.AllLoadedRegions.Num(),
+				ConsolidatedTacticalData.RegionAdjacency.Num(),
+				ConsolidatedTacticalData.RegionVisibility.Num());
 		}
 		else
 		{
-			UNavigationSystemBase::OnNavigationInitStartStaticDelegate().AddUObject(
-				this, &ThisClass::CheckToDiscardSubLevelNavData);
+			UE_LOG(LogNav3D, Warning, TEXT("Failed to convert compact tactical data for debug rendering"));
 		}
 	}
+}
 
-	RecreateDefaultFilter();
+void ANav3DData::BuildConsolidatedCompactFromChunks(const TArray<ANav3DDataChunkActor*>& ChunksWithData)
+{
+    ConsolidatedCompactTacticalData.Reset();
+    
+    TMap<int32, uint16> LocalToGlobalIdMap;  // Map chunk-local region index to global ID
+    uint16 NextGlobalId = 0;
+    
+    UE_LOG(LogNav3D, Verbose, TEXT("Building consolidated compact data from %d chunks"), ChunksWithData.Num());
+    
+    for (const ANav3DDataChunkActor* ChunkActor : ChunksWithData)
+    {
+        const FCompactTacticalData& ChunkData = ChunkActor->CompactTacticalData;
+        
+        UE_LOG(LogNav3D, VeryVerbose, TEXT("Processing chunk %s: %d regions, VolumeID=%d"),
+            *ChunkActor->GetName(), ChunkData.Regions.Num(), ChunkData.VolumeID);
+        
+        // Add regions with global ID remapping
+        for (int32 LocalIdx = 0; LocalIdx < ChunkData.Regions.Num(); ++LocalIdx)
+        {
+            LocalToGlobalIdMap.Add(LocalIdx, NextGlobalId);
+            ConsolidatedCompactTacticalData.AllLoadedRegions.Add(NextGlobalId, ChunkData.Regions[LocalIdx]);
+            
+            NextGlobalId++;
+        }
+        
+        // Convert intra-volume adjacency to global IDs
+        for (const auto& AdjPair : ChunkData.RegionAdjacency)
+        {
+            const uint8 LocalFromId = AdjPair.Key;
+            const uint64 AdjMask = AdjPair.Value;
+            
+            if (const uint16* GlobalFromId = LocalToGlobalIdMap.Find(LocalFromId))
+            {
+                // Convert bitmask from local to global IDs
+                uint64 GlobalAdjMask = 0;
+                for (int32 Bit = 0; Bit < 64; ++Bit)
+                {
+                    if (AdjMask & (1ULL << Bit))
+                    {
+                        if (const uint16* GlobalToId = LocalToGlobalIdMap.Find(Bit))
+                        {
+                            if (*GlobalToId < 64)  // Ensure it fits in the 64-bit mask
+                            {
+                                GlobalAdjMask |= (1ULL << *GlobalToId);
+                            }
+                        }
+                    }
+                }
+                
+                if (GlobalAdjMask != 0)
+                {
+                    ConsolidatedCompactTacticalData.GlobalRegionAdjacency.Add(*GlobalFromId, GlobalAdjMask);
+                }
+            }
+        }
+        
+        // Collect existing serialized visibility data
+        if (!ChunkData.VisibilityMatrix.SparseReferences.IsEmpty())
+        {
+            UE_LOG(LogNav3D, VeryVerbose, TEXT("  Found %d visibility references in chunk"),
+                ChunkData.VisibilityMatrix.SparseReferences.Num());
+                
+            const uint16 VolumeId = ChunkData.VolumeID;
+            FVolumeRegionMatrix& ConsolidatedMatrix = 
+                ConsolidatedCompactTacticalData.VolumeVisibilityData.FindOrAdd(VolumeId);
+            
+            // Copy serialized visibility data with ID remapping
+            int32 VisibilityEntriesLoaded = 0;
+            for (const auto& VisPair : ChunkData.VisibilityMatrix.SparseReferences)
+            {
+                const uint16 Key = VisPair.Key;
+                const uint64 VisMask = VisPair.Value;
+                
+                // Decode the key to get local region ID
+                // Using the decoding from FVolumeRegionMatrix
+                const uint8 LocalRegionId = Key & 0x3F;
+                const uint16 TargetVolumeId = Key >> 6;
+                UE_LOG(LogNav3D, VeryVerbose, TEXT("LOAD: Original Key=0x%04X -> LocalRegionId=%d, TargetVolumeId=%d"), Key, LocalRegionId, TargetVolumeId);
+                
+                // Remap local region ID to global
+                if (const uint16* GlobalRegionId = LocalToGlobalIdMap.Find(LocalRegionId))
+                {
+                    // Re-encode with global region ID
+                    uint16 GlobalKey = (TargetVolumeId << 6) | (*GlobalRegionId & 0x3F);
+                    ConsolidatedMatrix.SparseReferences.Add(GlobalKey, VisMask);
+                    VisibilityEntriesLoaded++;
+                }
+            }
+        }
+        else
+        {
+            UE_LOG(LogNav3D, VeryVerbose, TEXT("  No visibility data in chunk %s"), *ChunkActor->GetName());
+        }
+        
+        // Clear the local-to-global mapping for next chunk
+        LocalToGlobalIdMap.Empty();
+    }
+    
+    // Update source chunks
+    ConsolidatedCompactTacticalData.SourceChunks.Empty();
+    for (ANav3DDataChunkActor* ChunkActor : ChunksWithData)
+    {
+        ConsolidatedCompactTacticalData.SourceChunks.Add(ChunkActor);
+    }
+    
+    UE_LOG(LogNav3D, Verbose, TEXT("Consolidated %d compact regions from %d chunks"),
+        ConsolidatedCompactTacticalData.AllLoadedRegions.Num(), ChunksWithData.Num());
 }
 
 void ANav3DData::CleanUp()
@@ -713,40 +993,6 @@ ENavigationQueryResult::Type ANav3DData::CalcPathLength(const FVector& PathStart
 	return CalcPathLengthAndCost(PathStart, PathEnd, OutPathLength, PathCost, Filter, Querier);
 }
 
-ENavigationQueryResult::Type ANav3DData::CalcPathLengthAndCost(
-	const FVector& PathStart, const FVector& PathEnd,
-	FVector::FReal& OutPathLength, FVector::FReal& OutPathCost,
-	const FSharedConstNavQueryFilter Filter, const UObject* Querier) const
-{
-	if ((PathStart - PathEnd).IsNearlyZero())
-	{
-		OutPathLength = 0.f;
-		return ENavigationQueryResult::Success;
-	}
-
-	auto* VolumeNavData = GetVolumeNavigationDataContainingPoints({PathStart, PathEnd});
-
-	if (VolumeNavData == nullptr)
-	{
-		return ENavigationQueryResult::Error;
-	}
-
-	const TSharedRef<FNav3DPath> NavigationPath = MakeShareable(new FNav3DPath());
-	const auto NavAgentProps = FNav3DUtils::GetNavAgentPropsFromQuerier(Querier);
-
-	const ENavigationQueryResult::Type Result = FNav3DPathFinder::GetPath(
-		NavigationPath.Get(), *this, PathStart, PathEnd, NavAgentProps, Filter);
-
-	if (Result == ENavigationQueryResult::Success ||
-		(Result == ENavigationQueryResult::Fail && NavigationPath->IsPartial()))
-	{
-		OutPathLength = NavigationPath->GetLength();
-		OutPathCost = NavigationPath->GetCost();
-	}
-
-	return Result;
-}
-
 bool ANav3DData::DoesNodeContainLocation(const NavNodeRef NodeRef, const FVector& WorldSpaceLocation) const
 {
 	const FNav3DNodeAddress NodeAddress(NodeRef);
@@ -882,15 +1128,14 @@ void ANav3DData::PostEditChangeProperty(
 		{
 			if (NeedsTacticalRebuild(PropertyChangedEvent) && TacticalSettings.bEnableTacticalReasoning)
 			{
-				UE_LOG(LogNav3D, Display, TEXT("Tactical rebuild requested"));
-				
-				// Rebuild tactical data if we have valid navigation data
-				if (ChunkActors.Num() > 0)
+				UE_LOG(LogNav3D, Display, TEXT("Tactical rebuild requested (deferred)"));
+				bNeedsTacticalRebuild = true;
+				if (const UWorld* World = GetWorld())
 				{
-					BuildTacticalData();
-				} else
-				{
-					UE_LOG(LogNav3D, Warning, TEXT("Cannot rebuild, no valid navigation data"));
+					FTimerManager& TimerManager = World->GetTimerManager();
+					TimerManager.SetTimer(DeferredTacticalRebuildHandle,
+						FTimerDelegate::CreateUObject(this, &ANav3DData::PerformDeferredTacticalRefresh),
+						0.1f, false);
 				}
 			}
 		}
@@ -998,32 +1243,6 @@ FBox ANav3DData::GetBoundingBox() const
 
 
 
-const FNav3DVolumeNavigationData* ANav3DData::GetVolumeNavigationDataContainingPoints(
-	const TArray<FVector>& Points) const
-{
-	// Find a chunk actor that contains all points using GetAllChunkActors() to avoid null entries
-	for (ANav3DDataChunkActor* ChunkActor : GetAllChunkActors())
-	{
-		if (!ChunkActor) continue;
-		
-		bool bContainsAllPoints = true;
-		for (const FVector& Point : Points)
-		{
-			if (!ChunkActor->ContainsPoint(Point))
-			{
-				bContainsAllPoints = false;
-				break;
-			}
-		}
-		
-		if (bContainsAllPoints && ChunkActor->Nav3DChunks.Num() > 0)
-		{
-			return ChunkActor->Nav3DChunks[0]->GetVolumeNavigationData();
-		}
-	}
-	
-	return nullptr;
-}
 
 void ANav3DData::CheckToDiscardSubLevelNavData(
 	const UNavigationSystemBase& NavigationSystem)
@@ -1438,7 +1657,7 @@ void ANav3DData::AnalyzeActualSpatialDistribution(const FBox& VolumeBounds, cons
     AnalyzeSpatialClustering(ObjectPositions, ObjectBounds, VolumeBounds, OverlappingObjects.Num());
 }
 
-void ANav3DData::AnalyzeSpatialClustering(const TArray<FVector>& ObjectPositions, const TArray<FBox>& ObjectBounds, const FBox& VolumeBounds, int32 NumCandidateObjects)
+void ANav3DData::AnalyzeSpatialClustering(const TArray<FVector>& ObjectPositions, const TArray<FBox>& ObjectBounds, const FBox& VolumeBounds, const int32 NumCandidateObjects)
 {
     if (ObjectPositions.Num() < 10) return;
     
@@ -1517,7 +1736,7 @@ void ANav3DData::AnalyzeSpatialClustering(const TArray<FVector>& ObjectPositions
 }
 
 
-void ANav3DData::EstimateOctreeSize(const FBox& VolumeBounds, float EmptyGridRatio, int32 MaxLayers, float LeafNodeSize)
+void ANav3DData::EstimateOctreeSize(const FBox& VolumeBounds, const float EmptyGridRatio, const int32 MaxLayers, const float LeafNodeSize)
 {
     UE_LOG(LogNav3D, Log, TEXT("=== OCTREE SIZE ESTIMATION ==="));
     
@@ -1601,13 +1820,6 @@ void ANav3DData::BuildNavigationData() const
 	// Drive the navigation system directly to avoid duplicate editor build notifications
 	if (UWorld* World = GetWorld())
 	{
-		// Clean up invalid tactical actors before rebuilding
-		const int32 InvalidTacticalCount = const_cast<ANav3DData*>(this)->GetInvalidTacticalActorCount();
-		if (InvalidTacticalCount > 0)
-		{
-			UE_LOG(LogNav3D, Log, TEXT("BuildNavigationData: Cleaning up %d invalid tactical actors before rebuild"), InvalidTacticalCount);
-			const_cast<ANav3DData*>(this)->CleanupInvalidTacticalActors();
-		}
 		
 		// Clean up invalid chunk actors before destroying valid ones
 		const int32 InvalidCount = const_cast<ANav3DData*>(this)->GetInvalidChunkActorCount();
@@ -1643,13 +1855,8 @@ void ANav3DData::BuildNavigationData() const
 
 void ANav3DData::BuildSingleVolume(const FBox& VolumeBounds)
 {
-	// Clean up invalid tactical actors before building
-	const int32 InvalidTacticalCount = GetInvalidTacticalActorCount();
-	if (InvalidTacticalCount > 0)
-	{
-		UE_LOG(LogNav3D, Log, TEXT("BuildSingleVolume: Cleaning up %d invalid tactical actors before rebuild"), InvalidTacticalCount);
-		CleanupInvalidTacticalActors();
-	}
+	// Record build start time
+	const double BuildStartTime = FPlatformTime::Seconds();
 	
 	// Clean up invalid chunk actors before building
 	const int32 InvalidCount = GetInvalidChunkActorCount();
@@ -1677,6 +1884,9 @@ void ANav3DData::BuildSingleVolume(const FBox& VolumeBounds)
 	}
 	
 	UE_LOG(LogNav3D, Log, TEXT("Building single volume: %s"), *VolumeBounds.ToString());
+	
+	// Store build start time for timing completion
+	SingleVolumeBuildStartTime = BuildStartTime;
 	
 	// Use the navigation system's async build process for proper UI feedback
 	// This will trigger the same build notifications, toasts, and progress updates as Build All
@@ -1707,13 +1917,6 @@ void ANav3DData::RebuildSingleChunk(const FBox& ChunkBounds)
 	// Chunk-only rebuild: do NOT destroy other chunk actors.
 	UE_LOG(LogNav3D, Log, TEXT("Building single chunk: %s"), *ChunkBounds.ToString());
 	
-	// Clean up invalid tactical actors before rebuilding
-	const int32 InvalidTacticalCount = GetInvalidTacticalActorCount();
-	if (InvalidTacticalCount > 0)
-	{
-		UE_LOG(LogNav3D, Log, TEXT("RebuildSingleChunk: Cleaning up %d invalid tactical actors before rebuild"), InvalidTacticalCount);
-		CleanupInvalidTacticalActors();
-	}
 	
 	// Clean up invalid chunk actors before rebuilding
 	const int32 InvalidCount = GetInvalidChunkActorCount();
@@ -1771,38 +1974,10 @@ void ANav3DData::RebuildTacticalData()
 		return;
 	}
 	
-	UE_LOG(LogNav3D, Log, TEXT("Rebuilding tactical data for %d chunk actors"), ChunkActors.Num());
+	UE_LOG(LogNav3D, Log, TEXT("Rebuilding consolidated tactical data for %d chunk actors"), ChunkActors.Num());
 	
-	// Destroy existing tactical actors
-	TArray<ANav3DTacticalActor*> TacticalActorsToDestroy;
-	TacticalActorsToDestroy.Reserve(TacticalActors.Num());
-	for (ANav3DTacticalActor* TacticalActor : TacticalActors)
-	{
-		if (TacticalActor)
-		{
-			TacticalActorsToDestroy.Add(TacticalActor);
-		}
-	}
-	
-	for (ANav3DTacticalActor* ActorToDestroy : TacticalActorsToDestroy)
-	{
-		UE_LOG(LogNav3D, Log, TEXT("Destroying tactical actor before rebuild: %s"), *ActorToDestroy->GetName());
-		UnregisterTacticalActor(ActorToDestroy);
-		GetWorld()->DestroyActor(ActorToDestroy);
-	}
-	
-	// Clear the tactical actors array
-	TacticalActors.Empty();
-	
-	// Reset tactical generation flag to allow rebuild
-	if (FNavDataGenerator* BaseGenerator = GetGenerator())
-	{
-		if (FNav3DDataGenerator* Generator = static_cast<FNav3DDataGenerator*>(BaseGenerator))
-		{
-			Generator->ResetTacticalGenerationFlag();
-			Generator->StartTacticalGeneration();
-		}
-	}
+	// Simply rebuild the consolidated tactical data
+	RefreshConsolidatedTacticalData();
 }
 
 void ANav3DData::InvalidateAffectedPaths(const TArray<FBox>& UpdatedBounds)
@@ -1862,9 +2037,9 @@ void ANav3DData::InvalidateAffectedPaths(const TArray<FBox>& UpdatedBounds)
 	}
 }
 
-void ANav3DData::OnNavigationDataGenerationFinished()
+void ANav3DData::OnNavigationDataGenerationFinished() const
 {
-	if (UWorld* World = GetWorld())
+	if (const UWorld* World = GetWorld())
 	{
 		if (IsValid(World))
 		{
@@ -1934,9 +2109,6 @@ void ANav3DData::OnNavigationDataGenerationFinished()
 #endif
 		}
 	}
-	
-	// Ensure cross-volume graphs are (re)built after nav generation regardless of tactical reasoning
-	BuildTacticalData();
 }
 
 UNav3DDataChunk* ANav3DData::GetNavigationDataChunk(ULevel* Level) const
@@ -2021,6 +2193,7 @@ FPathFindingResult ANav3DData::FindPath(
 		}
 		else
 		{
+			/*
 			Result.Result = FNav3DPathFinder::GetPath(
 				*N3dNavigationPath,
 				*Self,
@@ -2028,6 +2201,7 @@ FPathFindingResult ANav3DData::FindPath(
 				PathFindingQuery.EndLocation,
 				NavAgentProperties,
 				PathFindingQuery.QueryFilter);
+				*/
 		}
 	}
 
@@ -2232,7 +2406,7 @@ bool ANav3DData::InitializeTacticalReasoning()
 	// Initialize the tactical reasoning (this is safe to call multiple times)
 	if (TacticalReasoning.IsValid())
 	{
-		TacticalReasoning->Initialize(this);
+		TacticalReasoning->SetNavDataRef(this);
 		return true;
 	}
 	else
@@ -2244,63 +2418,934 @@ bool ANav3DData::InitializeTacticalReasoning()
 
 void ANav3DData::BuildTacticalData()
 {
-	// Ensure one tactical actor per discoverable volume, regardless of tactical reasoning flag
+	// No-op under new architecture: tactical data is built per chunk and consolidated on load/unload
+}
+
+// =============================================================================
+// CONSOLIDATED TACTICAL DATA MANAGEMENT
+// =============================================================================
+
+void ANav3DData::OnChunkActorLoaded(const ANav3DDataChunkActor* ChunkActor)
+{
+	if (!ChunkActor || !TacticalSettings.bEnableTacticalReasoning)
 	{
-		const TArray<FBox> Volumes = GetAllDiscoverableVolumes();
-		for (const FBox& VolumeBounds : Volumes)
+		return;
+	}
+	
+	UE_LOG(LogNav3D, Verbose, TEXT("OnChunkActorLoaded: %s"), *ChunkActor->GetName());
+	
+	bNeedsTacticalRebuild = true;
+	if (const UWorld* World = GetWorld())
+	{
+		FTimerManager& TimerManager = World->GetTimerManager();
+		TimerManager.SetTimer(DeferredTacticalRebuildHandle,
+			FTimerDelegate::CreateUObject(this, &ANav3DData::PerformDeferredTacticalRefresh),
+			0.1f, false);
+	}
+}
+
+void ANav3DData::OnChunkActorUnloaded(ANav3DDataChunkActor* ChunkActor)
+{
+	if (!TacticalSettings.bEnableTacticalReasoning)
+	{
+		return;
+	}
+	
+	UE_LOG(LogNav3D, Verbose, TEXT("OnChunkActorUnloaded: %s"), *GetNameSafe(ChunkActor));
+	
+	// Remove this chunk from both consolidated data formats
+	ConsolidatedTacticalData.SourceChunks.Remove(ChunkActor);
+	ConsolidatedCompactTacticalData.SourceChunks.Remove(ChunkActor);
+	
+	bNeedsTacticalRebuild = true;
+	if (const UWorld* World = GetWorld())
+	{
+		FTimerManager& TimerManager = World->GetTimerManager();
+		TimerManager.SetTimer(DeferredTacticalRebuildHandle,
+			FTimerDelegate::CreateUObject(this, &ANav3DData::PerformDeferredTacticalRefresh),
+			0.1f, false);
+	}
+}
+
+uint16 ANav3DData::GetVolumeIDForGlobalRegion(const uint16 GlobalRegionId) const
+{
+	if (const FRegionMapping* Mapping = GlobalToLocalRegionMapping.Find(GlobalRegionId))
+	{
+		return Mapping->VolumeID;
+	}
+	return 0;
+}
+
+uint8 ANav3DData::GetLocalRegionIndexForGlobalRegion(const uint16 GlobalRegionId) const
+{
+	if (const FRegionMapping* Mapping = GlobalToLocalRegionMapping.Find(GlobalRegionId))
+	{
+		return Mapping->LocalRegionIndex;
+	}
+	return 0;
+}
+
+void ANav3DData::RefreshConsolidatedTacticalData()
+{
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_Nav3D_RebuildConsolidatedTactical);
+	
+	if (!TacticalSettings.bEnableTacticalReasoning)
+	{
+		return;
+	}
+	
+	// Clear existing data
+	ConsolidatedTacticalData.Reset();
+	
+	// Collect all loaded chunks with tactical data
+	TArray<ANav3DDataChunkActor*> LoadedChunks;
+	for (ANav3DDataChunkActor* ChunkActor : ChunkActors)
+	{
+		if (ChunkActor && ChunkActor->HasTacticalData())
 		{
-			bool bHasTA = false;
-			for (const ANav3DTacticalActor* TA : TacticalActors)
+			LoadedChunks.Add(ChunkActor);
+		}
+	}
+	
+	if (LoadedChunks.Num() == 0)
+	{
+		UE_LOG(LogNav3D, Verbose, TEXT("No chunks with tactical data loaded"));
+		return;
+	}
+	
+	UE_LOG(LogNav3D, Log, TEXT("Rebuilding consolidated tactical data from %d chunks"), LoadedChunks.Num());
+	
+	// Step 1: Consolidate all regions from loaded chunks
+	ConsolidateRegionsFromChunks(LoadedChunks);
+	
+	// Step 2: Build cross-chunk adjacency from boundary interfaces
+	BuildCrossChunkAdjacency(LoadedChunks);
+	
+	// Step 3: Build cross-chunk visibility using sample-based raycasting
+	BuildCrossChunkVisibility(LoadedChunks);
+	
+	// Step 4: Prune regions to limit using density-focused strategy (32 regions max for testing)
+	constexpr int8 MaxRegions = 64;
+	if (ConsolidatedTacticalData.GetRegionCount() > MaxRegions)
+	{
+		UE_LOG(LogNav3D, Log, TEXT("Region count (%d) exceeds limit, applying density-focused pruning"), 
+		       ConsolidatedTacticalData.GetRegionCount());
+		
+		// Calculate volume bounds from all loaded chunks
+		FBox VolumeBounds(ForceInit);
+		for (const ANav3DDataChunkActor* ChunkActor : LoadedChunks)
+		{
+			if (ChunkActor)
 			{
-				if (TA && TA->OwningVolumeBounds.Equals(VolumeBounds))
+				VolumeBounds += ChunkActor->DataChunkActorBounds;
+			}
+		}
+		
+		// Apply density-focused region pruning
+		const TArray<int32> SelectedRegionIds = FDensityFocusedPruningStrategy::PruneRegionsToLimit(
+			ConsolidatedTacticalData, VolumeBounds, LoadedChunks, MaxRegions);
+		
+		// Filter consolidated data to only include selected regions
+		FilterConsolidatedDataToSelectedRegions(SelectedRegionIds);
+		
+		UE_LOG(LogNav3D, Log, TEXT("Density-focused pruning applied: reduced from %d to %d regions"),
+		       ConsolidatedTacticalData.GetRegionCount(), SelectedRegionIds.Num());
+	}
+	
+	// Update source chunks
+	ConsolidatedTacticalData.SourceChunks.Empty();
+	for (ANav3DDataChunkActor* ChunkActor : LoadedChunks)
+	{
+		ConsolidatedTacticalData.SourceChunks.Add(ChunkActor);
+	}
+	
+	// Update loaded region IDs for filtering
+	UpdateLoadedRegionIds();
+	
+	UE_LOG(LogNav3D, Log, TEXT("Rebuilt consolidated tactical data: %d regions from %d chunks"),
+	       ConsolidatedTacticalData.GetRegionCount(), LoadedChunks.Num());
+	
+	// Only force drawing update if no chunks are currently building
+	// This prevents access violations during the build process
+	bool bAnyChunkBuilding = false;
+	for (const ANav3DDataChunkActor* ChunkActor : ChunkActors)
+	{
+		if (ChunkActor && ChunkActor->bIsBuilding)
+		{
+			bAnyChunkBuilding = true;
+			break;
+		}
+	}
+	
+	if (!bAnyChunkBuilding)
+	{
+		// Force drawing update to show new tactical data
+		RequestDrawingUpdate();
+	}
+	else
+	{
+		UE_LOG(LogNav3D, Verbose, TEXT("Skipping tactical data drawing update - build still in progress"));
+	}
+}
+
+const FConsolidatedTacticalData& ANav3DData::GetConsolidatedTacticalData() const
+{
+#if WITH_EDITOR
+	if (ConsolidatedTacticalData.IsEmpty() || bConsolidatedDataDirty)
+	{
+		UE_LOG(LogNav3D, Verbose, TEXT("Converting compact data to consolidated format for debug/UI"));
+		RefreshConsolidatedDataFromCompact();
+	}
+#endif
+
+	return ConsolidatedTacticalData;
+}
+
+void ANav3DData::RefreshConsolidatedDataFromCompact() const
+{
+	if (!TacticalSettings.bEnableTacticalReasoning)
+	{
+		const_cast<ANav3DData*>(this)->ConsolidatedTacticalData.Reset();
+		bConsolidatedDataDirty = false;
+		return;
+	}
+
+	// Find chunks with compact data
+	TArray<ANav3DDataChunkActor*> ChunksWithCompactData;
+	for (ANav3DDataChunkActor* ChunkActor : ChunkActors)
+	{
+		if (ChunkActor && !ChunkActor->CompactTacticalData.IsEmpty())
+		{
+			ChunksWithCompactData.Add(ChunkActor);
+		}
+	}
+
+	if (ChunksWithCompactData.Num() == 0)
+	{
+		UE_LOG(LogNav3D, Verbose, TEXT("No chunks with compact tactical data found"));
+		const_cast<ANav3DData*>(this)->ConsolidatedTacticalData.Reset();
+		bConsolidatedDataDirty = false;
+		return;
+	}
+
+	UE_LOG(LogNav3D, Log, TEXT("Converting compact tactical data from %d chunks to Build format"), 
+	       ChunksWithCompactData.Num());
+
+	// Use the existing BuildConsolidatedCompactFromChunks + CompactToBuild pipeline
+	const_cast<ANav3DData*>(this)->BuildConsolidatedCompactFromChunks(ChunksWithCompactData);
+
+	if (!ConsolidatedCompactTacticalData.IsEmpty())
+	{
+		// Convert compact→consolidated using the proven converter
+		const_cast<ANav3DData*>(this)->ConsolidatedTacticalData = 
+			FNav3DTacticalDataConverter::CompactToBuild(ConsolidatedCompactTacticalData, ChunksWithCompactData);
+		
+		UE_LOG(LogNav3D, Log, TEXT("Successfully converted to consolidated format: %d regions, %d adjacency, %d visibility"),
+		       ConsolidatedTacticalData.AllLoadedRegions.Num(),
+		       ConsolidatedTacticalData.RegionAdjacency.Num(), 
+		       ConsolidatedTacticalData.RegionVisibility.Num());
+	}
+	else
+	{
+		UE_LOG(LogNav3D, Warning, TEXT("Failed to build consolidated compact data"));
+		const_cast<ANav3DData*>(this)->ConsolidatedTacticalData.Reset();
+	}
+	
+	bConsolidatedDataDirty = false;
+}
+
+void ANav3DData::InvalidateConsolidatedData() const
+{
+	bConsolidatedDataDirty = true;
+	UE_LOG(LogNav3D, Verbose, TEXT("Consolidated tactical data marked dirty - will refresh on next access"));
+}
+
+void ANav3DData::RebuildConsolidatedCompactTacticalData()
+{
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_Nav3D_RebuildConsolidatedCompactTactical);
+	
+	if (!TacticalSettings.bEnableTacticalReasoning)
+	{
+		return;
+	}
+	
+	// Clear existing compact data
+	ConsolidatedCompactTacticalData.Reset();
+	
+	// Collect all loaded chunks with compact tactical data
+	TArray<ANav3DDataChunkActor*> LoadedChunks;
+	int32 TotalChunks = 0;
+	int32 ChunksWithCompactData = 0;
+	int32 ChunksWithBuildData = 0;
+	
+	for (ANav3DDataChunkActor* ChunkActor : ChunkActors)
+	{
+		TotalChunks++;
+		if (ChunkActor)
+		{
+			if (!ChunkActor->CompactTacticalData.IsEmpty())
+			{
+				LoadedChunks.Add(ChunkActor);
+				ChunksWithCompactData++;
+			}
+			if (ChunkActor->HasTacticalData())
+			{
+				ChunksWithBuildData++;
+			}
+		}
+	}
+	
+	UE_LOG(LogNav3D, Log, TEXT("RebuildConsolidatedCompactTacticalData: %d total chunks, %d with compact data, %d with build data"), 
+	       TotalChunks, ChunksWithCompactData, ChunksWithBuildData);
+	
+	if (LoadedChunks.Num() == 0)
+	{
+		UE_LOG(LogNav3D, Verbose, TEXT("No chunks with compact tactical data loaded"));
+		return;
+	}
+	
+	UE_LOG(LogNav3D, Log, TEXT("Rebuilding consolidated compact tactical data from %d chunks"), LoadedChunks.Num());
+	
+	// Step 1: Consolidate all compact regions from loaded chunks
+	ConsolidateCompactRegionsFromChunks(LoadedChunks);
+	
+	// Step 2: Build global adjacency from intra-volume and cross-volume connections
+	BuildGlobalCompactAdjacency(LoadedChunks);
+	
+	// Update source chunks
+	ConsolidatedCompactTacticalData.SourceChunks.Empty();
+	for (ANav3DDataChunkActor* ChunkActor : LoadedChunks)
+	{
+		ConsolidatedCompactTacticalData.SourceChunks.Add(ChunkActor);
+	}
+	
+	// Update loaded region IDs for filtering
+	UpdateLoadedRegionIds();
+	
+	UE_LOG(LogNav3D, Log, TEXT("Rebuilt consolidated compact tactical data: %d regions from %d chunks"),
+	       ConsolidatedCompactTacticalData.GetRegionCount(), LoadedChunks.Num());
+	
+	// Only force drawing update if no chunks are currently building
+	bool bAnyChunkBuilding = false;
+	for (const ANav3DDataChunkActor* ChunkActor : ChunkActors)
+	{
+		if (ChunkActor && ChunkActor->bIsBuilding)
+		{
+			bAnyChunkBuilding = true;
+			break;
+		}
+	}
+	
+	if (!bAnyChunkBuilding)
+	{
+		// Force drawing update to show new tactical data
+		RequestDrawingUpdate();
+	}
+	else
+	{
+		UE_LOG(LogNav3D, Verbose, TEXT("Skipping compact tactical data drawing update - build still in progress"));
+	}
+}
+
+void ANav3DData::ConsolidateRegionsFromChunks(const TArray<ANav3DDataChunkActor*>& LoadedChunks)
+{
+	ConsolidatedTacticalData.AllLoadedRegions.Empty();
+	ConsolidatedTacticalData.RegionAdjacency.Empty();
+	
+	// Global region ID remapping to avoid conflicts
+	TMap<int32, int32> GlobalIdRemapping;
+	int32 NextGlobalId = 0;
+	
+	
+	// Collect all regions from loaded chunks
+	for (ANav3DDataChunkActor* ChunkActor : LoadedChunks)
+	{
+		if (!ChunkActor || !ChunkActor->HasCompactTacticalData())
+		{
+			continue;
+		}
+		
+		// Convert compact regions to Build for consolidated debug data
+		for (int32 LocalIndex = 0; LocalIndex < ChunkActor->CompactTacticalData.Regions.Num(); ++LocalIndex)
+		{
+			const FCompactRegion& CR = ChunkActor->CompactTacticalData.Regions[LocalIndex];
+				FNav3DRegion BuildRegion = FNav3DTacticalDataConverter::CompactToRegion(CR, NextGlobalId);
+			GlobalIdRemapping.Add(LocalIndex, NextGlobalId);
+			ConsolidatedTacticalData.AllLoadedRegions.Add(BuildRegion);
+			NextGlobalId++;
+		}
+		// Convert adjacency bitmasks using remapped IDs
+		for (const auto& AdjPair : ChunkActor->CompactTacticalData.RegionAdjacency)
+		{
+			const int32 LocalFrom = AdjPair.Key;
+			const uint64 Mask = AdjPair.Value;
+			const int32* NewFrom = GlobalIdRemapping.Find(LocalFrom);
+			if (!NewFrom) { continue; }
+			FRegionIdArray NewAdj;
+			for (int32 Bit = 0; Bit < 64; ++Bit)
+			{
+				if (Mask & (1ULL << Bit))
 				{
-					bHasTA = true;
-					break;
+					if (const int32* NewTo = GlobalIdRemapping.Find(Bit))
+					{
+						NewAdj.Add(*NewTo);
+					}
 				}
 			}
-			if (!bHasTA)
+			if (NewAdj.Num() > 0)
 			{
-				if (UWorld* World = GetWorld())
+				ConsolidatedTacticalData.RegionAdjacency.Add(*NewFrom, NewAdj);
+			}
+		}
+	}
+	
+	UE_LOG(LogNav3D, Verbose, TEXT("Consolidated %d regions with %d adjacency entries"),
+	       ConsolidatedTacticalData.AllLoadedRegions.Num(),
+	       ConsolidatedTacticalData.RegionAdjacency.Num());
+}
+
+void ANav3DData::BuildCrossChunkAdjacency(const TArray<ANav3DDataChunkActor*>& LoadedChunks)
+{
+	// Test adjacency between all chunk pairs
+	for (int32 i = 0; i < LoadedChunks.Num(); ++i)
+	{
+		for (int32 j = i + 1; j < LoadedChunks.Num(); ++j)
+		{
+			ANav3DDataChunkActor* ChunkA = LoadedChunks[i];
+			ANav3DDataChunkActor* ChunkB = LoadedChunks[j];
+			
+			if (ChunkA->IsAdjacentToChunk(ChunkB))
+			{
+				BuildAdjacencyBetweenChunks(ChunkA, ChunkB);
+			}
+		}
+	}
+	
+	UE_LOG(LogNav3D, Verbose, TEXT("Built cross-chunk adjacency for %d chunk pairs"), 
+	       (LoadedChunks.Num() * (LoadedChunks.Num() - 1)) / 2);
+}
+
+void ANav3DData::BuildAdjacencyBetweenChunks(
+	ANav3DDataChunkActor* ChunkA, 
+	ANav3DDataChunkActor* ChunkB)
+{
+	if (!ChunkA || !ChunkB)
+	{
+		UE_LOG(LogNav3D, Warning, TEXT("BuildAdjacencyBetweenChunks: Invalid chunk actors"));
+		return;
+	}
+	
+	// Validate input chunks have tactical data
+	if (!ChunkA->HasCompactTacticalData() || !ChunkB->HasCompactTacticalData())
+	{
+		UE_LOG(LogNav3D, Warning, TEXT("BuildAdjacencyBetweenChunks: Chunks missing tactical data - %s: %s, %s: %s"), 
+		       *ChunkA->GetName(), ChunkA->HasTacticalData() ? TEXT("Yes") : TEXT("No"),
+		       *ChunkB->GetName(), ChunkB->HasTacticalData() ? TEXT("Yes") : TEXT("No"));
+		return;
+	}
+	
+	// Validate chunks are actually adjacent
+	if (!ChunkA->IsAdjacentToChunk(ChunkB))
+	{
+		UE_LOG(LogNav3D, Warning, TEXT("BuildAdjacencyBetweenChunks: Chunks %s and %s are not adjacent"), 
+		       *ChunkA->GetName(), *ChunkB->GetName());
+		return;
+	}
+	
+	int32 ConnectionsCreated = 0;
+	int32 ValidationErrors = 0;
+	
+	// Check each connection interface in ChunkA against ChunkB's regions
+	for (const auto& InterfacePair : ChunkA->ConnectionInterfaces)
+	{
+		const FVector& FaceNormal = InterfacePair.Key;
+		const FChunkConnectionInterface& Interface = InterfacePair.Value;
+		
+		// Validate interface data
+		if (Interface.BoundaryRegionIds.Num() == 0)
+		{
+			UE_LOG(LogNav3D, Warning, TEXT("BuildAdjacencyBetweenChunks: Interface for face %s has no boundary regions"), 
+			       *FaceNormal.ToString());
+			ValidationErrors++;
+			continue;
+		}
+		
+		// Find the opposite face normal for ChunkB
+		FVector OppositeFaceNormal = -FaceNormal;
+		
+		// Check if ChunkB has a matching interface
+		const FChunkConnectionInterface* OppositeInterface = ChunkB->ConnectionInterfaces.Find(OppositeFaceNormal);
+		if (!OppositeInterface)
+		{
+			UE_LOG(LogNav3D, VeryVerbose, TEXT("BuildAdjacencyBetweenChunks: No matching interface for face %s in chunk %s"), 
+			       *OppositeFaceNormal.ToString(), *ChunkB->GetName());
+			continue;
+		}
+		
+		// Validate opposite interface data
+		if (OppositeInterface->BoundaryRegionIds.Num() == 0)
+		{
+			UE_LOG(LogNav3D, Warning, TEXT("BuildAdjacencyBetweenChunks: Opposite interface for face %s has no boundary regions"), 
+			       *OppositeFaceNormal.ToString());
+			ValidationErrors++;
+			continue;
+		}
+		
+		// Connect boundary regions between the two chunks
+		for (const int32 RegionIdA : Interface.BoundaryRegionIds)
+		{
+			const FBox* BoundsA = Interface.RegionBoundaryBoxes.Find(RegionIdA);
+			if (!BoundsA)
+			{
+				UE_LOG(LogNav3D, Warning, TEXT("BuildAdjacencyBetweenChunks: Missing boundary box for region %d in chunk %s"), 
+				       RegionIdA, *ChunkA->GetName());
+				ValidationErrors++;
+				continue;
+			}
+			
+			// Validate bounds
+			if (!BoundsA->IsValid)
+			{
+				UE_LOG(LogNav3D, Warning, TEXT("BuildAdjacencyBetweenChunks: Invalid boundary box for region %d in chunk %s"), 
+				       RegionIdA, *ChunkA->GetName());
+				ValidationErrors++;
+				continue;
+			}
+			
+			for (const int32 RegionIdB : OppositeInterface->BoundaryRegionIds)
+			{
+				const FBox* BoundsB = OppositeInterface->RegionBoundaryBoxes.Find(RegionIdB);
+				if (!BoundsB)
 				{
-					FActorSpawnParameters SpawnParams; SpawnParams.Owner = this; SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-					if (ANav3DTacticalActor* TA = World->SpawnActor<ANav3DTacticalActor>(SpawnParams))
+					UE_LOG(LogNav3D, Warning, TEXT("BuildAdjacencyBetweenChunks: Missing boundary box for region %d in chunk %s"), 
+					       RegionIdB, *ChunkB->GetName());
+					ValidationErrors++;
+					continue;
+				}
+				
+				// Validate bounds
+				if (!BoundsB->IsValid)
+				{
+					UE_LOG(LogNav3D, Warning, TEXT("BuildAdjacencyBetweenChunks: Invalid boundary box for region %d in chunk %s"), 
+					       RegionIdB, *ChunkB->GetName());
+					ValidationErrors++;
+					continue;
+				}
+				
+				// Check if the boundary boxes overlap (indicating adjacency)
+				if (BoundsA->Intersect(*BoundsB))
+				{
+					// Map local compact indices to consolidated compact global IDs
+					auto ComputeGlobalCompactId = [&](const ANav3DDataChunkActor* Chunk, const int32 LocalIndex) -> uint16
 					{
-						TA->SetTacticalActorBounds(VolumeBounds);
-						TA->OwningVolumeBounds = VolumeBounds;
-						RegisterTacticalActor(TA);
+						uint16 Base = 1; // Consolidation starts at 1
+						for (const ANav3DDataChunkActor* C : ChunkActors)
+						{
+							if (!C || !C->HasCompactTacticalData()) { continue; }
+							if (C == Chunk)
+							{
+								if (LocalIndex >= 0 && LocalIndex < C->CompactTacticalData.Regions.Num())
+								{
+									return static_cast<uint16>(Base + LocalIndex);
+								}
+								return 0;
+							}
+							Base = static_cast<uint16>(Base + C->CompactTacticalData.Regions.Num());
+						}
+						return 0;
+					};
+
+					const uint16 GlobalRegionIdA = ComputeGlobalCompactId(ChunkA, RegionIdA);
+					const uint16 GlobalRegionIdB = ComputeGlobalCompactId(ChunkB, RegionIdB);
+
+					if (GlobalRegionIdA != 0 && GlobalRegionIdB != 0 && GlobalRegionIdA != GlobalRegionIdB)
+					{
+						// Update consolidated compact adjacency (bidirectional)
+						uint64& MaskA = ConsolidatedCompactTacticalData.GlobalRegionAdjacency.FindOrAdd(GlobalRegionIdA);
+						MaskA |= (1ULL << (GlobalRegionIdB - 1));
+
+						uint64& MaskB = ConsolidatedCompactTacticalData.GlobalRegionAdjacency.FindOrAdd(GlobalRegionIdB);
+						MaskB |= (1ULL << (GlobalRegionIdA - 1));
+
+						ConnectionsCreated++;
+
+						UE_LOG(LogNav3D, VeryVerbose, TEXT("Connected compact regions across chunks: %u <-> %u"),
+							   GlobalRegionIdA, GlobalRegionIdB);
+					}
+					else
+					{
+						UE_LOG(LogNav3D, Warning, TEXT("BuildAdjacencyBetweenChunks: Failed to compute compact global IDs for local %d (chunk %s) and %d (chunk %s)"),
+							   RegionIdA, *ChunkA->GetName(), RegionIdB, *ChunkB->GetName());
+						ValidationErrors++;
 					}
 				}
 			}
 		}
 	}
 	
-	// Always (re)build cross-volume graphs for all tactical actors first
-	for (ANav3DTacticalActor* TacticalActor : TacticalActors)
+	// Log adjacency building results
+	UE_LOG(LogNav3D, Log, TEXT("BuildAdjacencyBetweenChunks: %s <-> %s: %d connections created, %d validation errors"), 
+	       *ChunkA->GetName(), *ChunkB->GetName(), ConnectionsCreated, ValidationErrors);
+	
+	// Validate adjacency consistency after building
+	ValidateAdjacencyConsistency(ChunkA, ChunkB);
+	
+	// Update performance monitoring
+	UpdatePerformanceStats();
+}
+
+void ANav3DData::ValidateAdjacencyConsistency(const ANav3DDataChunkActor* ChunkA, const ANav3DDataChunkActor* ChunkB) const
+{
+    if (!ChunkA || !ChunkB || !TacticalSettings.bEnableTacticalReasoning)
+    {
+        return;
+    }
+
+    if (!ChunkA->HasCompactTacticalData() || !ChunkB->HasCompactTacticalData())
+    {
+        return;
+    }
+
+    int32 ConsistencyErrors = 0;
+    int32 ConsistencyWarnings = 0;
+
+    // FIXED: Get the volume-wide region count, not chunk-local count
+    const int32 VolumeWideRegionCount = GetTotalRegionsInVolume();
+    
+    auto ValidateChunk = [&](const ANav3DDataChunkActor* Chunk)
+    {
+        const FCompactTacticalData& C = Chunk->CompactTacticalData;
+        const int32 ChunkLocalRegionCount = C.Regions.Num();
+
+        // 1) Validate region ids exist and bit targets are in valid volume-wide range
+        for (const auto& Pair : C.RegionAdjacency)
+        {
+            const uint8 RegionId = Pair.Key;
+            
+            // FIXED: Validate against volume-wide range (0-51), not chunk-local range
+            if (RegionId >= 64 || RegionId >= VolumeWideRegionCount)
+            {
+                UE_LOG(LogNav3D, Warning, TEXT("Adjacency uses invalid region id: Chunk=%s Region=%d (VolumeRegionCount=%d)"), 
+                       *Chunk->GetName(), RegionId, VolumeWideRegionCount);
+                ConsistencyWarnings++;
+            }
+            
+            const uint64 Mask = Pair.Value;
+            for (int32 Bit = 0; Bit < 64; ++Bit)
+            {
+                if (Mask & (1ULL << Bit))
+                {
+                    // FIXED: Validate against volume-wide range (0-51), not chunk-local range
+                    if (Bit >= VolumeWideRegionCount)
+                    {
+                        UE_LOG(LogNav3D, Error, TEXT("Adjacency target out of range: Chunk=%s %d -> %d (VolumeRegionCount=%d)"), 
+                               *Chunk->GetName(), RegionId, Bit, VolumeWideRegionCount);
+                        ConsistencyErrors++;
+                    }
+                }
+            }
+        }
+
+        // 2) ConnectionInterfaces reference valid boundary regions (these are chunk-local)
+        for (const auto& FacePair : Chunk->ConnectionInterfaces)
+        {
+            const FChunkConnectionInterface& Interface = FacePair.Value;
+            for (const int32 BoundaryId : Interface.BoundaryRegionIds)
+            {
+                // KEEP ORIGINAL: ConnectionInterface IDs are chunk-local indices
+                if (BoundaryId < 0 || BoundaryId >= ChunkLocalRegionCount)
+                {
+                    UE_LOG(LogNav3D, Warning, TEXT("Interface references invalid boundary region: Chunk=%s Region=%d (ChunkRegionCount=%d)"), 
+                           *Chunk->GetName(), BoundaryId, ChunkLocalRegionCount);
+                    ConsistencyWarnings++;
+                }
+            }
+        }
+    };
+
+    ValidateChunk(ChunkA);
+    ValidateChunk(ChunkB);
+
+    // 3) Basic cross-chunk interface presence check (both sides should have at least one interface)
+    if (ChunkA->ConnectionInterfaces.Num() == 0 || ChunkB->ConnectionInterfaces.Num() == 0)
+    {
+        UE_LOG(LogNav3D, Warning, TEXT("One or both chunks missing ConnectionInterfaces: %s(%d), %s(%d)"),
+            *ChunkA->GetName(), ChunkA->ConnectionInterfaces.Num(), *ChunkB->GetName(), ChunkB->ConnectionInterfaces.Num());
+        ConsistencyWarnings++;
+    }
+
+    UE_LOG(LogNav3D, Verbose, TEXT("ValidateAdjacencyConsistency (compact): %s <-> %s: %d errors, %d warnings"),
+           *ChunkA->GetName(), *ChunkB->GetName(), ConsistencyErrors, ConsistencyWarnings);
+}
+
+int32 ANav3DData::GetTotalRegionsInVolume() const
+{
+    // Option 1: Count from all loaded chunks (if available)
+    int32 MaxRegionId = -1;
+    for (const ANav3DDataChunkActor* ChunkActor : ChunkActors)
+    {
+        if (ChunkActor && ChunkActor->HasCompactTacticalData())
+        {
+            const FCompactTacticalData& Data = ChunkActor->CompactTacticalData;
+            
+            // Find the highest region ID referenced in adjacency data
+            for (const auto& AdjPair : Data.RegionAdjacency)
+            {
+                MaxRegionId = FMath::Max(MaxRegionId, static_cast<int32>(AdjPair.Key));
+                
+                const uint64 Mask = AdjPair.Value;
+                for (int32 Bit = 0; Bit < 64; ++Bit)
+                {
+                    if (Mask & (1ULL << Bit))
+                    {
+                        MaxRegionId = FMath::Max(MaxRegionId, Bit);
+                    }
+                }
+            }
+        }
+    }
+    
+    // Return total region count (MaxRegionId + 1, since IDs are 0-based)
+    const int32 TotalRegions = MaxRegionId + 1;
+    
+    // Fallback to reasonable default if no data found
+    return TotalRegions > 0 ? TotalRegions : 64;
+}
+
+void ANav3DData::BuildCrossChunkVisibility(const TArray<ANav3DDataChunkActor*>& LoadedChunks)
+{
+	if (LoadedChunks.Num() == 0)
 	{
-		if (!TacticalActor)
+		return;
+	}
+    
+	// Initialize tactical reasoning if not already done
+	if (!TacticalReasoning.IsValid())
+	{
+		if (!InitializeTacticalReasoning())
 		{
-			continue;
+			UE_LOG(LogNav3D, Error, TEXT("Failed to initialize tactical reasoning for visibility build"));
+			return;
 		}
-		TArray<ANav3DDataChunkActor*> RelevantChunks;
-		if (UNav3DWorldSubsystem* Subsystem = GetSubsystem())
+	}
+    
+	// Capture the region count before starting async operation
+	const int32 RegionCount = ConsolidatedTacticalData.AllLoadedRegions.Num();
+    
+	UE_LOG(LogNav3D, Log, TEXT("Starting async cross-chunk visibility build for %d regions"), RegionCount);
+    
+	// Use the MEMBER TacticalReasoning object, not a stack-allocated one
+	TacticalReasoning->BuildVisibilitySetsForLoadedRegionsAsync(ConsolidatedTacticalData, [this, RegionCount]()
+	{
+		UE_LOG(LogNav3D, Verbose, TEXT("Completed async cross-chunk visibility build for %d regions"), RegionCount);
+        
+		RequestDrawingUpdate();
+	});
+}
+
+void ANav3DData::BuildVisibilitySetsForLoadedRegionsAsync(
+	FConsolidatedTacticalData& ConsolidatedData, 
+	TFunction<void()> OnCompleteCallback) const
+{
+	if (!TacticalSettings.bEnableTacticalReasoning || ConsolidatedData.IsEmpty())
+	{
+		if (OnCompleteCallback)
 		{
-			Subsystem->QueryActorsInBounds(TacticalActor->TacticalActorBounds, RelevantChunks);
+			OnCompleteCallback();
 		}
-		else
+		return;
+	}
+    
+	// Initialize tactical reasoning if not already done
+	if (!TacticalReasoning.IsValid())
+	{
+		// Cast away const for initialization (this is a lazy initialization pattern)
+		ANav3DData* MutableThis = const_cast<ANav3DData*>(this);
+		if (!MutableThis->InitializeTacticalReasoning())
 		{
-			RelevantChunks = GetAllChunkActors();
+			UE_LOG(LogNav3D, Error, TEXT("Failed to initialize tactical reasoning"));
+			if (OnCompleteCallback)
+			{
+				OnCompleteCallback();
+			}
+			return;
 		}
-		TacticalActor->BuildCrossVolumeGraph(RelevantChunks);
+	}
+    
+	// Capture the region count before starting async operation
+	const int32 RegionCount = ConsolidatedData.AllLoadedRegions.Num();
+    
+	// Use the tactical reasoning system to build visibility
+	TacticalReasoning->BuildVisibilitySetsForLoadedRegionsAsync(ConsolidatedData, [this, RegionCount, OnCompleteCallback]()
+	{
+		UE_LOG(LogNav3D, Verbose, TEXT("Built visibility for %d regions"), RegionCount);
+        
+		if (OnCompleteCallback)
+		{
+			OnCompleteCallback();
+		}
+	});
+}
+
+// =============================================================================
+// PERFORMANCE MONITORING
+// =============================================================================
+
+void ANav3DData::UpdatePerformanceStats()
+{
+	if (!TacticalSettings.bEnableTacticalReasoning)
+	{
+		return;
+	}
+
+	// Reset/accumulate compact-centric stats
+	PerformanceStats.TotalRegions = 0;
+	PerformanceStats.LoadedChunks = 0;
+	PerformanceStats.TotalAdjacencies = 0;
+	PerformanceStats.CrossChunkAdjacencies = 0;
+	PerformanceStats.IntraChunkAdjacencies = 0;
+	PerformanceStats.TotalVisibilityPairs = 0;
+	PerformanceStats.EstimatedMemoryUsage = 0.0f;
+
+	// Per-chunk compact stats
+	for (const ANav3DDataChunkActor* Chunk : ChunkActors)
+	{
+		if (!Chunk || !Chunk->HasCompactTacticalData()) { continue; }
+		PerformanceStats.LoadedChunks++;
+
+		const FCompactTacticalData& C = Chunk->CompactTacticalData;
+		PerformanceStats.TotalRegions += C.Regions.Num();
+		PerformanceStats.TotalAdjacencies += C.RegionAdjacency.Num();
+
+		// Memory estimate (compact only)
+		PerformanceStats.EstimatedMemoryUsage += C.Regions.Num() * sizeof(FCompactRegion);
+		PerformanceStats.EstimatedMemoryUsage += C.RegionAdjacency.Num() * sizeof(uint64);
+		PerformanceStats.EstimatedMemoryUsage += C.VisibilityMatrix.SparseReferences.Num() * sizeof(uint64);
+	}
+
+	// Consolidated compact stats
+	PerformanceStats.TotalRegions += ConsolidatedCompactTacticalData.GetRegionCount();
+	PerformanceStats.TotalAdjacencies += ConsolidatedCompactTacticalData.GlobalRegionAdjacency.Num();
+
+	// Visibility pairs: count bits across all matrices
+	for (const auto& VolPair : ConsolidatedCompactTacticalData.VolumeVisibilityData)
+	{
+		for (const auto& RefPair : VolPair.Value.SparseReferences)
+		{
+			PerformanceStats.TotalVisibilityPairs += FVolumeRegionMatrix::CountBits(RefPair.Value);
+		}
+	}
+
+	PerformanceStats.LastUpdateTime = FPlatformTime::Seconds();
+
+	UE_LOG(LogNav3D, VeryVerbose, TEXT("Performance stats updated (compact): Regions=%d, AdjacencyEntries=%d, VisibilityPairs=%d, Memory=%.2f MB"),
+	       PerformanceStats.TotalRegions,
+	       PerformanceStats.TotalAdjacencies,
+	       PerformanceStats.TotalVisibilityPairs,
+	       PerformanceStats.EstimatedMemoryUsage / (1024.0f * 1024.0f));
+}
+
+float ANav3DData::EstimateMemoryUsage() const
+{
+	float MemoryUsage = 0.0f;
+	
+	// Estimate memory for regions
+	MemoryUsage += ConsolidatedTacticalData.AllLoadedRegions.Num() * sizeof(FNav3DRegion);
+	
+	// Estimate memory for adjacency data
+	for (const auto& AdjPair : ConsolidatedTacticalData.RegionAdjacency)
+	{
+		MemoryUsage += sizeof(int32); // Key
+		MemoryUsage += sizeof(FRegionIdArray); // Value structure
+		MemoryUsage += AdjPair.Value.Num() * sizeof(int32); // Array contents
 	}
 	
-	// Then build tactical reasoning data if enabled
-	if (TacticalSettings.bEnableTacticalReasoning)
+	// Estimate memory for visibility data
+	for (const auto& VisPair : ConsolidatedTacticalData.RegionVisibility)
 	{
-		if (InitializeTacticalReasoning())
+		MemoryUsage += sizeof(int32); // Key
+		MemoryUsage += sizeof(FRegionIdArray); // Value structure
+		MemoryUsage += VisPair.Value.Num() * sizeof(int32); // Array contents
+	}
+	
+	// Estimate memory for source chunks array
+	MemoryUsage += ConsolidatedTacticalData.SourceChunks.Num() * sizeof(TWeakObjectPtr<ANav3DDataChunkActor>);
+	
+	return MemoryUsage;
+}
+
+void ANav3DData::LogPerformanceStats() const
+{
+	if (!TacticalSettings.bEnableTacticalReasoning)
+	{
+		UE_LOG(LogNav3D, Display, TEXT("Tactical reasoning disabled - no performance stats available"));
+		return;
+	}
+	
+	UE_LOG(LogNav3D, Display, TEXT("=== NAV3D PERFORMANCE STATS ==="));
+	UE_LOG(LogNav3D, Display, TEXT("Total Regions: %d"), PerformanceStats.TotalRegions);
+	UE_LOG(LogNav3D, Display, TEXT("Loaded Chunks: %d"), PerformanceStats.LoadedChunks);
+	UE_LOG(LogNav3D, Display, TEXT("Total Adjacencies: %d"), PerformanceStats.TotalAdjacencies);
+	UE_LOG(LogNav3D, Display, TEXT("  - Intra-chunk: %d"), PerformanceStats.IntraChunkAdjacencies);
+	UE_LOG(LogNav3D, Display, TEXT("  - Cross-chunk: %d"), PerformanceStats.CrossChunkAdjacencies);
+	UE_LOG(LogNav3D, Display, TEXT("Total Visibility Pairs: %d"), PerformanceStats.TotalVisibilityPairs);
+	UE_LOG(LogNav3D, Display, TEXT("Estimated Memory Usage: %.2f MB"), PerformanceStats.EstimatedMemoryUsage / (1024.0f * 1024.0f));
+	UE_LOG(LogNav3D, Display, TEXT("Last Update: %.2f seconds ago"), FPlatformTime::Seconds() - PerformanceStats.LastUpdateTime);
+	UE_LOG(LogNav3D, Display, TEXT("==============================="));
+}
+
+// =============================================================================
+// TACTICAL API (PUBLIC INTERFACE)
+// =============================================================================
+
+
+const FNav3DVolumeNavigationData* ANav3DData::GetVolumeNavigationDataContainingPoints(
+	const TArray<FVector>& Points) const
+{
+	// Find the volume that contains the most points
+	TMap<const FNav3DVolumeNavigationData*, int32> VolumePointCounts;
+	
+	for (const FVector& Point : Points)
+	{
+		for (ANav3DDataChunkActor* ChunkActor : ChunkActors)
 		{
-			TacticalReasoning->BuildGlobalTacticalData(ChunkActors);
+			if (!ChunkActor || !ChunkActor->DataChunkActorBounds.IsInside(Point))
+			{
+				continue;
+			}
+			
+			for (const UNav3DDataChunk* Chunk : ChunkActor->Nav3DChunks)
+			{
+				if (Chunk)
+				{
+					if (const FNav3DVolumeNavigationData* VolumeData = Chunk->GetVolumeNavigationData())
+					{
+						if (VolumeData->GetVolumeBounds().IsInside(Point))
+						{
+							int32& Count = VolumePointCounts.FindOrAdd(VolumeData);
+							Count++;
+							break; // Found volume for this point
+						}
+					}
+				}
+			}
 		}
 	}
+	
+	// Return the volume with the most points
+	const FNav3DVolumeNavigationData* BestVolume = nullptr;
+	int32 MaxPoints = 0;
+	
+	for (const auto& Pair : VolumePointCounts)
+	{
+		if (Pair.Value > MaxPoints)
+		{
+			MaxPoints = Pair.Value;
+			BestVolume = Pair.Key;
+		}
+	}
+	
+	return BestVolume;
 }
 
 const FNav3DVolumeNavigationData* ANav3DData::GetVolumeNavigationDataContainingPoint(const FVector& Point) const
@@ -2368,15 +3413,8 @@ bool ANav3DData::FindBestLocation(
 	const bool bForceNewRegion,
 	const bool bUseRaycasting) const
 {
-	if (!TacticalSettings.bEnableTacticalReasoning || !TacticalReasoning.IsValid())
-	{
-		UE_LOG(LogNav3D, Warning, TEXT("FindBestLocation: Tactical reasoning not enabled or not initialized"));
-		return false;
-	}
-
-	// Call the implementation with the found tactical data
-	return TacticalReasoning->FindBestLocation(
-		GetTacticalDataAtPosition(StartPosition),
+	// Use the unified tactical location method that handles both compact and build data
+	return FindBestTacticalLocation(
 		StartPosition,
 		ObserverPositions,
 		Visibility,
@@ -2418,45 +3456,6 @@ int32 ANav3DData::GetLayerCount() const
 	return 0;
 }
 
-const FNav3DTacticalData& ANav3DData::GetTacticalDataAtPosition(const FVector& Position) const
-{
-	// First, try to find a tactical actor containing this position
-	for (const ANav3DTacticalActor* TacticalActor : TacticalActors)
-	{
-		if (TacticalActor && TacticalActor->ContainsPoint(Position))
-		{
-			return TacticalActor->TacticalData;
-		}
-	}
-	
-	// Fallback: Try to find a volume containing this position (for backward compatibility)
-	if (const FNav3DVolumeNavigationData* VolumeData = GetVolumeNavigationDataContainingPoint(Position))
-	{
-		return VolumeData->TacticalData;
-	}
-    
-	// If no volume contains this position, fall back to the first volume if any exist
-	if (ChunkActors.Num() > 0)
-	{
-		for (const ANav3DDataChunkActor* ChunkActor : ChunkActors)
-		{
-			if (!ChunkActor) continue;
-			
-			for (const UNav3DDataChunk* Chunk : ChunkActor->Nav3DChunks)
-			{
-				if (!Chunk) continue;
-
-				if (const FNav3DVolumeNavigationData* VolumeData = Chunk->GetVolumeNavigationData())
-				{
-					return VolumeData->TacticalData;
-				}
-			}
-		}
-	}
-    
-	// Empty tactical data as last resort
-	return EmptyTacticalData;
-}
 
 // ============================================================================
 // CHUNK ACTOR MANAGEMENT METHODS
@@ -2482,6 +3481,12 @@ void ANav3DData::RegisterChunkActor(ANav3DDataChunkActor* ChunkActor)
 	UE_LOG(LogNav3D, Log, TEXT("Registered chunk actor: %s with bounds %s"), 
 	       *ChunkActor->GetName(), *ChunkActor->DataChunkActorBounds.ToString());
 	NotifyChunksChanged();
+
+	// Tactical consolidated data update
+	if (TacticalSettings.bEnableTacticalReasoning)
+	{
+		OnChunkActorLoaded(ChunkActor);
+	}
 }
 
 void ANav3DData::UnregisterChunkActor(ANav3DDataChunkActor* ChunkActor)
@@ -2501,6 +3506,10 @@ void ANav3DData::UnregisterChunkActor(ANav3DDataChunkActor* ChunkActor)
 		UE_LOG(LogNav3D, Log, TEXT("Unregistered chunk actor: %s"), *ChunkActor->GetName());
 		const FBox RemovedBounds = ChunkActor->DataChunkActorBounds;
 		NotifyChunksChanged();
+		if (TacticalSettings.bEnableTacticalReasoning)
+		{
+			OnChunkActorUnloaded(ChunkActor);
+		}
 		// Purge and rebuild adjacency around the removed chunk
 		TArray<ANav3DDataChunkActor*> Remaining = GetAllChunkActors();
 		float VoxelSize = 0.0f;
@@ -2508,19 +3517,19 @@ void ANav3DData::UnregisterChunkActor(ANav3DDataChunkActor* ChunkActor)
 		{
 			if (!Other) continue;
 			// Remove portal links pointing into removed bounds and rebuild lookup
-			Other->PortalLookup.Reset();
+			// No transient portal lookup to reset
 			for (FNav3DChunkAdjacency& Adj : Other->ChunkAdjacency)
 			{
-				Adj.Connections.RemoveAllSwap([&](const FNav3DVoxelConnection& Conn)
+				// Filter compact portals by removed bounds
+				Adj.CompactPortals.RemoveAllSwap([&](const FCompactPortal& CP)
 				{
-					const FVector LocalPos = FVector(FNav3DUtils::GetVectorFromMortonCode(Conn.Local));
-					const FVector WorldPos = Other->GetActorTransform().TransformPosition(LocalPos);
+					const UNav3DDataChunk* AnyChunk = Other->Nav3DChunks.Num() > 0 ? Other->Nav3DChunks[0] : nullptr;
+					const FNav3DVolumeNavigationData* Vol = AnyChunk ? AnyChunk->GetVolumeNavigationData() : nullptr;
+					const FVector WorldPos = Vol ? Vol->GetLeafNodePositionFromMortonCode(CP.Local) : FVector::ZeroVector;
 					return RemovedBounds.IsInside(WorldPos);
 				}, EAllowShrinking::No);
-				for (const FNav3DVoxelConnection& Conn : Adj.Connections)
-				{
-					Other->PortalLookup.FindOrAdd(Conn.LocalVolumeIndex).Add(Conn.Local, Conn);
-				}
+
+				// No lookup rebuild; CompactPortals are the source of truth
 			}
 
 			if (Other->Nav3DChunks.Num() > 0 && VoxelSize <= 0.0f)
@@ -2549,6 +3558,7 @@ void ANav3DData::UnregisterChunkActor(ANav3DDataChunkActor* ChunkActor)
 		}
 	}
 }
+
 
 void ANav3DData::NotifyChunksChanged()
 {
@@ -2617,7 +3627,7 @@ void ANav3DData::CleanupInvalidChunkActors()
 		{
 			if (Actor)
 			{
-				Actor->PortalLookup.Reset();
+				// No transient portal lookup to reset
 				// Adjacency will be rebuilt when needed
 			}
 		}
@@ -2627,7 +3637,7 @@ void ANav3DData::CleanupInvalidChunkActors()
 int32 ANav3DData::GetInvalidChunkActorCount() const
 {
 	int32 InvalidCount = 0;
-	for (ANav3DDataChunkActor* ChunkActor : ChunkActors)
+	for (const ANav3DDataChunkActor* ChunkActor : ChunkActors)
 	{
 		if (!ChunkActor || !IsValid(ChunkActor))
 		{
@@ -2651,196 +3661,14 @@ void ANav3DData::CleanupInvalidChunkActorsBP()
 	}
 }
 
-// ============================================================================
-// Tactical Actor Management
-// ============================================================================
-
-void ANav3DData::RegisterTacticalActor(ANav3DTacticalActor* TacticalActor)
-{
-	if (!TacticalActor)
-	{
-		UE_LOG(LogNav3D, Warning, TEXT("Cannot register tactical actor: invalid"));
-		return;
-	}
-	
-	// Check if already registered
-	if (TacticalActors.Contains(TacticalActor))
-	{
-		UE_LOG(LogNav3D, Verbose, TEXT("Tactical actor already registered: %s"), *TacticalActor->GetName());
-		return;
-	}
-	
-	// Enforce uniqueness per owning volume
-	if (TacticalActor->OwningVolumeBounds.IsValid)
-	{
-		const int32 Removed = TacticalActors.RemoveAllSwap([&](const ANav3DTacticalActor* TA)
-		{
-			return TA && TA->OwningVolumeBounds.Equals(TacticalActor->OwningVolumeBounds);
-		});
-		if (Removed > 0)
-		{
-			UE_LOG(LogNav3D, Log, TEXT("RegisterTacticalActor: Removed %d existing tactical actors for volume %s"), Removed, *TacticalActor->OwningVolumeBounds.ToString());
-		}
-	}
-	
-	TacticalActors.Add(TacticalActor);
-	
-	// Build cross-volume graph from chunk actors intersecting this tactical actor's bounds
-	TArray<ANav3DDataChunkActor*> RelevantChunks;
-	if (UNav3DWorldSubsystem* Subsystem = GetSubsystem())
-	{
-		Subsystem->QueryActorsInBounds(TacticalActor->TacticalActorBounds, RelevantChunks);
-	}
-	else
-	{
-		// Fallback: use all known chunk actors
-		RelevantChunks = GetAllChunkActors();
-	}
-	TacticalActor->BuildCrossVolumeGraph(RelevantChunks);
-	
-	UE_LOG(LogNav3D, Log, TEXT("Registered tactical actor: %s with bounds %s (CV connections: %d)"), 
-	       *TacticalActor->GetName(), *TacticalActor->TacticalActorBounds.ToString(), TacticalActor->GetCrossVolumeGraph().GetConnectionCount());
-}
-
-void ANav3DData::UnregisterTacticalActor(ANav3DTacticalActor* TacticalActor)
-{
-	if (!TacticalActor)
-	{
-		return;
-	}
-	
-	const int32 RemovedCount = TacticalActors.RemoveAllSwap([TacticalActor](const ANav3DTacticalActor* Actor)
-	{
-		return Actor == TacticalActor;
-	});
-	
-	if (RemovedCount > 0)
-	{
-		UE_LOG(LogNav3D, Log, TEXT("Unregistered tactical actor: %s"), *TacticalActor->GetName());
-	}
-}
-
-void ANav3DData::ClearAllTacticalActors()
-{
-	if (TacticalActors.Num() == 0)
-	{
-		return;
-	}
-	
-	UE_LOG(LogNav3D, Log, TEXT("Clearing all %d tactical actors before navigation rebuild"), TacticalActors.Num());
-	
-	// Destroy all tactical actors
-	for (ANav3DTacticalActor* TacticalActor : TacticalActors)
-	{
-		if (TacticalActor)
-		{
-			UE_LOG(LogNav3D, Log, TEXT("Destroying tactical actor: %s"), *TacticalActor->GetName());
-			GetWorld()->DestroyActor(TacticalActor);
-		}
-	}
-	
-	// Clear the tactical actors array
-	TacticalActors.Empty();
-	
-	UE_LOG(LogNav3D, Log, TEXT("All tactical actors cleared"));
-}
-
-TArray<ANav3DTacticalActor*> ANav3DData::GetAllTacticalActors() const
-{
-	TArray<ANav3DTacticalActor*> ValidActors;
-	ValidActors.Reserve(TacticalActors.Num());
-	
-	int32 InvalidCount = 0;
-	for (ANav3DTacticalActor* TacticalActor : TacticalActors)
-	{
-		if (TacticalActor && IsValid(TacticalActor))
-		{
-			ValidActors.Add(TacticalActor);
-		}
-		else
-		{
-			InvalidCount++;
-		}
-	}
-	
-	// Log if we found invalid actors (but don't spam the log)
-	if (InvalidCount > 0)
-	{
-		UE_LOG(LogNav3D, Warning, TEXT("GetAllTacticalActors: Found %d invalid tactical actors out of %d total"), 
-		       InvalidCount, TacticalActors.Num());
-	}
-	
-	return ValidActors;
-}
-
-void ANav3DData::CleanupInvalidTacticalActors()
-{
-	const int32 OriginalCount = TacticalActors.Num();
-	if (OriginalCount == 0)
-	{
-		return;
-	}
-	
-	// Remove invalid actors from the array
-	const int32 RemovedCount = TacticalActors.RemoveAllSwap([](const ANav3DTacticalActor* TacticalActor)
-	{
-		return !TacticalActor || !IsValid(TacticalActor);
-	});
-	
-	if (RemovedCount > 0)
-	{
-		UE_LOG(LogNav3D, Log, TEXT("CleanupInvalidTacticalActors: Removed %d invalid tactical actors (was %d, now %d)"), 
-		       RemovedCount, OriginalCount, TacticalActors.Num());
-	}
-}
-
-int32 ANav3DData::GetInvalidTacticalActorCount() const
-{
-	int32 InvalidCount = 0;
-	for (ANav3DTacticalActor* TacticalActor : TacticalActors)
-	{
-		if (!TacticalActor || !IsValid(TacticalActor))
-		{
-			InvalidCount++;
-		}
-	}
-	return InvalidCount;
-}
-
-void ANav3DData::CleanupInvalidTacticalActorsBP()
-{
-	const int32 InvalidCount = GetInvalidTacticalActorCount();
-	if (InvalidCount > 0)
-	{
-		UE_LOG(LogNav3D, Log, TEXT("CleanupInvalidTacticalActorsBP: Cleaning up %d invalid tactical actors"), InvalidCount);
-		CleanupInvalidTacticalActors();
-	}
-	else
-	{
-		UE_LOG(LogNav3D, Log, TEXT("CleanupInvalidTacticalActorsBP: No invalid tactical actors found"));
-	}
-}
-
 void ANav3DData::CleanupAllInvalidActors()
 {
 	const int32 InvalidChunkCount = GetInvalidChunkActorCount();
-	const int32 InvalidTacticalCount = GetInvalidTacticalActorCount();
 	
-	if (InvalidChunkCount > 0 || InvalidTacticalCount > 0)
+	if (InvalidChunkCount > 0)
 	{
-		UE_LOG(LogNav3D, Log, TEXT("CleanupAllInvalidActors: Cleaning up %d invalid chunk actors and %d invalid tactical actors"), 
-		       InvalidChunkCount, InvalidTacticalCount);
-		
-		if (InvalidChunkCount > 0)
-		{
-			CleanupInvalidChunkActors();
-		}
-		
-		if (InvalidTacticalCount > 0)
-		{
-			CleanupInvalidTacticalActors();
-		}
-		
+		UE_LOG(LogNav3D, Log, TEXT("CleanupAllInvalidActors: Cleaning up %d invalid chunk actors"), InvalidChunkCount);
+		CleanupInvalidChunkActors();
 		UE_LOG(LogNav3D, Log, TEXT("CleanupAllInvalidActors: Cleanup completed"));
 	}
 	else
@@ -2897,4 +3725,569 @@ TArray<FBox> ANav3DData::GetAllDiscoverableVolumes() const
 	}
 	
 	return AllVolumes;
+}
+
+// =============================================================================
+// DEBUG COMMANDS FOR CHUNK ADJACENCY VALIDATION
+// =============================================================================
+
+void ANav3DData::DebugPrintChunkAdjacency()
+{
+	UE_LOG(LogNav3D, Display, TEXT("=== CHUNK ADJACENCY DEBUG ==="));
+	UE_LOG(LogNav3D, Display, TEXT("Total chunk actors: %d"), ChunkActors.Num());
+	
+	int32 TotalAdjacencies = 0;
+	int32 ActorsWithAdjacency = 0;
+	
+	for (ANav3DDataChunkActor* ChunkActor : ChunkActors)
+	{
+		if (!ChunkActor)
+		{
+			continue;
+		}
+		
+		const int32 AdjacencyCount = ChunkActor->ChunkAdjacency.Num();
+		if (AdjacencyCount > 0)
+		{
+			ActorsWithAdjacency++;
+			TotalAdjacencies += AdjacencyCount;
+			
+			UE_LOG(LogNav3D, Display, TEXT("Actor: %s - %d adjacencies"), 
+			       *ChunkActor->GetName(), AdjacencyCount);
+			
+			for (const FNav3DChunkAdjacency& Adj : ChunkActor->ChunkAdjacency)
+			{
+				if (Adj.OtherChunkActor.IsValid())
+				{
+					UE_LOG(LogNav3D, Display, TEXT("  -> %s (Weight: %.2f, CompactPortals: %d)"), 
+					       *Adj.OtherChunkActor->GetName(), 
+					       Adj.ConnectionWeight,
+					       Adj.CompactPortals.Num());
+				}
+				else
+				{
+					UE_LOG(LogNav3D, Warning, TEXT("  -> INVALID REFERENCE"));
+				}
+			}
+		}
+		else
+		{
+			UE_LOG(LogNav3D, Warning, TEXT("Actor: %s - NO ADJACENCY DATA"), *ChunkActor->GetName());
+		}
+	}
+	
+	UE_LOG(LogNav3D, Display, TEXT("=== SUMMARY ==="));
+	UE_LOG(LogNav3D, Display, TEXT("Actors with adjacency: %d/%d"), ActorsWithAdjacency, ChunkActors.Num());
+	UE_LOG(LogNav3D, Display, TEXT("Total adjacencies: %d"), TotalAdjacencies);
+}
+
+void ANav3DData::ValidateAllChunkAdjacency()
+{
+	UE_LOG(LogNav3D, Display, TEXT("=== CHUNK ADJACENCY VALIDATION ==="));
+	
+	int32 ValidationErrors = 0;
+	int32 ValidationWarnings = 0;
+	
+	for (ANav3DDataChunkActor* ChunkActor : ChunkActors)
+	{
+		if (!ChunkActor)
+		{
+			ValidationErrors++;
+			UE_LOG(LogNav3D, Error, TEXT("NULL chunk actor found in ChunkActors array"));
+			continue;
+		}
+		
+		// Check if actor has adjacency data
+		if (ChunkActor->ChunkAdjacency.Num() == 0)
+		{
+			ValidationWarnings++;
+			UE_LOG(LogNav3D, Warning, TEXT("Actor %s has no adjacency data"), *ChunkActor->GetName());
+			continue;
+		}
+		
+		// Validate each adjacency
+		for (const FNav3DChunkAdjacency& Adj : ChunkActor->ChunkAdjacency)
+		{
+			// Check if reference is valid
+			if (!Adj.OtherChunkActor.IsValid())
+			{
+				ValidationErrors++;
+				UE_LOG(LogNav3D, Error, TEXT("Actor %s has invalid adjacency reference"), *ChunkActor->GetName());
+				continue;
+			}
+			
+			// Check if adjacency is reciprocal
+			ANav3DDataChunkActor* OtherActor = Adj.OtherChunkActor.Get();
+			bool bHasReciprocal = false;
+			
+			for (const FNav3DChunkAdjacency& OtherAdj : OtherActor->ChunkAdjacency)
+			{
+				if (OtherAdj.OtherChunkActor.Get() == ChunkActor)
+				{
+					bHasReciprocal = true;
+					break;
+				}
+			}
+			
+			if (!bHasReciprocal)
+			{
+				ValidationErrors++;
+				UE_LOG(LogNav3D, Error, TEXT("Non-reciprocal adjacency: %s -> %s"), 
+				       *ChunkActor->GetName(), *OtherActor->GetName());
+			}
+			
+			// Check if portals are valid (compact only)
+			if (Adj.CompactPortals.Num() == 0)
+			{
+				ValidationWarnings++;
+				UE_LOG(LogNav3D, Warning, TEXT("Actor %s -> %s has no compact portals"), 
+				       *ChunkActor->GetName(), *OtherActor->GetName());
+			}
+		}
+	}
+	
+	UE_LOG(LogNav3D, Display, TEXT("=== VALIDATION COMPLETE ==="));
+	UE_LOG(LogNav3D, Display, TEXT("Errors: %d, Warnings: %d"), ValidationErrors, ValidationWarnings);
+	
+	if (ValidationErrors == 0)
+	{
+		UE_LOG(LogNav3D, Display, TEXT("✅ Chunk adjacency validation PASSED"));
+	}
+	else
+	{
+		UE_LOG(LogNav3D, Error, TEXT("❌ Chunk adjacency validation FAILED with %d errors"), ValidationErrors);
+	}
+}
+
+bool ANav3DData::ValidateConsolidatedTacticalData() const
+{
+	if (!TacticalSettings.bEnableTacticalReasoning)
+	{
+		UE_LOG(LogNav3D, Warning, TEXT("ValidateConsolidatedTacticalData: Tactical reasoning is disabled"));
+		return false;
+	}
+	
+	if (ConsolidatedCompactTacticalData.IsEmpty())
+	{
+		UE_LOG(LogNav3D, Warning, TEXT("ValidateConsolidatedTacticalData: No compact tactical data to validate"));
+		return false;
+	}
+	
+	const auto& CompactData = ConsolidatedCompactTacticalData;
+	int32 ValidationErrors = 0;
+	bool bIsValid = true;
+	
+	// Validate compact regions
+	for (const auto& RegionPair : CompactData.AllLoadedRegions)
+	{
+		const uint16 GlobalRegionId = RegionPair.Key;
+		const FCompactRegion& CompactRegion = RegionPair.Value;
+		
+		// LayerIndex sanity check
+		if (CompactRegion.LayerIndex > 10)
+		{
+			UE_LOG(LogNav3D, Error, TEXT("Compact region %d has suspicious layer index: %d"), GlobalRegionId, CompactRegion.LayerIndex);
+			ValidationErrors++;
+			bIsValid = false;
+		}
+	}
+	
+	// Validate compact adjacency bitmasks
+	for (const auto& AdjPair : CompactData.GlobalRegionAdjacency)
+	{
+		const uint16 RegionId = AdjPair.Key;
+		const uint64 AdjacencyMask = AdjPair.Value;
+		
+		// Region must exist
+		if (!CompactData.AllLoadedRegions.Contains(RegionId))
+		{
+			UE_LOG(LogNav3D, Error, TEXT("Adjacency entry for non-existent compact region %d"), RegionId);
+			ValidationErrors++;
+			bIsValid = false;
+		}
+		
+		// Reasonable number of connections
+		const int32 ConnectionCount = FVolumeRegionMatrix::CountBits(AdjacencyMask);
+		if (ConnectionCount > 32)
+		{
+			UE_LOG(LogNav3D, Warning, TEXT("Compact region %d has suspicious adjacency count: %d"), RegionId, ConnectionCount);
+		}
+	}
+	
+	UE_LOG(LogNav3D, Log, TEXT("Compact tactical data validation: %s (%d errors)"), bIsValid ? TEXT("PASSED") : TEXT("FAILED"), ValidationErrors);
+	return bIsValid;
+}
+
+void ANav3DData::FilterConsolidatedDataToSelectedRegions(const TArray<int32>& SelectedRegionIds)
+{
+	if (SelectedRegionIds.Num() == 0)
+	{
+		UE_LOG(LogNav3D, Warning, TEXT("FilterConsolidatedDataToSelectedRegions: No regions selected"));
+		return;
+	}
+	
+	// Create a set for fast lookup and mapping from old IDs to new sequential IDs
+	TSet<int32> SelectedSet(SelectedRegionIds);
+	TMap<int32, int32> OldToNewIdMapping;
+	
+	// Create mapping from old region IDs to new sequential IDs (0 to SelectedRegionIds.Num()-1)
+	for (int32 i = 0; i < SelectedRegionIds.Num(); ++i)
+	{
+		OldToNewIdMapping.Add(SelectedRegionIds[i], i);
+	}
+	
+	// Filter and renumber regions
+	TArray<FNav3DRegion> FilteredRegions;
+	for (const FNav3DRegion& Region : ConsolidatedTacticalData.AllLoadedRegions)
+	{
+		if (SelectedSet.Contains(Region.Id))
+		{
+			FNav3DRegion RenumberedRegion = Region;
+			RenumberedRegion.Id = OldToNewIdMapping[Region.Id];
+			FilteredRegions.Add(RenumberedRegion);
+		}
+	}
+	
+	// Filter and renumber adjacency data
+	TMap<int32, FRegionIdArray> FilteredAdjacency;
+	for (const auto& AdjPair : ConsolidatedTacticalData.RegionAdjacency)
+	{
+		int32 OldRegionId = AdjPair.Key;
+		if (SelectedSet.Contains(OldRegionId))
+		{
+			int32 NewRegionId = OldToNewIdMapping[OldRegionId];
+			FRegionIdArray FilteredAdjacentIds;
+			for (int32 OldAdjacentId : AdjPair.Value.GetArray())
+			{
+				if (SelectedSet.Contains(OldAdjacentId))
+				{
+					int32 NewAdjacentId = OldToNewIdMapping[OldAdjacentId];
+					FilteredAdjacentIds.Add(NewAdjacentId);
+				}
+			}
+			FilteredAdjacency.Add(NewRegionId, FilteredAdjacentIds);
+		}
+	}
+	
+	// Filter and renumber visibility data
+	TMap<int32, FRegionIdArray> FilteredVisibility;
+	for (const auto& VisPair : ConsolidatedTacticalData.RegionVisibility)
+	{
+		int32 OldRegionId = VisPair.Key;
+		if (SelectedSet.Contains(OldRegionId))
+		{
+			int32 NewRegionId = OldToNewIdMapping[OldRegionId];
+			FRegionIdArray FilteredVisibleIds;
+			for (int32 OldVisibleId : VisPair.Value.GetArray())
+			{
+				if (SelectedSet.Contains(OldVisibleId))
+				{
+					int32 NewVisibleId = OldToNewIdMapping[OldVisibleId];
+					FilteredVisibleIds.Add(NewVisibleId);
+				}
+			}
+			FilteredVisibility.Add(NewRegionId, FilteredVisibleIds);
+		}
+	}
+	
+	// Update consolidated data
+	ConsolidatedTacticalData.AllLoadedRegions = FilteredRegions;
+	ConsolidatedTacticalData.RegionAdjacency = FilteredAdjacency;
+	ConsolidatedTacticalData.RegionVisibility = FilteredVisibility;
+	
+	UE_LOG(LogNav3D, Log, TEXT("Filtered and renumbered consolidated data: %d regions (IDs 0-%d), %d adjacency entries, %d visibility entries"),
+	       FilteredRegions.Num(), FilteredRegions.Num() - 1, FilteredAdjacency.Num(), FilteredVisibility.Num());
+}
+
+// =============================================================================
+// COMPACT CONSOLIDATED TACTICAL DATA HELPER METHODS
+// =============================================================================
+
+void ANav3DData::ConsolidateCompactRegionsFromChunks(const TArray<ANav3DDataChunkActor*>& LoadedChunks)
+{
+	ConsolidatedCompactTacticalData.AllLoadedRegions.Empty();
+	GlobalToLocalRegionMapping.Empty();
+
+	uint16 GlobalRegionId = 1; // Start from 1 to avoid 0 (invalid)
+
+	for (ANav3DDataChunkActor* ChunkActor : LoadedChunks)
+	{
+		if (!ChunkActor || ChunkActor->CompactTacticalData.IsEmpty())
+		{
+			continue;
+		}
+
+		const FCompactTacticalData& CompactData = ChunkActor->CompactTacticalData;
+		const uint16 VolumeID = CompactData.VolumeID;
+
+		for (int32 LocalRegionIndex = 0; LocalRegionIndex < CompactData.Regions.Num(); ++LocalRegionIndex)
+		{
+			const FCompactRegion& LocalRegion = CompactData.Regions[LocalRegionIndex];
+
+			FRegionMapping Mapping;
+			Mapping.VolumeID = VolumeID;
+			Mapping.LocalRegionIndex = static_cast<uint8>(LocalRegionIndex);
+			Mapping.ChunkActor = ChunkActor;
+			GlobalToLocalRegionMapping.Add(GlobalRegionId, Mapping);
+
+			ConsolidatedCompactTacticalData.AllLoadedRegions.Add(GlobalRegionId, LocalRegion);
+
+			UE_LOG(LogNav3D, VeryVerbose, TEXT("Added global region %d from volume %d, local index %d"),
+				GlobalRegionId, VolumeID, LocalRegionIndex);
+
+			GlobalRegionId = (GlobalRegionId == 0xFFFF ? 1 : static_cast<uint16>(GlobalRegionId + 1));
+		}
+	}
+
+	UE_LOG(LogNav3D, Log, TEXT("Consolidated %d compact regions from %d chunks"),
+		ConsolidatedCompactTacticalData.AllLoadedRegions.Num(), LoadedChunks.Num());
+}
+
+void ANav3DData::BuildGlobalCompactAdjacency(const TArray<ANav3DDataChunkActor*>& LoadedChunks)
+{
+	ConsolidatedCompactTacticalData.GlobalRegionAdjacency.Empty();
+	
+	uint16 GlobalRegionId = 1; // Start from 1 to match region consolidation
+	
+	for (const ANav3DDataChunkActor* ChunkActor : LoadedChunks)
+	{
+		if (!ChunkActor || ChunkActor->CompactTacticalData.IsEmpty())
+		{
+			continue;
+		}
+		
+		const FCompactTacticalData& CompactData = ChunkActor->CompactTacticalData;
+		
+		// Add intra-volume adjacency
+		for (const auto& AdjacencyPair : CompactData.RegionAdjacency)
+		{
+			const uint8 LocalRegionId = AdjacencyPair.Key;
+			const uint64 AdjacencyMask = AdjacencyPair.Value;
+			
+			// Convert to global region ID
+			uint16 GlobalRegionIdForChunk = GlobalRegionId + LocalRegionId;
+			
+			// Convert local adjacency mask to global adjacency mask
+			uint64 GlobalAdjacencyMask = 0;
+			for (int32 BitIndex = 0; BitIndex < 64; ++BitIndex)
+			{
+				if (AdjacencyMask & (1ULL << BitIndex))
+				{
+					const uint16 AdjacentGlobalId = GlobalRegionId + BitIndex;
+					GlobalAdjacencyMask |= (1ULL << (AdjacentGlobalId - 1)); // Adjust for 1-based indexing
+				}
+			}
+			
+			if (GlobalAdjacencyMask != 0)
+			{
+				ConsolidatedCompactTacticalData.GlobalRegionAdjacency.Add(GlobalRegionIdForChunk, GlobalAdjacencyMask);
+			}
+		}
+		
+		GlobalRegionId += CompactData.Regions.Num();
+	}
+	
+	UE_LOG(LogNav3D, Log, TEXT("Built global compact adjacency for %d regions"), 
+	       ConsolidatedCompactTacticalData.GlobalRegionAdjacency.Num());
+}
+
+void ANav3DData::UpdateLoadedRegionIds()
+{
+	LoadedRegionIds.Empty();
+	
+	// Collect region IDs from compact tactical data only
+	for (ANav3DDataChunkActor* ChunkActor : ChunkActors)
+	{
+		if (!ChunkActor || !ChunkActor->HasCompactTacticalData())
+		{
+			continue;
+		}
+		
+		for (int32 i = 0; i < ChunkActor->CompactTacticalData.Regions.Num(); ++i)
+		{
+			// Create a unique ID combining chunk index and local region index
+			const int32 ChunkIndex = ChunkActors.IndexOfByKey(ChunkActor);
+			int32 UniqueRegionId = (ChunkIndex * 64) + i; // Each chunk gets 64 region slots
+			LoadedRegionIds.Add(UniqueRegionId);
+		}
+	}
+	
+	UE_LOG(LogNav3D, Verbose, TEXT("Updated loaded region IDs: %d compact regions from %d chunks"), 
+	       LoadedRegionIds.Num(), ChunkActors.Num());
+}
+
+bool ANav3DData::FindBestTacticalLocation(
+	const FVector& StartPosition,
+	const TArray<FVector>& ObserverPositions,
+	const ETacticalVisibility Visibility,
+	const ETacticalDistance DistancePreference,
+	const ETacticalRegion RegionPreference,
+	const bool bForceNewRegion,
+	const bool bUseRaycasting,
+	TArray<FPositionCandidate>& OutCandidatePositions) const
+{
+	// Ensure tactical reasoning is available on demand when enabled
+	if (TacticalSettings.bEnableTacticalReasoning && !TacticalReasoning.IsValid())
+	{
+		const_cast<ANav3DData*>(this)->InitializeTacticalReasoning();
+	}
+
+	if (!TacticalSettings.bEnableTacticalReasoning || !TacticalReasoning.IsValid())
+	{
+		UE_LOG(LogNav3D, Warning, TEXT("FindBestTacticalLocation: Tactical reasoning not available"));
+		return false;
+	}
+	
+	// Ensure compact data is built if empty
+	if (ConsolidatedCompactTacticalData.IsEmpty())
+	{
+		UE_LOG(LogNav3D, Verbose, TEXT("FindBestTacticalLocation: Compact data is empty, rebuilding..."));
+		const_cast<ANav3DData*>(this)->RebuildConsolidatedCompactTacticalData();
+	}
+	
+	UE_LOG(LogNav3D, Verbose, TEXT("FindBestTacticalLocation: Using compact tactical data"));
+	
+	// Debug: Log available regions in compact data
+	UE_LOG(LogNav3D, Verbose, TEXT("FindBestTacticalLocation: Compact data has %d regions"), 
+		ConsolidatedCompactTacticalData.AllLoadedRegions.Num());
+	for (const auto& Pair : ConsolidatedCompactTacticalData.AllLoadedRegions)
+	{
+		UE_LOG(LogNav3D, Verbose, TEXT("  Region %d at center %s"), 
+			Pair.Key, *Pair.Value.Center.ToString());
+	}
+	
+	return TacticalReasoning->FindBestLocationFromCompact(
+		ConsolidatedCompactTacticalData,
+		StartPosition,
+		ObserverPositions,
+		Visibility,
+		DistancePreference,
+		RegionPreference,
+		bForceNewRegion,
+		bUseRaycasting,
+		OutCandidatePositions);
+}
+
+void ANav3DData::RebuildConsolidatedTacticalDataFromCompact()
+{
+#if WITH_EDITOR || !UE_BUILD_SHIPPING
+	if (!TacticalSettings.bEnableTacticalReasoning || ConsolidatedCompactTacticalData.IsEmpty())
+	{
+		return;
+	}
+
+	UE_LOG(LogNav3D, Verbose, TEXT("Rebuilding consolidated tactical data from compact format for debug rendering"));
+
+	// Clear existing consolidated data
+	ConsolidatedTacticalData.Reset();
+
+	// Get chunks with compact data for the converter
+	TArray<ANav3DDataChunkActor*> ChunksWithCompactData;
+	for (ANav3DDataChunkActor* Chunk : GetChunkActors())
+	{
+		if (Chunk && !Chunk->CompactTacticalData.IsEmpty())
+		{
+			ChunksWithCompactData.Add(Chunk);
+		}
+	}
+
+	if (ChunksWithCompactData.Num() > 0)
+	{
+		// Convert compact → build via converter for debug tools
+		ConsolidatedTacticalData = FNav3DTacticalDataConverter::CompactToBuild(
+			ConsolidatedCompactTacticalData, ChunksWithCompactData);
+
+		UE_LOG(LogNav3D, Verbose, TEXT("Converted %d compact regions to consolidated format"),
+			   ConsolidatedTacticalData.AllLoadedRegions.Num());
+	}
+	else
+	{
+		UE_LOG(LogNav3D, Warning, TEXT("No chunks with compact data found for conversion"));
+	}
+
+	RequestDrawingUpdate();
+#endif
+}
+
+void ANav3DData::PerformDeferredTacticalRefresh()
+{
+	if (!bNeedsTacticalRebuild)
+	{
+		return;
+	}
+
+	UE_LOG(LogNav3D, Log, TEXT("PerformDeferredTacticalRefresh: Starting tactical data refresh"));
+
+	// Just mark consolidated data as dirty - don't build it proactively
+	InvalidateConsolidatedData();
+
+	bNeedsTacticalRebuild = false;
+
+	// Trigger drawing update - this will call GetConsolidatedTacticalData() on-demand
+	RequestDrawingUpdate();
+
+	UE_LOG(LogNav3D, Log, TEXT("PerformDeferredTacticalRefresh: Completed - consolidated data available on-demand"));
+}
+
+#if WITH_EDITORONLY_DATA
+int32 ANav3DData::GetChunkRevision() const
+{
+	return ChunkRevision;
+}
+
+void ANav3DData::IncrementChunkRevision()
+{
+	ChunkRevision++;
+	NotifyChunksChanged();
+}
+
+void ANav3DData::OnTacticalBuildCompleted(const TArray<FBox>& UpdatedVolumes)
+{
+	// Increment the chunk revision to trigger automatic inspector refresh
+	ChunkRevision++;
+	UE_LOG(LogNav3D, Log, TEXT("Incremented ChunkRevision to %d after tactical build"), ChunkRevision);
+
+	// Update tactical performance stats if enabled
+	if (TacticalSettings.bEnableTacticalReasoning)
+	{
+		UpdatePerformanceStats();
+	}
+
+	// Notify chunks changed to trigger any additional refresh mechanisms
+	NotifyChunksChanged();
+
+	UE_LOG(LogNav3D, Log, TEXT("Tactical build completed for %d volumes"), UpdatedVolumes.Num());
+}
+#endif
+
+void ANav3DData::RebuildTacticalDataForVolume(const TArray<ANav3DDataChunkActor*>& VolumeChunks, const FBox& VolumeBounds)
+{
+	if (!TacticalSettings.bEnableTacticalReasoning)
+	{
+		UE_LOG(LogNav3D, Warning, TEXT("RebuildTacticalDataForVolume: Tactical reasoning is disabled"));
+		return;
+	}
+
+	if (!TacticalReasoning.IsValid())
+	{
+		if (!InitializeTacticalReasoning())
+		{
+			UE_LOG(LogNav3D, Error, TEXT("RebuildTacticalDataForVolume: Failed to initialize tactical reasoning"));
+			return;
+		}
+	}
+
+	UE_LOG(LogNav3D, Log, TEXT("Rebuilding tactical data for volume %s with %d chunks"), *VolumeBounds.ToString(), VolumeChunks.Num());
+	TacticalReasoning->BuildTacticalDataForVolume(VolumeChunks, VolumeBounds);
+
+	// Notify editor/UI
+#if WITH_EDITORONLY_DATA
+	OnTacticalBuildCompleted({ VolumeBounds });
+#endif
+
+	// Broadcast delegate for listeners
+	if (OnTacticalBuildCompletedDelegate.IsBound())
+	{
+		OnTacticalBuildCompletedDelegate.Broadcast(this, { VolumeBounds });
+	}
 }

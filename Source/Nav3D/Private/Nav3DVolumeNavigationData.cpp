@@ -1,19 +1,19 @@
 #include "Nav3DVolumeNavigationData.h"
+
+#include <libmorton/morton.h>
+
 #include "LandscapeProxy.h"
 #include "Nav3DUtils.h"
 #include "Nav3DTypes.h"
 #include "TriBoxOverlap.h"
-#include "Async/ParallelFor.h"
 #include "HAL/CriticalSection.h"
 #include "HAL/PlatformAtomics.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformMisc.h"
 #include "Engine/OverlapResult.h"
 #include "Engine/World.h"
-#include <ThirdParty/libmorton/morton.h>
 #include "LandscapeMeshCollisionComponent.h"
 #include "Nav3D.h"
-#include "Nav3DData.h"
 #include "Components/BoxComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/InstancedStaticMeshComponent.h"
@@ -74,9 +74,9 @@ FVector FNav3DVolumeNavigationData::GetNodePositionFromAddress(
 		const auto& LeafNode = LeafNodes.GetLeafNode(Address.NodeIndex);
 		const auto& Node = Layer.GetNode(Address.NodeIndex);
 
-		// Log the morton code we're using
-		UE_LOG(LogNav3D, VeryVerbose, TEXT("Using morton code %llu for leaf node %d"),
-		       Node.MortonCode, Address.NodeIndex);
+		// Log the morton code we're using (disabled to reduce log spam)
+		// UE_LOG(LogNav3D, VeryVerbose, TEXT("Using morton code %llu for leaf node %d"),
+		//        Node.MortonCode, Address.NodeIndex);
 
 		// Validate parent reference
 		if (!LeafNode.Parent.IsValid())
@@ -159,118 +159,217 @@ FVector FNav3DVolumeNavigationData::GetLeafNodePositionFromMortonCode(const Mort
 }
 
 bool FNav3DVolumeNavigationData::GetNodeAddressFromPosition(
-	FNav3DNodeAddress& OutNodeAddress,
-	const FVector& Position,
-	const LayerIndex MinLayerIndex = 0) const
+    FNav3DNodeAddress& OutNodeAddress,
+    const FVector& Position,
+    const LayerIndex MinLayerIndex /*= 0*/) const
 {
-	const auto& NavigationBounds = Nav3DData.GetNavigationBounds();
+    QUICK_SCOPE_CYCLE_COUNTER(STAT_Nav3DBoundsNavigationData_GetNodeAddressFromPosition);
 
-	if (!NavigationBounds.IsInside(Position))
-	{
-		UE_LOG(LogNav3D, VeryVerbose, TEXT("GetNodeAddressFromPosition: Position %s is outside navigation bounds %s"), 
-			*Position.ToString(), *NavigationBounds.ToString());
-		return false;
-	}
+    const auto& NavigationBounds = Nav3DData.GetNavigationBounds();
 
-	QUICK_SCOPE_CYCLE_COUNTER(STAT_Nav3DBoundsNavigationData_GetNodeAddressFromPosition);
+    // Quick bounds test with small tolerance to absorb FP error
+    const FBox ExpandedBounds = NavigationBounds.ExpandBy(1.0f);
+    if (!ExpandedBounds.IsInside(Position))
+    {
+        UE_LOG(LogNav3D, VeryVerbose, TEXT("GetNodeAddressFromPosition: Position %s is outside navigation bounds %s"),
+            *Position.ToString(), *NavigationBounds.ToString());
+        return false;
+    }
 
-	FVector Origin;
-	FVector Extent;
+    const auto LayerCount = GetLayerCount();
+    if (LayerCount == 0)
+    {
+        UE_LOG(LogNav3D, Error, TEXT("GetNodeAddressFromPosition: No layers present"));
+        return false;
+    }
 
-	NavigationBounds.GetCenterAndExtents(Origin, Extent);
-	// The z-order origin of the volume (where code == 0)
-	const auto ZOrigin = Origin - Extent;
-	// The local position of the point in volume space
-	const auto LocalPosition = Position - ZOrigin;
+    // Compute local position within navigation bounds
+    FVector Origin, Extent;
+    NavigationBounds.GetCenterAndExtents(Origin, Extent);
+    const FVector LocalPosition = Position - (Origin - Extent); // Position relative to min corner
 
-	const auto LayerCount = GetLayerCount();
-	LayerIndex CurrentLayerIndex = LayerCount - 1;
-	NodeIndex CurrentNodeIndex = 0;
+    // Work from coarsest layer down to MinLayerIndex
+    for (LayerIndex CurrentLayer = static_cast<LayerIndex>(LayerCount - 1); CurrentLayer >= MinLayerIndex; --CurrentLayer)
+    {
+        // Calculate Morton code for this layer using existing utility functions
+        const float LayerNodeSize = GetLayerNodeSize(CurrentLayer);
+        const FIntVector LayerCoords = FIntVector(
+            FMath::FloorToInt(LocalPosition.X / LayerNodeSize),
+            FMath::FloorToInt(LocalPosition.Y / LayerNodeSize),
+            FMath::FloorToInt(LocalPosition.Z / LayerNodeSize)
+        );
+        const MortonCode LayerMortonCode = FNav3DUtils::GetMortonCodeFromIntVector(LayerCoords);
+        
+        // Try to find an exact node at this layer
+        const int32 NodeIdx = GetNodeIndexFromMortonCode(CurrentLayer, LayerMortonCode);
+        if (NodeIdx == INDEX_NONE)
+        {
+            // No node here → that means pure free space at this layer
+            UE_LOG(LogNav3D, VeryVerbose, TEXT("GetNodeAddressFromPosition: Free space at layer %d, morton %llu"), CurrentLayer, LayerMortonCode);
+            OutNodeAddress.LayerIndex = CurrentLayer;
+            OutNodeAddress.NodeIndex = INDEX_NONE;   // "free space" marker
+            OutNodeAddress.SubNodeIndex = LayerMortonCode; // store Morton for positioning
+            return true;
+        }
 
-	while (static_cast<int>(CurrentLayerIndex) >= MinLayerIndex && CurrentLayerIndex < LayerCount)
-	{
-		const auto& Layer = Nav3DData.GetLayer(CurrentLayerIndex);
-		const auto& LayerNodes = Layer.GetNodes();
-		const auto VoxelSize = Layer.GetNodeSize();
+        // Found a node
+        const auto& Layer = Nav3DData.GetLayer(CurrentLayer);
+        const auto& Node = Layer.GetNode(NodeIdx);
 
-		FIntVector VoxelCoords;
-		VoxelCoords.X = FMath::FloorToInt(LocalPosition.X / VoxelSize);
-		VoxelCoords.Y = FMath::FloorToInt(LocalPosition.Y / VoxelSize);
-		VoxelCoords.Z = FMath::FloorToInt(LocalPosition.Z / VoxelSize);
+        if (!Node.HasChildren())
+        {
+            // This is navigable free space
+            UE_LOG(LogNav3D, VeryVerbose, TEXT("GetNodeAddressFromPosition: Found navigable node at layer %d, index %d"), CurrentLayer, NodeIdx);
+            OutNodeAddress.LayerIndex = CurrentLayer;
+            OutNodeAddress.NodeIndex = NodeIdx;
+            OutNodeAddress.SubNodeIndex = 0;
+            return true;
+        }
 
-		// Get the morton code we want for this layer
-		const auto Code = FNav3DUtils::GetMortonCodeFromVector(VoxelCoords);
-		const auto NodeExtent = Layer.GetNodeExtent();
+        if (CurrentLayer == 0)
+        {
+            // Leaf node: need to check sub-nodes
+            const auto& LeafNodes = Nav3DData.GetLeafNodes();
+            const auto& LeafNode = LeafNodes.GetLeafNode(NodeIdx);
+            
+            // Calculate sub-node index from position
+            const FVector NodeWorldPos = GetLeafNodePositionFromMortonCode(Node.MortonCode);
+            const auto NodeExtent = LeafNodes.GetLeafNodeExtent();
+            const auto SubVoxelSize = LeafNodes.GetLeafSubNodeSize();
+            const FVector NodeLocalPos = Position - (NodeWorldPos - FVector(NodeExtent));
+            
+            const int32 SubX = FMath::Clamp(FMath::FloorToInt(NodeLocalPos.X / SubVoxelSize), 0, 3);
+            const int32 SubY = FMath::Clamp(FMath::FloorToInt(NodeLocalPos.Y / SubVoxelSize), 0, 3);
+            const int32 SubZ = FMath::Clamp(FMath::FloorToInt(NodeLocalPos.Z / SubVoxelSize), 0, 3);
+            const auto SubNodeIndex = FNav3DUtils::GetMortonCodeFromIntVector(FIntVector(SubX, SubY, SubZ));
 
-		for (NodeIndex NodeIdx = CurrentNodeIndex; NodeIdx < static_cast<uint32>(LayerNodes.Num()); NodeIdx++)
-		{
-			const auto& Node = LayerNodes[NodeIdx];
+            if (!LeafNode.IsSubNodeOccluded(SubNodeIndex))
+            {
+                // Exact free sub-node
+                UE_LOG(LogNav3D, VeryVerbose, TEXT("GetNodeAddressFromPosition: Found free sub-node at leaf %d, sub-node %llu"), NodeIdx, SubNodeIndex);
+                OutNodeAddress.LayerIndex = 0;
+                OutNodeAddress.NodeIndex = NodeIdx;
+                OutNodeAddress.SubNodeIndex = SubNodeIndex;
+                return true;
+            }
 
-			// This is the node we are in
-			if (Node.MortonCode != Code)
-			{
-				continue;
-			}
+            // Try nearest free sub-node in this leaf
+            const FVector SubExtent = FVector(LeafNodes.GetLeafSubNodeExtent());
+            const FVector LeafOrigin = NodeWorldPos - FVector(NodeExtent);
+            
+            float BestDistSq = TNumericLimits<float>::Max();
+        	MortonCode BestSubNodeIndex = 0;
+            bool bFoundFreeSubNode = false;
 
-			// There are no child nodes, so this is our nav position
-			if (!Node.FirstChild.IsValid()) // && CurrentLayerIndex > 0)
-			{
-				OutNodeAddress.LayerIndex = CurrentLayerIndex;
-				OutNodeAddress.NodeIndex = NodeIdx;
-				OutNodeAddress.SubNodeIndex = 0;
-				return true;
-			}
+            for (int32 SubIdx = 0; SubIdx < 64; ++SubIdx)
+            {
+                if (!LeafNode.IsSubNodeOccluded(SubIdx))
+                {
+                    const FIntVector SubCoords = FNav3DUtils::GetIntVectorFromMortonCode(SubIdx);
+                    const FVector SubCenter = LeafOrigin + FVector(SubCoords) * SubVoxelSize + SubExtent;
+                    const float DistSq = FVector::DistSquared(SubCenter, Position);
+                    if (DistSq < BestDistSq)
+                    {
+                        BestDistSq = DistSq;
+                        BestSubNodeIndex = SubIdx;
+                        bFoundFreeSubNode = true;
+                    }
+                }
+            }
 
-			// If this is a leaf node, we need to find our sub-node
-			if (CurrentLayerIndex == 0)
-			{
-				const auto& LeafNodes = Nav3DData.GetLeafNodes();
-				const auto& Leaf = LeafNodes.GetLeafNode(Node.FirstChild.NodeIndex);
+            if (bFoundFreeSubNode)
+            {
+                UE_LOG(LogNav3D, VeryVerbose, TEXT("GetNodeAddressFromPosition: Found nearest free sub-node at leaf %d, sub-node %llu"), NodeIdx, BestSubNodeIndex);
+                OutNodeAddress.LayerIndex = 0;
+                OutNodeAddress.NodeIndex = NodeIdx;
+                OutNodeAddress.SubNodeIndex = BestSubNodeIndex;
+                return true;
+            }
 
-				// We need to calculate the node local position to get the morton code
-				// for the leaf The world position of the 0 node
-				const auto NodePosition =
-					GetLeafNodePositionFromMortonCode(Node.MortonCode);
-				// The morton origin of the node
-				const auto NodeOrigin = NodePosition - FVector(NodeExtent);
-				// The requested position, relative to the node origin
-				const auto NodeLocalPosition = Position - NodeOrigin;
-				// Now get our voxel coordinates
-				const auto VoxelQuarterSize = VoxelSize * 0.25f;
+            // Fully blocked leaf - fall through to global search
+            UE_LOG(LogNav3D, VeryVerbose, TEXT("GetNodeAddressFromPosition: Leaf node %d fully blocked"), NodeIdx);
+            break;
+        }
 
-				FIntVector LeafCoords;
-				LeafCoords.X =
-					FMath::FloorToInt(NodeLocalPosition.X / VoxelQuarterSize);
-				LeafCoords.Y =
-					FMath::FloorToInt(NodeLocalPosition.Y / VoxelQuarterSize);
-				LeafCoords.Z =
-					FMath::FloorToInt(NodeLocalPosition.Z / VoxelQuarterSize);
+        // Otherwise keep descending — children might contain navigable space
+        // Continue to next iteration with CurrentLayer decremented
+    }
 
-				OutNodeAddress.LayerIndex = 0;
-				OutNodeAddress.NodeIndex = NodeIdx;
+    // Fallback: try to find nearest free node globally
+    UE_LOG(LogNav3D, VeryVerbose, TEXT("GetNodeAddressFromPosition: Falling back to nearest navigable node search"));
+    return FindNearestNavigableNode(Position, OutNodeAddress, MinLayerIndex);
+}
 
-				const auto LeafCode =
-					FNav3DUtils::GetMortonCodeFromVector(LeafCoords);
-				// This morton code is our key into the 64-bit leaf node
+bool FNav3DVolumeNavigationData::FindNearestNavigableNode(
+    const FVector& Position, 
+    FNav3DNodeAddress& OutNodeAddress,
+    const LayerIndex MinLayerIndex /*= 0*/) const
+{
+    float BestDistSq = TNumericLimits<float>::Max();
+    FNav3DNodeAddress BestAddress;
+    bool bFoundAny = false;
 
-				if (Leaf.IsSubNodeOccluded(LeafCode))
-				{
-					return false; // This voxel is blocked
-				}
+    const LayerIndex LayerCount = GetLayerCount();
+    
+    // Search from MinLayerIndex up to top layer
+    for (LayerIndex LayerIdx = MinLayerIndex; LayerIdx < LayerCount; ++LayerIdx)
+    {
+        const auto& Layer = Nav3DData.GetLayer(LayerIdx);
+        const auto& LayerNodes = Layer.GetNodes();
+        
+        for (int32 NodeIdx = 0; NodeIdx < LayerNodes.Num(); ++NodeIdx)
+        {
+            const auto& Node = LayerNodes[NodeIdx];
+            
+            if (LayerIdx == 0)
+            {
+                // Check leaf sub-nodes
+                const auto& LeafNodes = Nav3DData.GetLeafNodes();
+                const auto& LeafNode = LeafNodes.GetLeafNode(NodeIdx);
+            	
+                for (int32 SubIdx = 0; SubIdx < 64; ++SubIdx)
+                {
+                    if (!LeafNode.IsSubNodeOccluded(SubIdx))
+                    {
+                        const FNav3DNodeAddress TestAddr = FNav3DNodeAddress(0, NodeIdx, SubIdx);
+                        const FVector SubPos = GetNodePositionFromAddress(TestAddr, true);
+                        const float DistSq = FVector::DistSquared(SubPos, Position);
+                        
+                        if (DistSq < BestDistSq)
+                        {
+                            BestDistSq = DistSq;
+                            BestAddress = TestAddr;
+                            bFoundAny = true;
+                        }
+                    }
+                }
+            }
+            else if (!Node.HasChildren())
+            {
+                // Non-leaf navigable node
+                const FVector NodePos = GetNodePositionFromLayerAndMortonCode(LayerIdx, Node.MortonCode);
+                const float DistSq = FVector::DistSquared(NodePos, Position);
+                
+                if (DistSq < BestDistSq)
+                {
+                    BestDistSq = DistSq;
+                    BestAddress = FNav3DNodeAddress(LayerIdx, NodeIdx, 0);
+                    bFoundAny = true;
+                }
+            }
+        }
+    }
 
-				OutNodeAddress.SubNodeIndex = LeafCode;
+    if (bFoundAny)
+    {
+        OutNodeAddress = BestAddress;
+        UE_LOG(LogNav3D, VeryVerbose, TEXT("FindNearestNavigableNode: Found node at layer %d, index %d, subnode %d"), 
+               BestAddress.LayerIndex, BestAddress.NodeIndex, BestAddress.SubNodeIndex);
+        return true;
+    }
 
-				return true;
-			}
-
-			CurrentLayerIndex = LayerNodes[NodeIdx].FirstChild.LayerIndex;
-			CurrentNodeIndex = LayerNodes[NodeIdx].FirstChild.NodeIndex;
-
-			break; // stop iterating this layer
-		}
-	}
-
-	return false;
+    UE_LOG(LogNav3D, Warning, TEXT("FindNearestNavigableNode: No navigable nodes found"));
+    return false;
 }
 
 void FNav3DVolumeNavigationData::GetNodeNeighbours(
@@ -499,6 +598,17 @@ void FNav3DVolumeNavigationData::GenerateNavigationData(
     GatherOverlappingObjects();
     if (IsCancelRequested()) { return; }
 
+	// Early-out: if the volume has no overlapping objects and no dynamic occluders,
+	// we can skip the entire rasterization. This makes empty volumes essentially free.
+	if (OverlappingObjects.Num() == 0 && DynamicOccluders.Num() == 0)
+	{
+		UE_LOG(LogNav3D, Log, TEXT("GenerateNavigationData: No overlaps in volume; skipping rasterization"));
+		Nav3DData.bIsValid = true;
+		LogNavigationStats();
+		UpdateCoreProgress(1.0f);
+		return;
+	}
+
     // Reset progress tracking
     LastLoggedCorePercent = -1;
 
@@ -542,7 +652,7 @@ void FNav3DVolumeNavigationData::GenerateNavigationData(
     UpdateCoreProgress(1.0f);
 }
 
-static FString FormatElapsedTime(double ElapsedSeconds)
+static FString FormatElapsedTime(const double ElapsedSeconds)
 {
 	const int32 TotalSeconds = static_cast<int32>(ElapsedSeconds);
 	const int32 Minutes = TotalSeconds / 60;
@@ -593,22 +703,32 @@ void FNav3DVolumeNavigationData::UpdateCoreProgress(const float Fraction0To1) co
 	LastLoggedCorePercent = CoreRounded;
 	
 	// Log progress with elapsed time (only show time for progress > 0%)
+	const FString Prefix = GetLogPrefix();
 	if (CoreRounded > 0)
 	{
-		UE_LOG(LogNav3D, Log, TEXT("Nav3D build core progress: %d%% (%s)"), 
-			CoreRounded, *FormatElapsedTime(ElapsedSinceLastUpdate));
+		UE_LOG(LogNav3D, Log, TEXT("%sNav3D build core progress: %d%% (%s)"), 
+			*Prefix, CoreRounded, *FormatElapsedTime(ElapsedSinceLastUpdate));
 	}
 	else
 	{
-		UE_LOG(LogNav3D, Log, TEXT("Nav3D build core progress: %d%%"), CoreRounded);
+		UE_LOG(LogNav3D, Log, TEXT("%sNav3D build core progress: %d%%"), *Prefix, CoreRounded);
 	}
 	
 	// Log total build time when complete
 	if (CoreRounded >= 100)
 	{
 		const double TotalBuildTime = CurrentTime - BuildStartTime;
-		UE_LOG(LogNav3D, Log, TEXT("Nav3D build completed in %s"), *FormatElapsedTime(TotalBuildTime));
+		UE_LOG(LogNav3D, Log, TEXT("%sNav3D build completed in %s"), *Prefix, *FormatElapsedTime(TotalBuildTime));
 	}
+}
+
+FString FNav3DVolumeNavigationData::GetLogPrefix() const
+{
+	if (Settings.DebugVolumeIndex >= 0)
+	{
+		return FString::Printf(TEXT("[Vol#%d %s] "), Settings.DebugVolumeIndex, *Settings.DebugLabel);
+	}
+	return FString();
 }
 
 void FNav3DVolumeNavigationData::Serialize(FArchive& Archive, const ENav3DVersion Version)
@@ -831,12 +951,82 @@ bool FNav3DVolumeNavigationData::IsPositionOccluded(const FVector& Position, con
 		return false;
 	}
 
-	// Add debug logging at start
-	UE_LOG(LogNav3D, VeryVerbose, TEXT("Checking occlusion at %s with extent %f"), *Position.ToString(),
-	       BoxExtent);
-	UE_LOG(LogNav3D, VeryVerbose, TEXT("LeafNodeExtent: %f, SubNodeExtent: %f"),
-	       Nav3DData.GetLeafNodes().GetLeafNodeExtent(),
-	       Nav3DData.GetLeafNodes().GetLeafSubNodeExtent());
+	// If we have a Layer 1 overlap cache, use it to early-out or to perform
+	// a faster check limited to cached actors.
+	if (Layer1VoxelOverlapCache.Num() > 0)
+	{
+		const auto& NavigationBounds = Nav3DData.GetNavigationBounds();
+		const FVector Origin = NavigationBounds.GetCenter() - NavigationBounds.GetExtent();
+		const FVector LocalPosition = Position - Origin;
+		const float L1VoxelSize = Nav3DData.GetLayer(1).GetNodeSize();
+		FIntVector VoxelCoords;
+		VoxelCoords.X = FMath::FloorToInt(LocalPosition.X / L1VoxelSize);
+		VoxelCoords.Y = FMath::FloorToInt(LocalPosition.Y / L1VoxelSize);
+		VoxelCoords.Z = FMath::FloorToInt(LocalPosition.Z / L1VoxelSize);
+		const MortonCode L1Code = FNav3DUtils::GetMortonCodeFromIntVector(VoxelCoords);
+
+		if (const FVoxelOverlapCache* CacheEntry = Layer1VoxelOverlapCache.Find(L1Code))
+		{
+			if (CacheEntry->OverlappingActors.Num() == 0)
+			{
+				return false; // Parent L1 is empty; cannot be occluded
+			}
+			// Optimized, inlined path: test only against cached actors/components
+			const FBox PositionBoxCached = FBox::BuildAABB(Position, FVector(BoxExtent + Settings.GenerationSettings.Clearance));
+			for (const TWeakObjectPtr<AActor>& ActorWeak : CacheEntry->OverlappingActors)
+			{
+				if (IsCancelRequested()) { return false; }
+				const AActor* Actor = ActorWeak.Get();
+				if (!Actor || !IsValid(Actor)) { continue; }
+
+				const FBox ActorBounds = Actor->GetComponentsBoundingBox(true);
+				if (!ActorBounds.Intersect(PositionBoxCached)) { continue; }
+
+				if (const ALandscapeProxy* LandscapeProxy = Cast<ALandscapeProxy>(Actor))
+				{
+					if (CheckLandscapeProxyOcclusion(LandscapeProxy, Position, BoxExtent))
+					{
+						if (FMath::IsNearlyEqual(BoxExtent, Nav3DData.GetLeafNodes().GetLeafSubNodeExtent()))
+						{
+							FPlatformAtomics::InterlockedIncrement(&NumOccludedVoxels);
+						}
+						return true;
+					}
+				}
+
+				TInlineComponentArray<UInstancedStaticMeshComponent*> ISMComponents;
+				Actor->GetComponents<UInstancedStaticMeshComponent>(ISMComponents);
+				for (const UInstancedStaticMeshComponent* ISMComp : ISMComponents)
+				{
+					if (!ISMComp) { continue; }
+					if (CheckInstancedStaticMeshOcclusion(ISMComp, Position, BoxExtent))
+					{
+						if (FMath::IsNearlyEqual(BoxExtent, Nav3DData.GetLeafNodes().GetLeafSubNodeExtent()))
+						{
+							FPlatformAtomics::InterlockedIncrement(&NumOccludedVoxels);
+						}
+						return true;
+					}
+				}
+
+				TInlineComponentArray<UStaticMeshComponent*> StaticMeshComponents;
+				Actor->GetComponents<UStaticMeshComponent>(StaticMeshComponents);
+				for (const UStaticMeshComponent* SMC : StaticMeshComponents)
+				{
+					if (!SMC || SMC->IsA<UInstancedStaticMeshComponent>()) { continue; }
+					if (CheckStaticMeshOcclusion(SMC, Position, BoxExtent))
+					{
+						if (FMath::IsNearlyEqual(BoxExtent, Nav3DData.GetLeafNodes().GetLeafSubNodeExtent()))
+						{
+							FPlatformAtomics::InterlockedIncrement(&NumOccludedVoxels);
+						}
+						return true;
+					}
+				}
+			}
+			return false;
+		}
+	}
 
 	const FBox PositionBox = FBox::BuildAABB(Position, FVector(BoxExtent + Settings.GenerationSettings.Clearance));
 
@@ -867,8 +1057,6 @@ bool FNav3DVolumeNavigationData::IsPositionOccluded(const FVector& Position, con
 				if (FMath::IsNearlyEqual(BoxExtent, Nav3DData.GetLeafNodes().GetLeafSubNodeExtent()))
 				{
 					FPlatformAtomics::InterlockedIncrement(&NumOccludedVoxels);
-					UE_LOG(LogNav3D, VeryVerbose, TEXT("Voxel occluded at %s by dynamic occluder"),
-					       *Position.ToString());
 				}
 				return true;
 			}
@@ -1332,29 +1520,6 @@ void FNav3DVolumeNavigationData::FirstPass()
 {
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_Nav3DBoundsNavigationData_FirstPassRasterization);
 
-	// Always use optimized physics-based approach
-	UE_LOG(LogNav3D, Log, TEXT("FirstPass: Using optimized physics-based approach"));
-	FirstPassOptimized();
-
-	// Common continuation for higher layers
-	for (int32 LayerIndex = 1; LayerIndex < GetLayerCount(); LayerIndex++)
-	{
-		const auto& ParentLayerBlockedNodes =
-			Nav3DData.GetLayerBlockedNodes(LayerIndex - 1);
-		for (const MortonCode MortonCode : ParentLayerBlockedNodes)
-		{
-			Nav3DData.AddBlockedNode(
-				LayerIndex, FNav3DUtils::GetParentMortonCode(MortonCode));
-		}
-	}
-
-	UpdateCoreProgress(0.2f);
-
-	UE_LOG(LogNav3D, Log, TEXT("FirstPass: Complete"));
-}
-
-void FNav3DVolumeNavigationData::FirstPassOptimized()
-{
 	const double StartTime = FPlatformTime::Seconds();
 	
 	// Step 1: Cache all Layer 1 voxel overlaps using physics queries
@@ -1385,8 +1550,8 @@ void FNav3DVolumeNavigationData::FirstPassOptimized()
 		const FVoxelOverlapCache* CacheEntry = Layer1VoxelOverlapCache.Find(NodeIndex);
 		if (CacheEntry && CacheEntry->OverlappingActors.Num() > 0)
 		{
-			// Use optimized occlusion check with cached actors
-			if (IsPositionOccludedOptimized(Position, LayerNodeExtent, NodeIndex))
+			// Use consolidated occlusion check (consults cache internally)
+			if (IsPositionOccluded(Position, LayerNodeExtent))
 			{
 				Nav3DData.AddBlockedNode(0, NodeIndex);
 			}
@@ -1399,7 +1564,23 @@ void FNav3DVolumeNavigationData::FirstPassOptimized()
 	
 	const double EndTime = FPlatformTime::Seconds();
 	const double Duration = EndTime - StartTime;
-	UE_LOG(LogNav3D, Log, TEXT("FirstPassOptimized: Complete (%s)"), *FormatElapsedTime(Duration));
+	UE_LOG(LogNav3D, Log, TEXT("%sFirstPassOptimized: Complete (%s)"), *GetLogPrefix(), *FormatElapsedTime(Duration));
+
+	// Common continuation for higher layers
+	for (int32 LayerIndex = 1; LayerIndex < GetLayerCount(); LayerIndex++)
+	{
+		const auto& ParentLayerBlockedNodes =
+			Nav3DData.GetLayerBlockedNodes(LayerIndex - 1);
+		for (const MortonCode MortonCode : ParentLayerBlockedNodes)
+		{
+			Nav3DData.AddBlockedNode(
+				LayerIndex, FNav3DUtils::GetParentMortonCode(MortonCode));
+		}
+	}
+
+	UpdateCoreProgress(0.2f);
+
+	UE_LOG(LogNav3D, Log, TEXT("FirstPass: Complete"));
 }
 
 void FNav3DVolumeNavigationData::CacheLayer1Overlaps()
@@ -1410,7 +1591,7 @@ void FNav3DVolumeNavigationData::CacheLayer1Overlaps()
 	const auto LayerMaxNodeCount = Layer1.GetMaxNodeCount();
 	const auto LayerNodeExtent = Layer1.GetNodeExtent();
 	
-	UE_LOG(LogNav3D, Log, TEXT("CacheLayer1Overlaps: Preparing to cache overlaps for %d Layer 1 voxels"), LayerMaxNodeCount);
+	UE_LOG(LogNav3D, Log, TEXT("%sCacheLayer1Overlaps: Preparing overlaps for %d L1 voxels"), *GetLogPrefix(), LayerMaxNodeCount);
 	
 	// Clear any existing cache
 	Layer1VoxelOverlapCache.Empty(LayerMaxNodeCount);
@@ -1434,7 +1615,7 @@ void FNav3DVolumeNavigationData::CacheLayer1Overlaps()
 	FCriticalSection CriticalSection;
 	int32 ProcessedVoxels = 0;
 
-	UE_LOG(LogNav3D, Log, TEXT("CacheLayer1Overlaps: Using sequential overlap queries"));
+	UE_LOG(LogNav3D, Log, TEXT("%sCacheLayer1Overlaps: Using sequential overlap queries"), *GetLogPrefix());
 	for (uint32 NodeIndex = 0; NodeIndex < LayerMaxNodeCount; ++NodeIndex)
 	{
 		if (IsCancelRequested())
@@ -1485,102 +1666,17 @@ void FNav3DVolumeNavigationData::CacheLayer1Overlaps()
 		if (ProcessedVoxels % 1000 == 0)
 		{
 			const float Progress = static_cast<float>(ProcessedVoxels) / LayerMaxNodeCount;
-			UE_LOG(LogNav3D, Log, TEXT("CacheLayer1Overlaps: %d/%d voxels processed (%.1f%%)"), 
-				ProcessedVoxels, LayerMaxNodeCount, Progress * 100.0f);
+			UE_LOG(LogNav3D, Log, TEXT("%sCacheLayer1Overlaps: %d/%d (%.1f%%)"), *GetLogPrefix(), ProcessedVoxels, LayerMaxNodeCount, Progress * 100.0f);
 		}
 	}
 	
 	const double EndTime = FPlatformTime::Seconds();
 	const double Duration = EndTime - StartTime;
 	
-	UE_LOG(LogNav3D, Log, TEXT("CacheLayer1Overlaps: Complete (%s). Cached %d voxels, %d with overlaps"), 
-		*FormatElapsedTime(Duration),
-		Layer1VoxelOverlapCache.Num(), 
-		Layer1VoxelOverlapCache.FilterByPredicate([](const auto& Pair) { 
-			return Pair.Value.OverlappingActors.Num() > 0; 
-		}).Num());
-}
-
-bool FNav3DVolumeNavigationData::IsPositionOccludedOptimized(const FVector& Position, float BoxExtent, MortonCode Layer1Parent) const
-{
-	
-	// Get cached overlapping actors for this Layer 1 parent
-	const FVoxelOverlapCache* CacheEntry = Layer1VoxelOverlapCache.Find(Layer1Parent);
-	if (!CacheEntry || CacheEntry->OverlappingActors.Num() == 0)
-	{
-		return false; // No cached actors means no occlusion
-	}
-	
-	const FBox PositionBox = FBox::BuildAABB(Position, FVector(BoxExtent + Settings.GenerationSettings.Clearance));
-	
-	// Test only against cached actors (much smaller set than full world)
-	for (const TWeakObjectPtr<AActor>& ActorWeak : CacheEntry->OverlappingActors)
-	{
-		if (IsCancelRequested())
-		{
-			return false;
-		}
-		
-		const AActor* Actor = ActorWeak.Get();
-		if (!Actor || !IsValid(Actor))
-		{
-			continue;
-		}
-		
-		// Quick bounds check first
-		const FBox ActorBounds = Actor->GetComponentsBoundingBox(true);
-		if (!ActorBounds.Intersect(PositionBox))
-		{
-			continue;
-		}
-		
-		// Landscapes
-		if (const ALandscapeProxy* LandscapeProxy = Cast<ALandscapeProxy>(Actor))
-		{
-			if (CheckLandscapeProxyOcclusion(LandscapeProxy, Position, BoxExtent))
-			{
-				if (FMath::IsNearlyEqual(BoxExtent, Nav3DData.GetLeafNodes().GetLeafSubNodeExtent()))
-				{
-					FPlatformAtomics::InterlockedIncrement(&NumOccludedVoxels);
-				}
-				return true;
-			}
-		}
-		
-		// Instanced static meshes
-		TInlineComponentArray<UInstancedStaticMeshComponent*> ISMComponents;
-		Actor->GetComponents<UInstancedStaticMeshComponent>(ISMComponents);
-		for (const UInstancedStaticMeshComponent* ISMComp : ISMComponents)
-		{
-			if (!ISMComp) { continue; }
-			if (CheckInstancedStaticMeshOcclusion(ISMComp, Position, BoxExtent))
-			{
-				if (FMath::IsNearlyEqual(BoxExtent, Nav3DData.GetLeafNodes().GetLeafSubNodeExtent()))
-				{
-					FPlatformAtomics::InterlockedIncrement(&NumOccludedVoxels);
-				}
-				return true;
-			}
-		}
-		
-		// Regular static meshes (exclude ISMs already handled)
-		TInlineComponentArray<UStaticMeshComponent*> StaticMeshComponents;
-		Actor->GetComponents<UStaticMeshComponent>(StaticMeshComponents);
-		for (const UStaticMeshComponent* SMC : StaticMeshComponents)
-		{
-			if (!SMC || SMC->IsA<UInstancedStaticMeshComponent>()) { continue; }
-			if (CheckStaticMeshOcclusion(SMC, Position, BoxExtent))
-			{
-				if (FMath::IsNearlyEqual(BoxExtent, Nav3DData.GetLeafNodes().GetLeafSubNodeExtent()))
-				{
-					FPlatformAtomics::InterlockedIncrement(&NumOccludedVoxels);
-				}
-				return true;
-			}
-		}
-	}
-	
-	return false;
+	const int32 WithOverlaps = Layer1VoxelOverlapCache.FilterByPredicate([](const auto& Pair) { return Pair.Value.OverlappingActors.Num() > 0; }).Num();
+	UE_LOG(LogNav3D, Log, TEXT("%sCacheLayer1Overlaps: Complete (%s). Cached %d, with overlaps %d (%.1f%%)"), 
+		*GetLogPrefix(), *FormatElapsedTime(Duration),
+		Layer1VoxelOverlapCache.Num(), WithOverlaps, LayerMaxNodeCount > 0 ? (100.0f * WithOverlaps / LayerMaxNodeCount) : 0.0f);
 }
 
 bool FNav3DVolumeNavigationData::IsPositionOccludedPhysics(const FVector& Position, float BoxExtent) const
@@ -1705,46 +1801,41 @@ void FNav3DVolumeNavigationData::RasterizeInitialLayer(
 	
 	auto& LayerZero = Nav3DData.GetLayer(0);
 	const auto& LayerZeroBlockedNodes = Nav3DData.GetLayerBlockedNodes(0);
-	const auto LayerMaxNodeCount = LayerZero.GetMaxNodeCount();
 
 	// Prepare a temporary array to hold the results of parallel processing
 	TArray<TPair<NodeIndex, FNav3DNode>> TempNodes;
 	TempNodes.Reserve(LayerZeroBlockedNodes.Num() * 8);
 
-	FCriticalSection CriticalSection;
-
-	ParallelFor(LayerMaxNodeCount, [&](NodeIndex NodeIdx)
+	// Iterate only children of blocked Layer 1 parents; avoid global scan and locks
+	for (const MortonCode ParentMortonCode : LayerZeroBlockedNodes)
 	{
-		if (IsCancelRequested()) { return; }
-		const auto ParentMortonCode = FNav3DUtils::GetParentMortonCode(NodeIdx);
-		const auto bIsBlocked = LayerZeroBlockedNodes.Contains(ParentMortonCode);
-
-		if (!bIsBlocked)
+		if (IsCancelRequested()) { break; }
+		const MortonCode FirstChildCode = FNav3DUtils::GetFirstChildMortonCode(ParentMortonCode);
+		for (int32 ChildIdx = 0; ChildIdx < 8; ++ChildIdx)
 		{
-			return;
+			const MortonCode LeafMortonCode = FirstChildCode + ChildIdx;
+
+			FNav3DNode LayerZeroNode;
+			LayerZeroNode.MortonCode = LeafMortonCode;
+
+			const auto LeafNodePosition = GetLeafNodePositionFromMortonCode(LayerZeroNode.MortonCode);
+			const auto LeafNodeExtent = Nav3DData.GetLeafNodes().GetLeafNodeExtent();
+
+			// Use consolidated occlusion (consults L1 cache)
+			if (IsPositionOccluded(LeafNodePosition, LeafNodeExtent))
+			{
+				LayerZeroNode.FirstChild.LayerIndex = 0;
+				LayerZeroNode.FirstChild.NodeIndex = INDEX_NONE;
+				LayerZeroNode.FirstChild.SubNodeIndex = 0;
+			}
+			else
+			{
+				LayerZeroNode.FirstChild.Invalidate();
+			}
+
+			TempNodes.Emplace(LeafMortonCode, LayerZeroNode);
 		}
-
-		FNav3DNode LayerZeroNode;
-		LayerZeroNode.MortonCode = NodeIdx;
-
-		const auto LeafNodePosition = GetLeafNodePositionFromMortonCode(LayerZeroNode.MortonCode);
-		const auto LeafNodeExtent = Nav3DData.GetLeafNodes().GetLeafNodeExtent();
-
-		// Always use optimized approach with cached data
-		if (IsPositionOccludedOptimized(LeafNodePosition, LeafNodeExtent, ParentMortonCode))
-		{
-			LayerZeroNode.FirstChild.LayerIndex = 0;
-			LayerZeroNode.FirstChild.NodeIndex = INDEX_NONE;
-			LayerZeroNode.FirstChild.SubNodeIndex = 0;
-		}
-		else
-		{
-			LayerZeroNode.FirstChild.Invalidate();
-		}
-
-		FScopeLock Lock(&CriticalSection);
-		TempNodes.Emplace(NodeIdx, LayerZeroNode);
-	});
+	}
 
 	// Sort nodes
 	TempNodes.Sort([](const TPair<NodeIndex, FNav3DNode>& A, const TPair<NodeIndex, FNav3DNode>& B)
@@ -1798,17 +1889,12 @@ void FNav3DVolumeNavigationData::RasterizeLayer(const LayerIndex LayerIndex)
 
 	const auto LayerMaxNodeCount = Layer.GetMaxNodeCount();
 
-	FCriticalSection CriticalSection;
-
-	ParallelFor(LayerMaxNodeCount, [&](const int32 NodeIdx)
+	// Sequential loop avoids lock contention and scans
+	for (int32 NodeIdx = 0; NodeIdx < static_cast<int32>(LayerMaxNodeCount); ++NodeIdx)
 	{
-		if (IsCancelRequested()) { return; }
-		const auto bIsBlocked = LayerBlockedNodes.Contains(FNav3DUtils::GetParentMortonCode(NodeIdx));
-
-		if (!bIsBlocked)
-		{
-			return;
-		}
+		if (IsCancelRequested()) { break; }
+		const bool bIsBlocked = LayerBlockedNodes.Contains(FNav3DUtils::GetParentMortonCode(NodeIdx));
+		if (!bIsBlocked) { continue; }
 
 		FNav3DNode LayerNode;
 		LayerNode.MortonCode = NodeIdx;
@@ -1818,7 +1904,6 @@ void FNav3DVolumeNavigationData::RasterizeLayer(const LayerIndex LayerIndex)
 		const auto ChildIndexFromCode = GetNodeIndexFromMortonCode(ChildLayerIndex, FirstChildMortonCode);
 
 		auto& FirstChild = LayerNode.FirstChild;
-
 		if (ChildIndexFromCode != INDEX_NONE)
 		{
 			// Set parent to child links
@@ -1826,14 +1911,12 @@ void FNav3DVolumeNavigationData::RasterizeLayer(const LayerIndex LayerIndex)
 			FirstChild.NodeIndex = ChildIndexFromCode;
 
 			auto& ChildLayer = Nav3DData.GetLayer(ChildLayerIndex);
-
 			// Set child to parent links
-			for (auto ChildIndex = 0; ChildIndex < 8; ++ChildIndex)
+			for (int32 ChildIndex = 0; ChildIndex < 8; ++ChildIndex)
 			{
 				auto& ChildNode = ChildLayer.GetNodes()[FirstChild.NodeIndex + ChildIndex];
-
 				ChildNode.Parent.LayerIndex = LayerIndex;
-				ChildNode.Parent.NodeIndex = LayerNodes.Num(); // This will be the index of the new node
+				ChildNode.Parent.NodeIndex = LayerNodes.Num(); // index of the new node
 			}
 		}
 		else
@@ -1841,10 +1924,8 @@ void FNav3DVolumeNavigationData::RasterizeLayer(const LayerIndex LayerIndex)
 			FirstChild.Invalidate();
 		}
 
-		// Add the new node to LayerNodes in a thread-safe manner
-		FScopeLock Lock(&CriticalSection);
 		LayerNodes.Add(LayerNode);
-	});
+	}
 
 	// Sort the LayerNodes by MortonCode to ensure they're in the correct order
 	LayerNodes.Sort([](const FNav3DNode& A, const FNav3DNode& B)
@@ -1942,7 +2023,7 @@ bool FNav3DVolumeNavigationData::FindNeighbourInDirection(
 		return true;
 	}
 
-	const auto NeighbourCode = FNav3DUtils::GetMortonCodeFromVector(NeighbourCoords);
+	const auto NeighbourCode = FNav3DUtils::GetMortonCodeFromIntVector(NeighbourCoords);
 	int32 StopIndex = LayerNodesCount;
 	int32 Increment = 1;
 
@@ -2012,7 +2093,7 @@ void FNav3DVolumeNavigationData::GetLeafNeighbours(
 			NeighbourCoords.Y >= 0 && NeighbourCoords.Y < 4 &&
 			NeighbourCoords.Z >= 0 && NeighbourCoords.Z < 4)
 		{
-			const MortonCode SubNodeIndex = FNav3DUtils::GetMortonCodeFromVector(NeighbourCoords);
+			const MortonCode SubNodeIndex = FNav3DUtils::GetMortonCodeFromIntVector(NeighbourCoords);
 
 			if (!Leaf.IsSubNodeOccluded(SubNodeIndex))
 			{
@@ -2063,7 +2144,7 @@ void FNav3DVolumeNavigationData::GetLeafNeighbours(
 				}
 
 				const MortonCode SubNodeIndex =
-					FNav3DUtils::GetMortonCodeFromVector(NeighbourCoords);
+					FNav3DUtils::GetMortonCodeFromIntVector(NeighbourCoords);
 
 				if (!LeafNode.IsSubNodeOccluded(SubNodeIndex))
 				{
@@ -2335,7 +2416,7 @@ void FNav3DVolumeNavigationData::RemoveDynamicOccluder(const AActor* Occluder)
 	}
 }
 
-MortonCode FNav3DVolumeNavigationData::GetParentMortonCodeAtLayer(MortonCode ChildCode, LayerIndex TargetLayer, LayerIndex ChildLayer)
+MortonCode FNav3DVolumeNavigationData::GetParentMortonCodeAtLayer(const MortonCode ChildCode, const LayerIndex TargetLayer, const LayerIndex ChildLayer)
 {
 	if (TargetLayer >= ChildLayer)
 	{
@@ -2349,4 +2430,68 @@ MortonCode FNav3DVolumeNavigationData::GetParentMortonCodeAtLayer(MortonCode Chi
 		--Current;
 	}
 	return Code;
+}
+
+float FNav3DVolumeNavigationData::GetLayerNodeSize(const LayerIndex LayerIndex) const
+{
+	if (LayerIndex == 0)
+	{
+		// For layer 0, return leaf node size
+		return Nav3DData.GetLeafNodes().GetLeafNodeSize();
+	}
+	
+	if (LayerIndex >= Nav3DData.GetLayerCount())
+	{
+		UE_LOG(LogNav3D, Warning, TEXT("GetLayerNodeSize: LayerIndex %d out of bounds"), LayerIndex);
+		return 0.0f;
+	}
+	
+	return Nav3DData.GetLayer(LayerIndex).GetNodeSize();
+}
+
+float FNav3DVolumeNavigationData::GetLayerNodeExtent(const LayerIndex LayerIndex) const
+{
+	if (LayerIndex == 0)
+	{
+		// For layer 0, return leaf node extent
+		return Nav3DData.GetLeafNodes().GetLeafNodeExtent();
+	}
+	
+	if (LayerIndex >= Nav3DData.GetLayerCount())
+	{
+		UE_LOG(LogNav3D, Warning, TEXT("GetLayerNodeExtent: LayerIndex %d out of bounds"), LayerIndex);
+		return 0.0f;
+	}
+	
+	return Nav3DData.GetLayer(LayerIndex).GetNodeExtent();
+}
+
+bool FNav3DVolumeNavigationData::GetNodeAddressFromMortonCode(
+	FNav3DNodeAddress& OutNodeAddress,
+	const MortonCode MortonCode,
+	const LayerIndex LayerIndex) const
+{
+	if (LayerIndex >= Nav3DData.GetLayerCount())
+	{
+		UE_LOG(LogNav3D, VeryVerbose, TEXT("GetNodeAddressFromMortonCode: LayerIndex %d out of bounds"), LayerIndex);
+		return false;
+	}
+	
+	// Find the node index for this morton code at the specified layer
+	const int32 NodeIndex = GetNodeIndexFromMortonCode(LayerIndex, MortonCode);
+	if (NodeIndex == INDEX_NONE)
+	{
+		return false; // Morton code doesn't exist at this layer
+	}
+	
+	OutNodeAddress.LayerIndex = LayerIndex;
+	OutNodeAddress.NodeIndex = static_cast<uint32>(NodeIndex);
+	OutNodeAddress.SubNodeIndex = 0; // Default sub-node for non-leaf nodes
+	
+	return true;
+}
+
+const TArray<NodeIndex>& FNav3DVolumeNavigationData::GetLayerBlockedNodes(const LayerIndex LayerIndex) const
+{
+	return Nav3DData.GetLayerBlockedNodes(LayerIndex);
 }

@@ -2,7 +2,6 @@
 #include "Nav3DUtils.h"
 #include "Nav3DVolumeNavigationData.h"
 #include "Nav3D.h"
-#include <DrawDebugHelpers.h>
 
 FNav3DRaycasterProcessor_GenerateDebugInfos::
 FNav3DRaycasterProcessor_GenerateDebugInfos(
@@ -197,9 +196,13 @@ bool UNav3DRaycaster::TraceInternal(
     OutHit.OccludedVoxelCount = 0;
 
     // Start at highest layer and traverse down
+    const int32 HighestLayer = VolumeNavigationData.GetData().GetLayerCount() - 1;
+    UE_LOG(LogNav3D, VeryVerbose, TEXT("Raycaster: Starting traversal from layer %d, ray from %s to %s"), 
+           HighestLayer, *From.ToString(), *To.ToString());
+    
     const auto Result = DoesRayIntersectOccludedNode(
         OctreeRay,
-        FNav3DNodeAddress(VolumeNavigationData.GetData().GetLayerCount() - 1, 0),
+        FNav3DNodeAddress(HighestLayer, 0),
         VolumeNavigationData,
         RayState,
         OutHit,
@@ -241,6 +244,7 @@ bool UNav3DRaycaster::DoesRayIntersectOccludedNode(
     // If this is a layer 0 node, test for actual intersection
     if (NodeAddress.LayerIndex == 0)
     {
+        UE_LOG(LogNav3D, VeryVerbose, TEXT("Raycaster: Reached layer 0 node %d, checking for occluded leaf"), NodeAddress.NodeIndex);
         return DoesRayIntersectOccludedLeaf(Ray, NodeAddress, Data, RayState, OutHit, bCountAllOccludedVoxels);
     }
 
@@ -287,6 +291,9 @@ bool UNav3DRaycaster::DoesRayIntersectOccludedLeaf(
         // Increment occluded voxel count
         OutHit.OccludedVoxelCount++;
         
+        UE_LOG(LogNav3D, VeryVerbose, TEXT("Raycaster: Found completely occluded leaf node at %s, voxel count now %d"), 
+               *NodePos.ToString(), OutHit.OccludedVoxelCount);
+        
         // Record hit information if this is the first hit we've found
         if (!OutHit.bBlockingHit || TMin < OutHit.Distance)
         {
@@ -331,6 +338,9 @@ bool UNav3DRaycaster::DoesRayIntersectOccludedLeaf(
         {
             // Increment occluded voxel count for each hit subnode
             OutHit.OccludedVoxelCount++;
+            
+            UE_LOG(LogNav3D, VeryVerbose, TEXT("Raycaster: Found occluded sub-node %d at %s, voxel count now %d"), 
+                   SubIdx, *SubNodePos.ToString(), OutHit.OccludedVoxelCount);
             
             // Keep track of closest hit for return value
             bHit = true;

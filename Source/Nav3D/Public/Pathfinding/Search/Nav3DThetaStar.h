@@ -1,22 +1,27 @@
 #pragma once
 
-#include "Pathfinding/Stepper/Nav3DPathStepperAStar.h"
-#include "Pathfinding/Stepper/Nav3DPathStepperThetaStar.h"
-#include "Nav3DThetaStar.generated.h"
+#include "CoreMinimal.h"
+#include "Pathfinding/Search/Nav3DAStar.h"
 
-class UNav3DRaycaster;
-
-UCLASS(Blueprintable)
-class NAV3D_API UNav3DThetaStar final : public UNav3DPathFindingSearch
+class NAV3D_API FNav3DThetaStar : public FNav3DAStar
 {
-	GENERATED_BODY()
-
 public:
-	virtual ENavigationQueryResult::Type
-	GetPath(FNav3DPath& NavigationPath,
-	        const FNav3DPathFindingParameters& Params) const override;
+	FNav3DThetaStar();
+	virtual ~FNav3DThetaStar() override;
 
-private:
-	UPROPERTY(EditAnywhere)
-	FNav3DPathStepperThetaStarParameters ThetaStarParameters;
+	virtual ENavigationQueryResult::Type FindPath(
+		FNav3DPath& OutPath,
+		const FNav3DPathingRequest& Request,
+		const FNav3DVolumeNavigationData* VolumeNavData) override;
+
+protected:
+	bool HasLineOfSight(const FNav3DNodeAddress& From, const FNav3DNodeAddress& To) const;
+	void ProcessCurrentNodeWithLineOfSight(const FSearchNode& CurrentNode, int32& LineOfSightChecks);
+	void ProcessNeighborWithLineOfSight(const FNav3DNodeAddress& NeighborAddress, const FSearchNode& CurrentNode, int32& LineOfSightChecks);
+
+	FNav3DPathingRequest CurrentRequest;
+	const ANav3DData* NavDataActor = nullptr;
+	class UNav3DRaycaster* Raycaster = nullptr;
 };
+
+

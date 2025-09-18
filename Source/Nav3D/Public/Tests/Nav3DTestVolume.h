@@ -153,7 +153,7 @@ private:
 public:
     // Public functions
     UFUNCTION(BlueprintCallable, Category="Nav3D")
-    void GenerateObstacles();
+    void GenerateObstacles() const;
     
     UFUNCTION(BlueprintCallable, Category="Nav3D")
     void ClearObstacles() const;
@@ -162,9 +162,19 @@ public:
     int32 GetObstacleCount() const;
     
 	UFUNCTION(BlueprintCallable, Category="Nav3D")
-	void GenerateRandomSpline();
+	void GenerateRandomSpline() const;
 	
     void GenerateRandomSpline(const FRandomStream& RandomStream) const;
+    
+    // Tactical testing functions
+    UFUNCTION(BlueprintCallable, Category="Nav3D Tactical")
+    void TestTacticalDataGeneration() const;
+    
+    UFUNCTION(BlueprintCallable, Category="Nav3D Tactical")
+    void TestTacticalQueries() const;
+    
+    UFUNCTION(BlueprintCallable, Category="Nav3D Tactical")
+    int32 GetTacticalRegionCount() const;
     
 private:
     // Helper functions

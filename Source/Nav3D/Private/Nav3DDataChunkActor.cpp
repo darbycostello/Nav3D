@@ -1,4 +1,6 @@
 #include "Nav3DDataChunkActor.h"
+
+#include "EngineUtils.h"
 #include "Nav3DUtils.h"
 #include "Nav3DWorldSubsystem.h"
 #include "Nav3DData.h"
@@ -12,6 +14,123 @@ ANav3DDataChunkActor::ANav3DDataChunkActor(const FObjectInitializer& ObjectIniti
 {
 	SetCanBeDamaged(false);
 	SetActorEnableCollision(false);
+}
+
+void ANav3DDataChunkActor::Serialize(FArchive& Ar)
+{
+	Super::Serialize(Ar);
+    
+	if (Ar.IsSaving())
+	{
+		UE_LOG(LogNav3D, Verbose, TEXT("SAVE Chunk %s: %d compact regions, %d adjacency, %d visibility refs, VolumeID=%d"),
+			*GetName(),
+			CompactTacticalData.Regions.Num(),
+			CompactTacticalData.RegionAdjacency.Num(),
+			CompactTacticalData.VisibilityMatrix.SparseReferences.Num(),
+			CompactTacticalData.VolumeID);
+
+		for (int32 i = 0; i < ChunkAdjacency.Num(); ++i)
+		{
+			const FNav3DChunkAdjacency& Adj = ChunkAdjacency[i];
+			UE_LOG(LogNav3D, VeryVerbose, TEXT("  Adj[%d]: OtherChunk=%s, Valid=%s, Portals=%d"), 
+			       i, 
+			       Adj.OtherChunkActor.IsValid() ? *Adj.OtherChunkActor->GetName() : TEXT("INVALID"),
+			       Adj.OtherChunkActor.IsValid() ? TEXT("Yes") : TEXT("No"),
+			       Adj.CompactPortals.Num());
+		}
+	}
+	else if (Ar.IsLoading())
+	{
+		UE_LOG(LogNav3D, Warning, TEXT("LOAD Chunk %s: %d compact regions, %d adjacency, %d visibility refs, VolumeID=%d"),
+			*GetName(),
+			CompactTacticalData.Regions.Num(),
+			CompactTacticalData.RegionAdjacency.Num(),
+			CompactTacticalData.VisibilityMatrix.SparseReferences.Num(),
+			CompactTacticalData.VolumeID);
+		
+		// Debug adjacency data being loaded
+		UE_LOG(LogNav3D, Verbose, TEXT("LOAD Chunk %s: ChunkAdjacency has %d entries"), *GetName(), ChunkAdjacency.Num());
+		for (int32 i = 0; i < ChunkAdjacency.Num(); ++i)
+		{
+			const FNav3DChunkAdjacency& Adj = ChunkAdjacency[i];
+			UE_LOG(LogNav3D, VeryVerbose, TEXT("  Adj[%d]: OtherChunk=%s, Valid=%s, Portals=%d"), 
+			       i, 
+			       Adj.OtherChunkActor.IsValid() ? *Adj.OtherChunkActor->GetName() : TEXT("INVALID"),
+			       Adj.OtherChunkActor.IsValid() ? TEXT("Yes") : TEXT("No"),
+			       Adj.CompactPortals.Num());
+		}
+	}
+}
+
+void ANav3DDataChunkActor::PostLoad()
+{
+	Super::PostLoad();
+
+	if (!CompactTacticalData.IsEmpty())
+	{
+		UE_LOG(LogNav3D, Verbose, TEXT("Chunk %s loaded with %d compact regions, %d adjacency entries"),
+			*GetName(),
+			CompactTacticalData.Regions.Num(),
+			CompactTacticalData.RegionAdjacency.Num());
+	}
+	else
+	{
+		UE_LOG(LogNav3D, VeryVerbose, TEXT("Chunk %s loaded without compact tactical data"), *GetName());
+	}
+	
+	// Fix invalid weak object pointers in ChunkAdjacency
+	int32 FixedReferences = 0;
+	for (FNav3DChunkAdjacency& Adj : ChunkAdjacency)
+	{
+		if (!Adj.OtherChunkActor.IsValid())
+		{
+			// Try to find the chunk by name or spatial proximity
+			if (const UWorld* World = GetWorld())
+			{
+				// Get all chunk actors in the world
+				TArray<ANav3DDataChunkActor*> AllChunks;
+				for (TActorIterator<ANav3DDataChunkActor> ActorItr(World); ActorItr; ++ActorItr)
+				{
+					AllChunks.Add(*ActorItr);
+				}
+				
+				// Find the closest chunk that this one should be adjacent to
+				ANav3DDataChunkActor* BestMatch = nullptr;
+				float BestDistance = FLT_MAX;
+				
+				for (ANav3DDataChunkActor* OtherChunk : AllChunks)
+				{
+					if (OtherChunk && OtherChunk != this)
+					{
+						// Check if this chunk is spatially adjacent
+						if (IsAdjacentToChunk(OtherChunk))
+						{
+							float Distance = FVector::Dist(DataChunkActorBounds.GetCenter(), OtherChunk->DataChunkActorBounds.GetCenter());
+							if (Distance < BestDistance)
+							{
+								BestDistance = Distance;
+								BestMatch = OtherChunk;
+							}
+						}
+					}
+				}
+				
+				if (BestMatch)
+				{
+					Adj.OtherChunkActor = BestMatch;
+					FixedReferences++;
+					UE_LOG(LogNav3D, Verbose, TEXT("PostLoad: Fixed invalid adjacency reference in %s -> %s"), 
+					       *GetName(), *BestMatch->GetName());
+				}
+			}
+		}
+	}
+	
+	if (FixedReferences > 0)
+	{
+		UE_LOG(LogNav3D, Verbose, TEXT("PostLoad: Fixed %d invalid adjacency references in chunk %s"), 
+		       FixedReferences, *GetName());
+	}
 }
 
 uint32 ANav3DDataChunkActor::GetDefaultGridSize(UWorld* InWorld) const
@@ -83,20 +202,10 @@ void ANav3DDataChunkActor::AddNav3DChunkToWorld()
 					}
 				}
 
-				// Build transient portal lookup from baked ChunkAdjacency
-				PortalLookup.Reset();
-				for (const FNav3DChunkAdjacency& Adj : ChunkAdjacency)
-				{
-					for (const FNav3DVoxelConnection& Conn : Adj.Connections)
-					{
-						PortalLookup.FindOrAdd(Conn.LocalVolumeIndex).Add(Conn.Local, Conn);
-					}
-				}
-
 				// Register actor in world spatial index
-				if (UNav3DWorldSubsystem* Subsys = GetWorld()->GetSubsystem<UNav3DWorldSubsystem>())
+				if (UNav3DWorldSubsystem* Subsystem = GetWorld()->GetSubsystem<UNav3DWorldSubsystem>())
 				{
-					Subsys->RegisterChunkActor(this);
+					Subsystem->RegisterChunkActor(this);
 				}
 			}
 		}
@@ -117,8 +226,7 @@ void ANav3DDataChunkActor::RemoveNav3DChunkFromWorld()
 					Chunk->MortonToBoundaryIndex.Reset();
 				}
 			}
-			// Clear transient portal lookup
-			PortalLookup.Reset();
+			// No transient portal lookup to clear
 			// Unregister from world spatial index
 			if (UNav3DWorldSubsystem* Subsystem = GetWorld()->GetSubsystem<UNav3DWorldSubsystem>())
 			{
@@ -127,10 +235,6 @@ void ANav3DDataChunkActor::RemoveNav3DChunkFromWorld()
 		}
 	}
 }
-
-// ============================================================================
-// NEW UNIVERSAL CHUNK ACTOR METHODS
-// ============================================================================
 
 void ANav3DDataChunkActor::InitializeForStandardLevel()
 {
@@ -155,27 +259,10 @@ bool ANav3DDataChunkActor::ContainsPoint(const FVector& Point) const
 	return DataChunkActorBounds.IsInsideXY(Point);
 }
 
-const UNav3DDataChunk* ANav3DDataChunkActor::GetChunkContainingPoint(const FVector& Point) const
-{
-	if (!ContainsPoint(Point))
-	{
-		return nullptr;
-	}
-	
-	// For now, return the first chunk if we contain the point
-	// In the future, we might have multiple chunks per actor
-	if (Nav3DChunks.Num() > 0)
-	{
-		return Nav3DChunks[0];
-	}
-	
-	return nullptr;
-}
-
 void ANav3DDataChunkActor::RegisterWithNavigationSystem()
 {
 	// Register with spatial subsystem for fast queries
-	if (UWorld* World = GetWorld())
+	if (const UWorld* World = GetWorld())
 	{
 		if (UNav3DWorldSubsystem* Subsystem = World->GetSubsystem<UNav3DWorldSubsystem>())
 		{
@@ -189,20 +276,12 @@ void ANav3DDataChunkActor::RegisterWithNavigationSystem()
 		}
 	}
 	
-	// Build transient portal lookup for fast runtime queries
-	PortalLookup.Reset();
-	for (const FNav3DChunkAdjacency& Adj : ChunkAdjacency)
-	{
-		for (const FNav3DVoxelConnection& Conn : Adj.Connections)
-		{
-			PortalLookup.FindOrAdd(Conn.LocalVolumeIndex).Add(Conn.Local, Conn);
-		}
-	}
+	// No transient portal lookup; CompactPortals are used directly
 }
 
 void ANav3DDataChunkActor::UnregisterFromNavigationSystem()
 {
-	if (UWorld* World = GetWorld())
+	if (const UWorld* World = GetWorld())
 	{
 		if (UNav3DWorldSubsystem* Subsystem = World->GetSubsystem<UNav3DWorldSubsystem>())
 		{
@@ -216,8 +295,33 @@ void ANav3DDataChunkActor::UnregisterFromNavigationSystem()
 		}
 	}
 	
-	// Clear transient data
-	PortalLookup.Reset();
+	// No transient data to clear
+}
+
+bool ANav3DDataChunkActor::IsAdjacentToChunk(const ANav3DDataChunkActor* OtherChunk, const float Tolerance) const
+{
+	if (!OtherChunk)
+	{
+		return false;
+	}
+	
+	const FBox ExpandedBounds = DataChunkActorBounds.ExpandBy(Tolerance);
+	return ExpandedBounds.Intersect(OtherChunk->DataChunkActorBounds);
+}
+
+void ANav3DDataChunkActor::ClearTacticalData()
+{
+	// Clear compact tactical data structures
+	CompactTacticalData.Reset();
+	CompactRegions.Reset();
+	ConnectionInterfaces.Reset();
+
+	UE_LOG(LogNav3D, Verbose, TEXT("Cleared tactical data from chunk: %s"), *GetName());
+
+	// Mark dirty in editor
+#if WITH_EDITOR
+	auto _ = MarkPackageDirty();
+#endif
 }
 
 #if WITH_EDITOR
@@ -245,5 +349,3 @@ void ANav3DDataChunkActor::RebuildNavigationData() const
 	}
 }
 #endif // WITH_EDITOR
-
-

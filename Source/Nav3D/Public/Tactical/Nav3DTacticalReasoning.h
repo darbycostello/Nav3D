@@ -1,51 +1,64 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Tactical/Nav3DTacticalTypes.h"
+#include "Nav3DTypes.h"
 
 class ANav3DData;
 class ANav3DDataChunkActor;
-class ANav3DTacticalActor;
 class FNav3DVolumeNavigationData;
 
-// Class that handles the creation and queries for the tactical data
+/**
+ * Handles tactical data generation for Nav3D navigation system.
+ * 
+ * New Architecture:
+ * - Phase 1: Build local tactical data per chunk (stored in chunk actors)
+ * - Phase 2: Consolidate loaded chunks into runtime tactical data (managed by Nav3DData)
+ */
 class NAV3D_API FNav3DTacticalReasoning
 {
 public:
     FNav3DTacticalReasoning();
     ~FNav3DTacticalReasoning();
 
-    // Initialize with an existing Nav3DData instance
-    void Initialize(ANav3DData* NavData);
+    // Initialize with Nav3DData reference
+    void SetNavDataRef(ANav3DData* NavData);
 
-    void BuildTacticalData(const FBox& VolumeBounds);
+    // Helper to filter and re-index tactical data after pruning
+    static void FilterTacticalDataToSelectedRegions(
+    FConsolidatedTacticalData& TacticalData, 
+    const TArray<int32>& SelectedRegionIds);
+
+    // Volume-level tactical data building (replaces per-chunk building)
+    void BuildTacticalDataForVolume(
+        const TArray<ANav3DDataChunkActor*>& VolumeChunks,
+        const FBox& VolumeBounds);
+
+    // Partition volume-wide tactical data into a specific chunk's compact format
+    static FCompactTacticalData PartitionTacticalDataToChunk(
+        const FConsolidatedTacticalData& VolumeData,
+        const ANav3DDataChunkActor* TargetChunk,
+        uint16 VolumeID);
+
+    // Convert transient build structures to compact
+    static FCompactTacticalData ConvertBuildToCompact(
+        const TArray<FNav3DRegion>& BuildRegions,
+        const TMap<int32, FRegionIdArray>& BuildAdjacency,
+        uint16 VolumeID);
     
-    // Global tactical generation that processes all chunks together
-    void BuildGlobalTacticalData(const TArray<ANav3DDataChunkActor*>& ChunkActors);
-    
-    // Create tactical actor for regions
-    void CreateTacticalActorForRegions(const TArray<FNav3DRegion>& Regions, int32 LayerIndex) const;
-    
-    // Build tactical data for a specific layer (for async processing)
-    void BuildTacticalDataForLayer(int32 LayerIndex, const TArray<ANav3DDataChunkActor*>& ChunkActors);
-    
+    // Helper method to check if a region is from a loaded chunk
+    bool IsRegionFromLoadedChunk(int32 RegionId) const;
+
+    // Build cross-chunk visibility using sample-based raycasting, async.
+    void BuildVisibilitySetsForLoadedRegionsAsync(
+        FConsolidatedTacticalData& ConsolidatedData,
+        const TFunction<void()>& OnCompleteCallback = nullptr);
+
     /**
-     * Finds the best positions based on tactical criteria like visibility, distance, and region size.
-     * This method searches for regions that match the specified visibility requirements against all
-     * provided observer positions, and ranks them according to the specified preferences.
-     * @param TargetData
-     * @param StartPosition The position to start the search from
-     * @param ObserverPositions Array of observer positions to check visibility against
-     * @param Visibility Visibility relationship to require between observers and candidate positions
-     * @param DistancePreference How to weight candidates based on distance
-     * @param RegionPreference How to weight candidates based on region size
-     * @param bForceNewRegion If true, forces selection of a region different from the StartPosition's region
-     * @param bUseRaycasting If true, performs raycasts to validate visibility requirements
-     * @param OutCandidatePositions [out] Array of candidate positions sorted by score (best first)
-     * @return True if suitable candidate positions were found, false otherwise
+     * Find the best tactical positions from compact consolidated tactical data.
+     * This provides the same interface but works with the new compact format.
      */
-    bool FindBestLocation(
-        const FNav3DTacticalData& TargetData,  // Changed to const reference
+    bool FindBestLocationFromCompact(
+        const FConsolidatedCompactTacticalData& CompactData,
         const FVector& StartPosition,
         const TArray<FVector>& ObserverPositions,
         ETacticalVisibility Visibility,
@@ -54,73 +67,243 @@ public:
         bool bForceNewRegion,
         bool bUseRaycasting,
         TArray<FPositionCandidate>& OutCandidatePositions) const;
-    
-    // Get a random point within a region
+
+    // Get random point within a region
     static FVector GetRandomPointInRegion(const FNav3DRegion& Region);
 
+    /**
+     * Prune regions to a maximum limit using tactical analysis
+     */
+    static TArray<int32> PruneRegionsToLimit(
+        const FConsolidatedTacticalData& ConsolidatedData,
+        const FBox& VolumeBounds,
+        int32 MaxRegions = 64);
+
 private:
-    // Extract free voxels at the specified layer
-    TArray<FVector> ExtractFreeVoxelsInLayer(int32 LayerIndex) const;
-
-    TArray<FNav3DRegionBuilder> SubdivideVoxelsForLayer(
-        const TArray<TPair<uint64, FIntVector>>& FreeVoxels,
-        int32 LayerIndex,
-        int32 MaxRegionLayer,
-        const FNav3DVolumeNavigationData* VolumeData
-    );
-
-    // Build adjacency graph
-    static void BuildAdjacencyGraph(FNav3DTacticalData& TargetData);
-    static void BuildAdjacencyGraph(TArray<FNav3DRegion>& Regions);
-
-    static bool IsPositionNavigable(const FNav3DTacticalData& TargetData, const FVector& Position, int32 LayerIndex);
+    // Extract regions from chunk's navigation data
+    TArray<FNav3DRegion> ExtractRegionsFromChunk(
+        ANav3DDataChunkActor* ChunkActor,
+        const FNav3DVolumeNavigationData* VolumeData);
     
-    // Build visibility sets using parallel raycasting
-    void BuildVisibilitySets(FNav3DTacticalData& TargetData) const;
-
-    // Generate sample points for a region
-    TArray<FVector> GenerateSamplePoints(const FNav3DTacticalData& TargetData, const FNav3DRegion& Region) const;
-
-    static TArray<FNav3DRegionBuilder> MergeBoxRegions(const TArray<FNav3DRegionBuilder>& BoxRegions);
-
-    // Calculate average region volume
-    static float CalculateAverageRegionVolume(const FNav3DTacticalData& TargetData);
-
-    // Find the region with the specified ID
-    static const FNav3DRegion* GetRegionById(const FNav3DTacticalData& TargetData, int32 RegionId);
-
-    static TArray<TPair<uint64, FIntVector>> ExtractFreeVoxelsWithCoords(int32 LayerIndex, const FNav3DVolumeNavigationData* VolumeData);
-    TArray<FNav3DRegionBuilder> BuildInitialRegions(const TArray<TPair<uint64, FIntVector>>& FreeVoxels, int32 LayerIndex);
-    TArray<FNav3DRegionBuilder> RefineRegionsToBoxes(const TArray<FNav3DRegionBuilder>& InitialRegions);
-    TArray<FNav3DRegionBuilder> PartitionRegion(const FNav3DRegionBuilder& Region);
-    static bool CanMergeRegions(const FNav3DRegionBuilder& RegionA, const FNav3DRegionBuilder& RegionB);
-    TArray<FNav3DRegion> SplitLargeRegion(const FNav3DRegion& Region, float MaxRegionSize);
-    TArray<FBoxRegion> BuildBoxRegions(const TMap<FIntVector, bool>& VoxelGrid, int32 LayerIndex);
-    void ReindexRegions(TArray<FNav3DRegion>& Regions);
-    void VerifyRegionsAgainstStaticGeometry(TArray<FNav3DRegion>& Regions, const FNav3DVolumeNavigationData* VolumeData);
-    static bool IsRegionInsideGeometry(const FNav3DRegion& Region, UPrimitiveComponent* Component,
-                                       const FNav3DVolumeNavigationData* VolumeData);
-
-    // Build voxel-level adjacency between regions
+    // Build adjacency within a single chunk
+    static void BuildRegionAdjacency(
+        const TArray<FNav3DRegion>& LocalRegions,
+        TMap<int32, FRegionIdArray>& OutRegionAdjacency);
+    
+    // Extract free voxels with coordinates for a layer
+    static TArray<TPair<uint64, FIntVector>> ExtractFreeVoxelsWithCoords(
+        int32 LayerIndex, 
+        const FNav3DVolumeNavigationData* VolumeData);
+    
+    // Build box regions using greedy algorithm
+    TArray<FBoxRegion> BuildBoxRegions(
+        const TMap<FIntVector, bool>& VoxelGrid, 
+        int32 LayerIndex);
+    
+    // Build voxel-level adjacency between region builders
     static void BuildVoxelLevelAdjacency(TArray<FNav3DRegionBuilder>& Regions);
     
-    // Build adjacency between regions in different layers
-    static void BuildCrossLayerAdjacency(TArray<FNav3DRegion>& Regions, const FNav3DVolumeNavigationData* VolumeData);
-    
-    // Merge two regions, preserving adjacency information
-    static FNav3DRegionBuilder MergeRegions(const FNav3DRegionBuilder& RegionA, 
-                                          const FNav3DRegionBuilder& RegionB);
-    
-    // Update adjacency references after region merging
-    static void UpdateAdjacentRegionReferences(TArray<FNav3DRegionBuilder>& Regions, 
-                                             int32 RegionAIndex, int32 RegionBId);
+    // Verify regions don't overlap with static geometry
+    static void VerifyRegionsAgainstStaticGeometry(
+        TArray<FNav3DRegion>& Regions,
+        const FNav3DVolumeNavigationData* VolumeData);
 
-    // Reference to Nav3DData
-    TWeakObjectPtr<ANav3DData> NavDataRef;
+    // Generate sample points for visibility testing
+    TArray<FVector> GenerateSamplePoints(
+        const FNav3DRegion& Region) const;
 
-    // Next available region ID
-    int32 NextRegionId;
-
-    // Check if two regions are adjacent
+    // Check if two regions are spatially adjacent
     static bool AreRegionsAdjacent(const FNav3DRegion& RegionA, const FNav3DRegion& RegionB);
+    
+    // Check if region overlaps with static geometry
+    static bool IsRegionInsideGeometry(
+        const FNav3DRegion& Region,
+        const UPrimitiveComponent* Component,
+        const FNav3DVolumeNavigationData* VolumeData);
+
+    // Build visibility sets with yielding to prevent editor freeze
+    void ProcessVisibilityBuildChunk();
+
+    // Reference to Nav3DData (weak pointer for safety)
+    TWeakObjectPtr<ANav3DData> NavDataRef;
+    
+    // Region ID counter for chunk-local generation
+    int32 NextRegionId = 0;
+
+    // Timer-based visibility building state
+    FTimerHandle VisibilityBuildTimerHandle;
+    int32 CurrentVisibilityRegionIndex = 0;
+    FConsolidatedTacticalData* ActiveVisibilityBuildData = nullptr;
+    TFunction<void()> VisibilityBuildCompleteCallback;
+    
+    /**
+     * Calculate pruning data for all regions
+     */
+    static void CalculatePruningData(
+        const FConsolidatedTacticalData& ConsolidatedData,
+        const FBox& VolumeBounds,
+        TArray<FRegionPruningData>& OutPruningData);
+    
+    /**
+     * Ensure spatial coverage across the volume
+     */
+    static void EnsureSpatialCoverage(
+        const TArray<FRegionPruningData>& PruningData,
+        const FBox& VolumeBounds,
+        int32 SpatialBudget,
+        TSet<int32>& SelectedRegions);
+    
+    /**
+     * Select tactical extremes (high visibility, chokepoints, etc.)
+     */
+    static void SelectTacticalExtremes(
+        const TArray<FRegionPruningData>& PruningData,
+        int32 TacticalBudget,
+        TSet<int32>& SelectedRegions);
+    
+    /**
+     * Fill remaining slots with highest scoring regions
+     */
+    static void FillRemainingSlots(
+        const TArray<FRegionPruningData>& PruningData,
+        int32 MaxRegions,
+        TSet<int32>& SelectedRegions);
+    
+    /**
+     * Add top candidates from sorted data
+     */
+    static void AddTopCandidates(
+        const TArray<FRegionPruningData>& SortedData,
+        int32 Count,
+        TSet<int32>& SelectedRegions);
+    
+    /**
+     * Calculate composite tactical score for a region
+     */
+    static float CalculateTacticalScore(const FRegionPruningData& Data);
+    
+    /**
+     * Check if a region is near volume boundaries
+     */
+    static bool IsBoundaryRegion(const FNav3DRegion& Region, const FBox& VolumeBounds);
+    
+    /**
+     * Check if a region is a chokepoint (low connectivity)
+     */
+    static bool IsChokePoint(const FNav3DRegion& Region, const FConsolidatedTacticalData& Data);
+    
+    /**
+     * Calculate distance variance for tactical uniqueness
+     */
+    static float CalculateDistanceVariance(const FNav3DRegion& Region, const FConsolidatedTacticalData& Data);
+};
+
+/**
+ * Density-focused pruning strategy that prioritizes tactically complex areas
+ */
+class NAV3D_API FDensityFocusedPruningStrategy
+{
+public:
+    /**
+     * Prune regions to a maximum limit using density-focused tactical analysis
+     */
+    static TArray<int32> PruneRegionsToLimit(
+        const FConsolidatedTacticalData& ConsolidatedData,
+        const FBox& VolumeBounds,
+        const TArray<ANav3DDataChunkActor*>& ChunkActors,
+        int32 MaxRegions = 64);
+
+private:
+    /**
+     * Calculate density-focused tactical data for all regions
+     */
+    static void CalculateDensityPruningData(
+        const FConsolidatedTacticalData& ConsolidatedData,
+        const FBox& VolumeBounds,
+        const TArray<ANav3DDataChunkActor*>& ChunkActors,
+        TArray<FDensityRegionPruningData>& OutPruningData);
+    
+    /**
+     * Calculate local geometry density around a region
+     */
+    static float CalculateLocalGeometryDensity(
+        const FNav3DRegion& Region, 
+        const TArray<ANav3DDataChunkActor*>& ChunkActors);
+    
+    /**
+     * Calculate proximity to dense geometry
+     */
+    static float CalculateGeometryProximity(
+        const FNav3DRegion& Region,
+        const TArray<ANav3DDataChunkActor*>& ChunkActors);
+    
+    /**
+     * Calculate visibility complexity (how interesting the visibility pattern is)
+     */
+    static float CalculateVisibilityComplexity(
+        const FNav3DRegion& Region,
+        const FConsolidatedTacticalData& ConsolidatedData);
+    
+    /**
+     * Calculate adjacency complexity
+     */
+    static float CalculateAdjacencyComplexity(
+        const FNav3DRegion& Region,
+        const FConsolidatedTacticalData& ConsolidatedData);
+    
+    /**
+     * Calculate composite tactical complexity score
+     */
+    static float CalculateTacticalComplexityScore(const FDensityRegionPruningData& Data);
+    
+    /**
+     * Select high-density tactical zones (50% of budget)
+     */
+    static void SelectHighDensityZones(
+        const TArray<FDensityRegionPruningData>& PruningData,
+        int32 DensityBudget,
+        TSet<int32>& SelectedRegions);
+    
+    /**
+     * Ensure tactical diversity (30% of budget)
+     */
+    static void EnsureTacticalDiversity(
+        const TArray<FDensityRegionPruningData>& PruningData,
+        int32 DiversityBudget,
+        TSet<int32>& SelectedRegions);
+    
+    /**
+     * Ensure basic spatial coverage for larger ships (20% of budget)
+     */
+    static void EnsureBasicSpatialCoverage(
+        const TArray<FDensityRegionPruningData>& PruningData,
+        const FBox& VolumeBounds,
+        int32 SpatialBudget,
+        TSet<int32>& SelectedRegions);
+    
+    /**
+     * Fill remaining slots with highest scoring regions
+     */
+    static void FillRemainingSlots(
+        const TArray<FDensityRegionPruningData>& PruningData,
+        int32 MaxRegions,
+        TSet<int32>& SelectedRegions);
+    
+    /**
+     * Add top candidates from sorted data
+     */
+    static void AddTopCandidates(
+        const TArray<FDensityRegionPruningData>& SortedData,
+        int32 Count,
+        TSet<int32>& SelectedRegions);
+    
+    /**
+     * Check if a region is near volume boundaries
+     */
+    static bool IsBoundaryRegion(const FNav3DRegion& Region, const FBox& VolumeBounds);
+    
+    /**
+     * Check if a region is a chokepoint (low connectivity)
+     */
+    static bool IsChokePoint(const FNav3DRegion& Region, const FConsolidatedTacticalData& Data);
 };

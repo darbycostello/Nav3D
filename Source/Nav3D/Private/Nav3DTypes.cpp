@@ -1,5 +1,9 @@
 #include "Nav3DTypes.h"
 
+#include "Nav3D.h"
+#include "Nav3DUtils.h"
+#include "Nav3DVolumeNavigationData.h"
+
 const FNav3DNodeAddress FNav3DNodeAddress::InvalidAddress;
 
 void FNav3DLeafNodes::Initialize(const float LeafSize)
@@ -84,7 +88,11 @@ bool FNav3DData::Initialize(const float VoxelSize, const FBox& Bounds)
 	LeafNodes.Initialize(LeafSize);
 
 	const auto NavigationBoundsSize = FMath::Pow(2.0f, VoxelExponent) * LeafSize;
-
+	NavigationBounds = FBox::BuildAABB(VolumeBounds.GetCenter(),
+									   FVector(NavigationBoundsSize * 0.5f));
+	UE_LOG(LogNav3D, Warning, TEXT("FNav3DData::Initialize - Calculated Navigation Bounds: %s"),
+		*NavigationBounds.ToString());
+	
 	for (LayerIndex LayerIndex = 0; LayerIndex < LayerCount; ++LayerIndex)
 	{
 		const auto LayerEdgeNodeCount =
@@ -96,9 +104,6 @@ bool FNav3DData::Initialize(const float VoxelSize, const FBox& Bounds)
 
 		Layers.Emplace(LayerMaxNodeCount, LayerVoxelSize);
 	}
-
-	NavigationBounds = FBox::BuildAABB(VolumeBounds.GetCenter(),
-	                                   FVector(NavigationBoundsSize * 0.5f));
 
 	BlockedNodes.SetNumZeroed(LayerCount + 1);
 
@@ -134,19 +139,32 @@ int FNav3DData::GetAllocatedSize() const
 }
 
 FNav3DTacticalDebugData::FNav3DTacticalDebugData()
-	: bDebugDrawRegions(false)
+	: bDebugDrawPortals(0)
+    , bDebugDrawRegions(false)
 	, bDebugDrawRegionIds(false)
-	, bDebugDrawAdjacencyGraph(false)
+	, bDebugDrawRegionAdjacency(false)
 	, bDebugDrawVisibility(false)
 	, VisibilityViewRegionId(-1)
 	, bDrawBestCover(false)
 {
 }
 
+
+FNav3DPerformanceStats::FNav3DPerformanceStats()
+	: TotalRegions(0)
+	, LoadedChunks(0)
+	, TotalAdjacencies(0)
+	, IntraChunkAdjacencies(0)
+	, CrossChunkAdjacencies(0)
+	, TotalVisibilityPairs(0)
+	, EstimatedMemoryUsage(0.0f)
+	, LastUpdateTime(0.0)
+{
+}
+
 FNav3DVolumeDebugData::FNav3DVolumeDebugData()
 	: bDebugDrawBounds(false)
 	, bDebugDrawVolumes(false)
-	, bDebugDrawAdjacency(false)
 	, bDebugDrawLayers(false)
 	, LayerIndexToDraw(0)
 	, bDebugDrawOccludedVoxels(false)
@@ -154,4 +172,146 @@ FNav3DVolumeDebugData::FNav3DVolumeDebugData()
 	, bDebugDrawNodeCoords(false)
 	, bDebugDrawMortonCodes(false)
 {
+}
+
+void FConsolidatedTacticalData::Reset()
+{
+	AllLoadedRegions.Reset();
+	RegionAdjacency.Reset();
+	RegionVisibility.Reset();
+	SourceChunks.Reset();
+}
+
+int32 FConsolidatedTacticalData::FindContainingRegion(const FVector& Position) const
+{
+	for (const FNav3DRegion& Region : AllLoadedRegions)
+	{
+		if (Region.Bounds.IsInside(Position))
+		{
+			return Region.Id;
+		}
+	}
+	return -1;
+}
+
+FNav3DRegion FNav3DRegionBuilder::ToRegion(const FNav3DVolumeNavigationData* VolumeData) const
+{
+	// Calculate centers of min/max voxels
+	const FVector MinPosCenter = VolumeData->GetNodePositionFromLayerAndMortonCode(
+		LayerIndex, 
+		FNav3DUtils::GetMortonCodeFromIntVector(MinCoord)
+	);
+    
+	const FVector MaxPosCenter = VolumeData->GetNodePositionFromLayerAndMortonCode(
+		LayerIndex, 
+		FNav3DUtils::GetMortonCodeFromIntVector(MaxCoord)
+	);
+    
+	// Get node extent
+	const float NodeExtent = VolumeData->GetData().GetLayer(LayerIndex).GetNodeExtent();
+    
+	// Create bounds properly from centers to corners
+	const FBox WorldBounds(
+		MinPosCenter - FVector(NodeExtent),  // Min corner = min center - extent
+		MaxPosCenter + FVector(NodeExtent)   // Max corner = max center + extent
+	);
+    
+	FNav3DRegion Region(Id, WorldBounds, LayerIndex);
+    
+	// Copy adjacency information
+	for (int32 AdjId : AdjacentRegionIds)
+	{
+		Region.AdjacentRegionIds.Add(AdjId);
+	}
+    
+	return Region;
+}
+
+FCompactRegion FNav3DRegionBuilder::ToCompactRegion() const
+{
+    // Convert to a temporary region first to get proper bounds
+    // This uses the existing working ToRegion method
+    FNav3DRegion TempRegion = ToRegion(nullptr); // We'll calculate bounds manually
+    
+    // Calculate bounds manually using the existing working logic
+    FBox WorldBounds;
+    if (MortonCodes.Num() > 0)
+    {
+        // Convert Morton codes to world positions (this would need VolumeData)
+        // For now, use a reasonable default size
+        const FVector EstimatedCenter = FVector(MinCoord + MaxCoord) * 50.0f; // Default voxel size
+        const FVector EstimatedSize = FVector(GetSize()) * 100.0f; // Default voxel size
+        
+        WorldBounds = FBox::BuildAABB(EstimatedCenter, EstimatedSize * 0.5f);
+    }
+    else
+    {
+        // Fallback for empty regions
+        WorldBounds = FBox::BuildAABB(FVector::ZeroVector, FVector(100.0f));
+    }
+    
+    // Store center and size directly
+    const FVector WorldCenter = WorldBounds.GetCenter();
+    const FVector WorldSize = WorldBounds.GetSize();
+    
+    return FCompactRegion(LayerIndex, WorldCenter, WorldSize);
+}
+
+FNav3DRegionBuilder FBoxRegion::ToRegionBuilder(const TArray<TPair<uint64, FIntVector>>& FreeVoxels) const
+{
+	FNav3DRegionBuilder Builder;
+	Builder.Id = Id;
+	Builder.LayerIndex = LayerIndex;
+	Builder.MinCoord = Min;
+	Builder.MaxCoord = Max;
+    
+	// Add all morton codes for voxels in this region
+	for (const auto& VoxelPair : FreeVoxels)
+	{
+		if (Contains(VoxelPair.Value))
+		{
+			Builder.MortonCodes.Add(VoxelPair.Key);
+		}
+	}
+    
+	return Builder;
+}
+
+bool FConsolidatedTacticalData::IsRegionVisibilityMatch(const int32 ViewerRegionId, const int32 TargetRegionId, ETacticalVisibility Visibility) const
+{
+	if (ViewerRegionId == TargetRegionId)
+	{
+		return true; // Always visible to self
+	}
+	
+	// Check if TargetRegionId is in ViewerRegionId's visibility set
+	if (const FRegionIdArray* VisibilitySet = RegionVisibility.Find(ViewerRegionId))
+	{
+		return VisibilitySet->Contains(TargetRegionId);
+	}
+	
+	return false;
+}
+
+void FConsolidatedTacticalData::AddToVisibilitySet(const int32 ViewerRegionId, const int32 TargetRegionId)
+{
+	if (ViewerRegionId == TargetRegionId)
+	{
+		return; // Don't add self to visibility set
+	}
+	
+	FRegionIdArray& VisibilitySet = RegionVisibility.FindOrAdd(ViewerRegionId);
+	VisibilitySet.Add(TargetRegionId);
+}
+
+const FNav3DRegion* FConsolidatedTacticalData::GetRegionById(const int32 RegionId) const
+{
+	for (const FNav3DRegion& Region : AllLoadedRegions)
+	{
+		if (Region.Id == RegionId)
+		{
+			return &Region;
+		}
+	}
+	return nullptr;
 }

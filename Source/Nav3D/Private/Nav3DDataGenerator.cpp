@@ -6,9 +6,12 @@
 #include "Nav3DUtils.h"
 #include <GameFramework/PlayerController.h>
 #include <NavigationSystem.h>
+#include "EngineUtils.h"
 #include "Nav3D.h"
 #include "Engine/World.h"
 #include "HAL/PlatformTime.h"
+#include "Nav3DBoundsVolume.h"
+#include "Tactical/Nav3DTacticalReasoning.h"
 
 FNav3DVolumeNavigationDataGenerator::FNav3DVolumeNavigationDataGenerator(
 	FNav3DDataGenerator& NavigationDataGenerator, const FBox& VolumeBounds)
@@ -20,16 +23,20 @@ FNav3DVolumeNavigationDataGenerator::FNav3DVolumeNavigationDataGenerator(
 
 bool FNav3DVolumeNavigationDataGenerator::DoWork()
 {
-	UE_LOG(LogNav3D, Log, TEXT("Starting Nav3D volume generation for bounds: %s"), *VolumeBounds.ToString());
+	UE_LOG(LogNav3D, Log, TEXT("[Vol %s] Starting Nav3D volume generation"), *VolumeBounds.ToString());
 
 	FNav3DVolumeNavigationDataSettings GenerationSettings;
 	GenerationSettings.GenerationSettings = ParentGenerator.GetGenerationSettings();
 	GenerationSettings.World = ParentGenerator.GetWorld();
 	GenerationSettings.VoxelExtent = NavDataConfig.AgentRadius * 2.0f;
 	GenerationSettings.TacticalSettings = ParentGenerator.GetOwner()->TacticalSettings;
+	// Provide debug label/index for per-volume logging
+	GenerationSettings.DebugLabel = TEXT("");
+	GenerationSettings.DebugVolumeIndex = ParentGenerator.GetNumRunningBuildTasks() +
+		ParentGenerator.GetPendingBoundsDataGenerationElements().Num();
 	BoundsNavigationData.GenerateNavigationData(VolumeBounds, GenerationSettings);
 
-	UE_LOG(LogNav3D, Log, TEXT("Completed Nav3D volume generation for bounds: %s"), *VolumeBounds.ToString());
+	UE_LOG(LogNav3D, Log, TEXT("[Vol %s] Completed Nav3D volume generation"), *VolumeBounds.ToString());
 	
 	return true;
 }
@@ -62,17 +69,6 @@ void FNav3DDataGenerator::Init()
 
 bool FNav3DDataGenerator::RebuildAll()
 {
-	// Clean up invalid tactical actors before clearing all
-	const int32 InvalidTacticalCount = NavigationData.GetInvalidTacticalActorCount();
-	if (InvalidTacticalCount > 0)
-	{
-		UE_LOG(LogNav3D, Log, TEXT("RebuildAll: Cleaning up %d invalid tactical actors before rebuild"), InvalidTacticalCount);
-		NavigationData.CleanupInvalidTacticalActors();
-	}
-	
-	// Clear all tactical actors before rebuilding navigation
-	NavigationData.ClearAllTacticalActors();
-	
 	// Clean up invalid chunk actors before rebuilding
 	const int32 InvalidCount = NavigationData.GetInvalidChunkActorCount();
 	if (InvalidCount > 0)
@@ -102,7 +98,9 @@ void FNav3DDataGenerator::EnsureBuildCompletion()
 	if (GetNumRemaningBuildTasks() > 0)
 	{
 		StartChunkedBuildCompletion();
+		return;
 	}
+	NavigationData.RequestDrawingUpdate();
 }
 
 void FNav3DDataGenerator::StartChunkedBuildCompletion()
@@ -148,7 +146,95 @@ void FNav3DDataGenerator::ProcessBuildChunk()
 			World->GetTimerManager().ClearTimer(ChunkedBuildTimerHandle);
 		}
 
-		NavigationData.RequestDrawingUpdate();
+		// Build tactical data after all async tasks are complete
+		// This is a separate step that happens after the navigation build is fully complete
+		if (NavigationData.TacticalSettings.bEnableTacticalReasoning)
+		{
+			UE_LOG(LogNav3D, Log, TEXT("************************************************************"));
+			UE_LOG(LogNav3D, Log, TEXT("All async navigation tasks complete - building tactical data"));
+			UE_LOG(LogNav3D, Log, TEXT("************************************************************"));
+			
+			// Initialize tactical reasoning once at the beginning
+			if (!NavigationData.TacticalReasoning.IsValid())
+			{
+				UE_LOG(LogNav3D, Log, TEXT("Initializing tactical reasoning for build"));
+				if (!NavigationData.InitializeTacticalReasoning())
+				{
+					UE_LOG(LogNav3D, Error, TEXT("Failed to initialize tactical reasoning"));
+					// Continue without tactical data rather than crashing
+				}
+				else
+				{
+					UE_LOG(LogNav3D, Log, TEXT("Tactical reasoning initialized successfully"));
+				}
+			}
+			else
+			{
+				UE_LOG(LogNav3D, Verbose, TEXT("Tactical reasoning already initialized"));
+			}
+			
+			// Group chunk actors by Nav3DBoundsVolume using the same method as the inspector
+			TMap<FBox, TArray<ANav3DDataChunkActor*>> VolumeToChunks;
+			const TArray<ANav3DDataChunkActor*> AllChunkActors = NavigationData.GetAllChunkActors();
+
+			// Get discoverable volumes the same way the inspector does
+			const TArray<FBox> Volumes = NavigationData.GetAllDiscoverableVolumes();
+
+			for (ANav3DDataChunkActor* ChunkActor : AllChunkActors)
+			{
+				if (!ChunkActor) continue;
+    
+				const FVector ChunkCenter = ChunkActor->DataChunkActorBounds.GetCenter();
+    
+				// Find which volume contains this chunk using the same logic as inspector
+				bool bFoundVolume = false;
+				for (const FBox& VolumeBounds : Volumes)
+				{
+					if (VolumeBounds.IsInside(ChunkCenter))
+					{
+						VolumeToChunks.FindOrAdd(VolumeBounds).Add(ChunkActor);
+						UE_LOG(LogNav3D, Verbose, TEXT("Grouped chunk %s under volume %s"), 
+							   *ChunkActor->GetName(), *VolumeBounds.ToString());
+						bFoundVolume = true;
+						break;
+					}
+				}
+    
+				if (!bFoundVolume)
+				{
+					UE_LOG(LogNav3D, Warning, TEXT("Could not find containing volume for chunk %s at %s"), 
+						   *ChunkActor->GetName(), *ChunkCenter.ToString());
+				}
+			}
+
+			int32 VolumesBuilt = 0;
+			TArray<FBox> BuiltVolumes;
+			for (const auto& Pair : VolumeToChunks)
+			{
+				const FBox& VolumeBounds = Pair.Key;
+				const TArray<ANav3DDataChunkActor*>& VolumeChunks = Pair.Value;
+    
+				if (NavigationData.TacticalReasoning.IsValid())
+				{
+					UE_LOG(LogNav3D, Log, TEXT("Building tactical data for volume [%s] with %d chunks"), 
+						   *VolumeBounds.ToString(), VolumeChunks.Num());
+        
+					NavigationData.TacticalReasoning->BuildTacticalDataForVolume(VolumeChunks, VolumeBounds);
+					VolumesBuilt++;
+					BuiltVolumes.Add(VolumeBounds);
+				}
+			}
+			UE_LOG(LogNav3D, Log, TEXT("Built tactical data for %d volumes"), VolumesBuilt);
+
+			// Notify editor/UI and any listeners
+#if WITH_EDITORONLY_DATA
+			NavigationData.OnTacticalBuildCompleted(BuiltVolumes);
+#endif
+			if (NavigationData.OnTacticalBuildCompletedDelegate.IsBound())
+			{
+				NavigationData.OnTacticalBuildCompletedDelegate.Broadcast(&NavigationData, BuiltVolumes);
+			}
+		}
 	}
 }
 
@@ -217,8 +303,6 @@ void FNav3DDataGenerator::RebuildDirtyAreas(const TArray<FNavigationDirtyArea>& 
 				FPendingBoundsDataGenerationElement PendingBoxElement;
 				PendingBoxElement.VolumeBounds = MatchingBoundsElement;
 				PendingBoundsDataGenerationElements.Emplace(PendingBoxElement);
-
-				// Deprecated removal path no longer needed; chunk actors manage their own data
 			}
 		}
 	}
@@ -340,7 +424,6 @@ TArray<FBox> FNav3DDataGenerator::ProcessAsyncTasks(const int32 TaskToProcessCou
 	const bool HasTasksAtStart = GetNumRemaningBuildTasks() > 0;
 
 	int32 ProcessedTasksCount = 0;
-	// Submit pending tile elements
 	if (!FNav3DVolumeNavigationData::IsCancelRequested())
 	{
 		for (int32 ElementIndex = PendingBoundsDataGenerationElements.Num() - 1;
@@ -363,6 +446,7 @@ TArray<FBox> FNav3DDataGenerator::ProcessAsyncTasks(const int32 TaskToProcessCou
 
 			RunningElement.AsyncTask = Task.Release();
 
+			UE_LOG(LogNav3D, Log, TEXT("Starting volume build: %s (running=%d)"), *PendingElement.VolumeBounds.ToString(), RunningBoundsDataGenerationElements.Num()+1);
 			RunningElement.AsyncTask->StartBackgroundTask();
 
 			RunningBoundsDataGenerationElements.Add(RunningElement);
@@ -405,7 +489,7 @@ TArray<FBox> FNav3DDataGenerator::ProcessAsyncTasks(const int32 TaskToProcessCou
 		if (ANav3DDataChunkActor* ChunkActor = CreateChunkActorForVolume(Element.VolumeBounds, GeneratedData))
 		{
 			NavigationData.RegisterChunkActor(ChunkActor);
-			
+			UE_LOG(LogNav3D, Log, TEXT("Finished volume build: %s (remaining running=%d pending=%d)"), *Element.VolumeBounds.ToString(), RunningBoundsDataGenerationElements.Num()-1, PendingBoundsDataGenerationElements.Num());
 		}
 
 		FinishedBoxes.Emplace(MoveTemp(Element.VolumeBounds));
@@ -425,8 +509,41 @@ TArray<FBox> FNav3DDataGenerator::ProcessAsyncTasks(const int32 TaskToProcessCou
 			BuildAdjacencyBetweenChunkActors(AllChunkActors);
 		}
 		
+		
+		// Log build completion timing and connection statistics
+		if (NavigationData.SingleVolumeBuildStartTime > 0.0)
+		{
+			const double BuildEndTime = FPlatformTime::Seconds();
+			const double BuildDuration = BuildEndTime - NavigationData.SingleVolumeBuildStartTime;
+			
+			// Count total compact portals across all chunk actors
+			int32 TotalConnections = 0;
+			for (ANav3DDataChunkActor* ChunkActor : AllChunkActors)
+			{
+				if (ChunkActor)
+				{
+					for (const FNav3DChunkAdjacency& Adjacency : ChunkActor->ChunkAdjacency)
+					{
+						TotalConnections += Adjacency.CompactPortals.Num();
+					}
+				}
+			}
+			
+			UE_LOG(LogNav3D, Log, TEXT("Nav3D navigation build completed in %.3f seconds (tactical data will be built separately)"), BuildDuration);
+			UE_LOG(LogNav3D, Log, TEXT("Total compact portals created between chunks: %d"), TotalConnections);
+			
+			// Reset the build start time
+			NavigationData.SingleVolumeBuildStartTime = 0.0;
+		}
+		
 		// QUICK_SCOPE_CYCLE_COUNTER(STAT_RecastNavMeshGenerator_OnNavMeshGenerationFinished);
+		UE_LOG(LogNav3D, Log, TEXT("Navigation build completed - calling OnNavigationDataGenerationFinished"));
+		
+		// Navigation build is complete (tactical data will be built separately after async tasks finish)
 		NavigationData.OnNavigationDataGenerationFinished();
+		UE_LOG(LogNav3D, Log, TEXT("OnNavigationDataGenerationFinished completed"));
+		
+		UE_LOG(LogNav3D, Log, TEXT("ProcessAsyncTasks completed successfully - all navigation build tasks finished"));
 	}
 
 	return FinishedBoxes;
@@ -629,13 +746,51 @@ ANav3DDataChunkActor* FNav3DDataGenerator::CreateChunkActorForVolume(
 	}
 	
 	// Configure chunk actor
-	ChunkActor->SetDataChunkActorBounds(VolumeBounds);
-	ChunkActor->OwningVolumeBounds = VolumeBounds;
-	ChunkActor->SetActorLabel(FString::Printf(TEXT("Nav3DChunk_%s"), 
-	                                        *VolumeBounds.GetCenter().ToString()));
+    ChunkActor->SetDataChunkActorBounds(VolumeBounds);
+	
+	// Get the chunk index for naming
+	int32 ChunkIndex = 0;
+	if (NavigationData.IsValidLowLevel())
+	{
+		ChunkIndex = NavigationData.ChunkActors.Num();
+	}
+	
+	ChunkActor->SetActorLabel(FString::Printf(TEXT("Nav3dChunk_%d"), ChunkIndex));
 	
 	// Position the chunk actor at the center of its bounds
 	ChunkActor->SetActorLocation(VolumeBounds.GetCenter());
+
+#if WITH_EDITOR
+	// Place all chunk actors under folder designated by owning Nav3DBoundsVolume
+	{
+		FString FolderName;
+		for (TActorIterator<ANav3DBoundsVolume> It(World); It; ++It)
+		{
+			const ANav3DBoundsVolume* BoundsVolume = *It;
+			if (!BoundsVolume || !IsValid(BoundsVolume)) { continue; }
+			const FBox OwnerBounds = BoundsVolume->GetComponentsBoundingBox(true);
+			if (OwnerBounds.IsInside(VolumeBounds.Min) && OwnerBounds.IsInside(VolumeBounds.Max))
+			{
+				FString OwnerLabel = BoundsVolume->GetActorLabel();
+				OwnerLabel.ReplaceInline(TEXT("/"), TEXT("_"));
+				OwnerLabel.ReplaceInline(TEXT("\\"), TEXT("_"));
+				OwnerLabel.ReplaceInline(TEXT(":"), TEXT("_"));
+				OwnerLabel.ReplaceInline(TEXT("*"), TEXT("_"));
+				OwnerLabel.ReplaceInline(TEXT("?"), TEXT("_"));
+				OwnerLabel.ReplaceInline(TEXT("\""), TEXT("_"));
+				OwnerLabel.ReplaceInline(TEXT("<"), TEXT("_"));
+				OwnerLabel.ReplaceInline(TEXT(">"), TEXT("_"));
+				OwnerLabel.ReplaceInline(TEXT("|"), TEXT("_"));
+				FolderName = FString::Printf(TEXT("%s-Chunks"), *OwnerLabel);
+				break;
+			}
+		}
+		if (!FolderName.IsEmpty())
+		{
+			ChunkActor->SetFolderPath(FName(*FolderName));
+		}
+	}
+#endif
 	
 	// Create navigation data chunk
 	UNav3DDataChunk* Chunk = NewObject<UNav3DDataChunk>(ChunkActor);
@@ -653,6 +808,19 @@ ANav3DDataChunkActor* FNav3DDataGenerator::CreateChunkActorForVolume(
 	else
 	{
 		ChunkActor->InitializeForStandardLevel();
+	}
+
+	// Defer tactical data building until after the build is complete
+	// This prevents access violations during the build process
+	if (NavigationData.TacticalSettings.bEnableTacticalReasoning)
+	{
+		UE_LOG(LogNav3D, Verbose, TEXT("Tactical reasoning enabled - will build tactical data after build completion"));
+		// Mark chunk as needing tactical data build
+		ChunkActor->bNeedsTacticalDataBuild = true;
+	}
+	else
+	{
+		UE_LOG(LogNav3D, Verbose, TEXT("Tactical reasoning disabled, skipping tactical data generation"));
 	}
 	
 	// Mark as built
@@ -784,13 +952,11 @@ void FNav3DDataGenerator::BuildAdjacencyBetweenTwoChunkActors(ANav3DDataChunkAct
 				continue;
 			}
 			
-			const float AdjacencyClearance = VolumeA->GetSettings().GenerationSettings.AdjacencyClearance;
-			UE_LOG(LogNav3D, Verbose, TEXT("Using AdjacencyClearance=%.2f for adjacency between %s and %s"), 
-				AdjacencyClearance, *ActorA->GetName(), *ActorB->GetName());
-			
-			// Reset debug counter for this adjacency pair
-			static int32 DebugCounter = 0;
-			DebugCounter = 0;
+			float AdjacencyClearance = VolumeA->GetSettings().GenerationSettings.AdjacencyClearance;
+			// Temporarily increase clearance to test if this is the issue
+			AdjacencyClearance = FMath::Max(AdjacencyClearance, VoxelSize * 0.5f); // Use at least half voxel size
+			UE_LOG(LogNav3D, Verbose, TEXT("Using AdjacencyClearance=%.2f (original=%.2f, VoxelSize=%.2f) for adjacency between %s and %s"), 
+				AdjacencyClearance, VolumeA->GetSettings().GenerationSettings.AdjacencyClearance, VoxelSize, *ActorA->GetName(), *ActorB->GetName());
 			
 			// Early bounds check - if volumes don't share a face, skip detailed comparison
 			const FBox& BoundsA = VolumeA->GetNavigationBounds();
@@ -879,6 +1045,38 @@ void FNav3DDataGenerator::BuildAdjacencyBetweenTwoChunkActors(ANav3DDataChunkAct
 			UE_LOG(LogNav3D, Verbose, TEXT("Volumes %s and %s share a face with distance %.2f - checking adjacency (FaceA=%d, FaceB=%d)"), 
 				*ActorA->GetName(), *ActorB->GetName(), SharedFaceDistance, FaceA, FaceB);
 			
+			// Debug: Log boundary voxel counts and face flags
+			UE_LOG(LogNav3D, Verbose, TEXT("Boundary voxel analysis: A has %d boundary voxels, B has %d boundary voxels"), 
+				A->BoundaryVoxels.Num(), B->BoundaryVoxels.Num());
+			
+			int32 AVoxelsOnFace = 0, BVoxelsOnFace = 0;
+			for (const FNav3DEdgeVoxel& VoxelA : A->BoundaryVoxels)
+			{
+				bool bVoxelAOnSharedFace = false;
+				if (FaceA == 1) bVoxelAOnSharedFace = VoxelA.bOnMaxXFace;
+				else if (FaceA == 2) bVoxelAOnSharedFace = VoxelA.bOnMinXFace;
+				else if (FaceA == 4) bVoxelAOnSharedFace = VoxelA.bOnMaxYFace;
+				else if (FaceA == 8) bVoxelAOnSharedFace = VoxelA.bOnMinYFace;
+				else if (FaceA == 16) bVoxelAOnSharedFace = VoxelA.bOnMaxZFace;
+				else if (FaceA == 32) bVoxelAOnSharedFace = VoxelA.bOnMinZFace;
+				if (bVoxelAOnSharedFace) AVoxelsOnFace++;
+			}
+			
+			for (const FNav3DEdgeVoxel& VoxelB : B->BoundaryVoxels)
+			{
+				bool bVoxelBOnSharedFace = false;
+				if (FaceB == 1) bVoxelBOnSharedFace = VoxelB.bOnMaxXFace;
+				else if (FaceB == 2) bVoxelBOnSharedFace = VoxelB.bOnMinXFace;
+				else if (FaceB == 4) bVoxelBOnSharedFace = VoxelB.bOnMaxYFace;
+				else if (FaceB == 8) bVoxelBOnSharedFace = VoxelB.bOnMinYFace;
+				else if (FaceB == 16) bVoxelBOnSharedFace = VoxelB.bOnMaxZFace;
+				else if (FaceB == 32) bVoxelBOnSharedFace = VoxelB.bOnMinZFace;
+				if (bVoxelBOnSharedFace) BVoxelsOnFace++;
+			}
+			
+			UE_LOG(LogNav3D, Verbose, TEXT("Face analysis: FaceA=%d, FaceB=%d, AVoxelsOnFace=%d, BVoxelsOnFace=%d"), 
+				FaceA, FaceB, AVoxelsOnFace, BVoxelsOnFace);
+			
 			// Bucket by Local morton and keep 3 nearest per local
 			TMap<uint64, TArray<FNav3DVoxelConnection>> LocalToConns;
 			int32 VoxelComparisons = 0;
@@ -934,9 +1132,6 @@ void FNav3DDataGenerator::BuildAdjacencyBetweenTwoChunkActors(ANav3DDataChunkAct
 						PosB = VolumeB->GetNodePositionFromLayerAndMortonCode(VoxelB.LayerIndex, VoxelB.Morton);
 					}
 
-					// Calculate distance between voxel centers
-					const float CenterToCenterDist = FVector::Dist(PosA, PosB);
-					
 					// Get voxel extents for each layer
 					float VoxelExtentA, VoxelExtentB;
 					if (VoxelA.LayerIndex == 0)
@@ -957,25 +1152,14 @@ void FNav3DDataGenerator::BuildAdjacencyBetweenTwoChunkActors(ANav3DDataChunkAct
 						VoxelExtentB = VolumeB->GetData().GetLayer(VoxelB.LayerIndex).GetNodeExtent();
 					}
 					
-					// Calculate edge-to-edge distance using individual voxel extents
-					const float EdgeToEdgeDist = CenterToCenterDist - (VoxelExtentA * 0.5f + VoxelExtentB * 0.5f);
+					// Use the smaller voxel extent for face sharing check
+					const float MinVoxelExtent = FMath::Min(VoxelExtentA, VoxelExtentB);
+					const float CenterToCenterDist = FVector::Dist(PosA, PosB);
+					const float Threshold = MinVoxelExtent + AdjacencyClearance;
 					
-					// Voxels are adjacent if their projected boundary points are within clearance
-					const float Threshold = AdjacencyClearance;
-					
-					// Debug logging for first few voxel pairs
-					if (DebugCounter < 20)
+					if (FNav3DUtils::CheckVoxelFaceAdjacency(VoxelA, VoxelB, VolumeA, VolumeB, FaceA, FaceB, AdjacencyClearance))
 					{
-						UE_LOG(LogNav3D, Verbose, TEXT("Adjacency Debug %d: VoxelA(Layer=%d, Morton=%llu, Pos=%s) -> VoxelB(Layer=%d, Morton=%llu, Pos=%s)"), 
-							DebugCounter, VoxelA.LayerIndex, VoxelA.Morton, *PosA.ToString(), VoxelB.LayerIndex, VoxelB.Morton, *PosB.ToString());
-						UE_LOG(LogNav3D, Verbose, TEXT("  CenterToCenter=%.2f, EdgeToEdge=%.2f, Threshold=%.2f, VoxelExtentA=%.2f, VoxelExtentB=%.2f"), 
-							CenterToCenterDist, EdgeToEdgeDist, Threshold, VoxelExtentA, VoxelExtentB);
-						DebugCounter++;
-					}
-					
-					if (EdgeToEdgeDist >= 0.0f && EdgeToEdgeDist <= Threshold)
-					{
-						UE_LOG(LogNav3D, Verbose, TEXT("  -> CONNECTION: EdgeToEdge=%.2f <= Threshold=%.2f"), EdgeToEdgeDist, Threshold);
+						UE_LOG(LogNav3D, VeryVerbose, TEXT("  -> CONNECTION: CenterToCenter=%.2f <= Threshold=%.2f"), CenterToCenterDist, Threshold);
 						
 						FNav3DVoxelConnection Conn;
 						Conn.Local = VoxelA.Morton;
@@ -984,27 +1168,13 @@ void FNav3DDataGenerator::BuildAdjacencyBetweenTwoChunkActors(ANav3DDataChunkAct
 						Conn.Remote = VoxelB.Morton;
 						Conn.RemoteVolumeIndex = VoxelB.VolumeIndex;
 						Conn.RemoteChunkIndex = 0;
-						Conn.Distance = EdgeToEdgeDist; // Store edge-to-edge distance
+						Conn.Distance = CenterToCenterDist; // Store center-to-center distance
 
 						// Insert sorted and cap to 3
 						int32 InsertIdx = 0;
-						while (InsertIdx < Bucket.Num() && Bucket[InsertIdx].Distance <= EdgeToEdgeDist) { ++InsertIdx; }
+						while (InsertIdx < Bucket.Num() && Bucket[InsertIdx].Distance <= CenterToCenterDist) { ++InsertIdx; }
 						Bucket.Insert(Conn, InsertIdx);
 						if (Bucket.Num() > 3) { Bucket.SetNum(3, EAllowShrinking::No); }
-					}
-					else
-					{
-						if (DebugCounter < 20)
-						{
-							if (EdgeToEdgeDist < 0.0f)
-							{
-								UE_LOG(LogNav3D, Verbose, TEXT("  -> NO CONNECTION: Volumes overlapping (EdgeToEdge=%.2f < 0)"), EdgeToEdgeDist);
-							}
-							else
-							{
-								UE_LOG(LogNav3D, Verbose, TEXT("  -> NO CONNECTION: EdgeToEdge=%.2f > Threshold=%.2f"), EdgeToEdgeDist, Threshold);
-							}
-						}
 					}
 				}
 			}
@@ -1015,10 +1185,8 @@ void FNav3DDataGenerator::BuildAdjacencyBetweenTwoChunkActors(ANav3DDataChunkAct
 			
 			for (const auto& Pair : LocalToConns)
 			{
-				const uint64 LocalMorton = Pair.Key;
-				const TArray<FNav3DVoxelConnection>& Conns = Pair.Value;
-				
-				for (const FNav3DVoxelConnection& Conn : Conns)
+				for (const TArray<FNav3DVoxelConnection>& Connections = Pair.Value;
+					const FNav3DVoxelConnection& Conn : Connections)
 				{
 					// Find or create adjacency entry for ActorA -> ActorB
 					FNav3DChunkAdjacency* AdjacencyAB = ActorA->ChunkAdjacency.FindByPredicate([ActorB](const FNav3DChunkAdjacency& Adj)
@@ -1030,11 +1198,21 @@ void FNav3DDataGenerator::BuildAdjacencyBetweenTwoChunkActors(ANav3DDataChunkAct
 					{
 						FNav3DChunkAdjacency NewAdjacency;
 						NewAdjacency.OtherChunkActor = ActorB;
+						
+						// Calculate spatial relationship data
+						NewAdjacency.SharedFaceNormal = (ActorB->DataChunkActorBounds.GetCenter() - 
+														ActorA->DataChunkActorBounds.GetCenter()).GetSafeNormal();
+						NewAdjacency.ConnectionWeight = CalculateConnectionWeight(ActorA, ActorB);
+						
 						ActorA->ChunkAdjacency.Add(NewAdjacency);
 						AdjacencyAB = &ActorA->ChunkAdjacency.Last();
 					}
 					
-					AdjacencyAB->Connections.Add(Conn);
+					// Directly add compact portal instead of Build connection
+					{
+						FCompactPortal CPab; CPab.Local = Conn.Local; CPab.Remote = Conn.Remote;
+						AdjacencyAB->CompactPortals.Add(CPab);
+					}
 					
 					// Find or create adjacency entry for ActorB -> ActorA (reverse connection)
 					FNav3DChunkAdjacency* AdjacencyBA = ActorB->ChunkAdjacency.FindByPredicate([ActorA](const FNav3DChunkAdjacency& Adj)
@@ -1046,28 +1224,28 @@ void FNav3DDataGenerator::BuildAdjacencyBetweenTwoChunkActors(ANav3DDataChunkAct
 					{
 						FNav3DChunkAdjacency NewAdjacency;
 						NewAdjacency.OtherChunkActor = ActorA;
+						
+						// Calculate spatial relationship data (reverse direction)
+						NewAdjacency.SharedFaceNormal = (ActorA->DataChunkActorBounds.GetCenter() - 
+														ActorB->DataChunkActorBounds.GetCenter()).GetSafeNormal();
+						NewAdjacency.ConnectionWeight = CalculateConnectionWeight(ActorB, ActorA);
+						
 						ActorB->ChunkAdjacency.Add(NewAdjacency);
 						AdjacencyBA = &ActorB->ChunkAdjacency.Last();
 					}
 					
-					// Add reverse connection
-					FNav3DVoxelConnection ReverseConn;
-					ReverseConn.Local = Conn.Remote;
-					ReverseConn.LocalVolumeIndex = Conn.RemoteVolumeIndex;
-					ReverseConn.LocalChunkIndex = Conn.RemoteChunkIndex;
-					ReverseConn.Remote = Conn.Local;
-					ReverseConn.RemoteVolumeIndex = Conn.LocalVolumeIndex;
-					ReverseConn.RemoteChunkIndex = Conn.LocalChunkIndex;
-					ReverseConn.Distance = Conn.Distance;
-					
-					AdjacencyBA->Connections.Add(ReverseConn);
-					TotalConnectionsAdded++;
+					// Add reverse compact portal
+					{
+						FCompactPortal CPba; CPba.Local = Conn.Remote; CPba.Remote = Conn.Local;
+						AdjacencyBA->CompactPortals.Add(CPba);
+						TotalConnectionsAdded++;
+					}
 				}
 			}
 		}
 	}
 	
-	UE_LOG(LogNav3D, Verbose, TEXT("Built %d connections between %s and %s"), 
+	UE_LOG(LogNav3D, Verbose, TEXT("Built %d compact portals between %s and %s"), 
 	       TotalConnectionsAdded, *ActorA->GetName(), *ActorB->GetName());
 }
 
@@ -1101,7 +1279,7 @@ void FNav3DDataGenerator::ProcessTacticalGeneration()
 	}
 	
 	// Get all chunk actors
-	TArray<ANav3DDataChunkActor*> ChunkActors = NavigationData.GetChunkActors();
+	const TArray<ANav3DDataChunkActor*> ChunkActors = NavigationData.GetChunkActors();
 	if (ChunkActors.Num() == 0)
 	{
 		UE_LOG(LogNav3D, Warning, TEXT("No chunk actors available for tactical generation"));
@@ -1124,6 +1302,56 @@ void FNav3DDataGenerator::ProcessTacticalGeneration()
 	ResetTacticalGenerationFlag();
 }
 
+float FNav3DDataGenerator::CalculateConnectionWeight(const ANav3DDataChunkActor* FromChunk, const ANav3DDataChunkActor* ToChunk)
+{
+	if (!FromChunk || !ToChunk)
+	{
+		return 1.0f;
+	}
+	
+	// Calculate distance-based weight
+	const float Distance = FVector::Dist(
+		FromChunk->DataChunkActorBounds.GetCenter(),
+		ToChunk->DataChunkActorBounds.GetCenter()
+	);
+	
+	// Add size-based penalty for larger chunks (harder to navigate)
+	const float SizePenalty = FromChunk->DataChunkActorBounds.GetSize().GetMax() * 0.1f;
+	
+	// Base weight of 1.0, with distance and size modifiers
+	return 1.0f + (Distance * 0.01f) + SizePenalty;
+}
+
+FNav3DVoxelConnection FNav3DDataGenerator::CompactPortalToVoxelConnection(
+	const FCompactPortal& CompactPortal,
+	const FNav3DChunkAdjacency&,
+	const int32 LocalVolumeIndex,
+	const int32 RemoteVolumeIndex)
+{
+	FNav3DVoxelConnection Conn;
+	Conn.Local = CompactPortal.Local;
+	Conn.Remote = CompactPortal.Remote;
+	Conn.LocalVolumeIndex = LocalVolumeIndex;
+	Conn.RemoteVolumeIndex = RemoteVolumeIndex;
+	Conn.LocalChunkIndex = 0;
+	Conn.RemoteChunkIndex = 0;
+	Conn.Distance = 0.0f;
+	return Conn;
+}
+
+FNav3DActorPortal FNav3DDataGenerator::CompactPortalToActorPortal(
+	const FCompactPortal& CompactPortal,
+	const FNav3DChunkAdjacency& Adjacency,
+	ANav3DDataChunkActor* FromActor,
+	ANav3DDataChunkActor* ToActor)
+{
+	FNav3DActorPortal P;
+	P.From = FromActor;
+	P.To = ToActor;
+	P.Connection = CompactPortalToVoxelConnection(CompactPortal, Adjacency, 0, 0);
+	return P;
+}
+
 void FNav3DDataGenerator::ResetTacticalGenerationFlag()
 {
 	bTacticalGenerationInProgress = false;
@@ -1132,7 +1360,7 @@ void FNav3DDataGenerator::ResetTacticalGenerationFlag()
 	// Clear any pending tactical generation timer
 	if (TacticalGenerationTimerHandle.IsValid())
 	{
-		if (UWorld* World = GetWorld())
+		if (const UWorld* World = GetWorld())
 		{
 			World->GetTimerManager().ClearTimer(TacticalGenerationTimerHandle);
 		}

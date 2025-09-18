@@ -14,6 +14,9 @@ class NAV3D_API ANav3DDataChunkActor : public APartitionActor
 
 public:
 	ANav3DDataChunkActor(const FObjectInitializer& ObjectInitializer);
+	
+	virtual void Serialize(FArchive& Ar) override;
+	virtual void PostLoad() override;
 
 	// Navigation data (single source of truth)
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Navigation")
@@ -22,17 +25,24 @@ public:
 	// Spatial bounds
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Navigation")
 	FBox DataChunkActorBounds;
-
-	// Owning Nav3D bounds volume this chunk was generated from
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Navigation")
-	FBox OwningVolumeBounds;
 	
 	// Adjacency (baked during build)
 	UPROPERTY(VisibleAnywhere, Category="Navigation")
 	TArray<FNav3DChunkAdjacency> ChunkAdjacency;
+	
+	// Compact tactical data (new format, serialized with the chunk actor)
+	UPROPERTY(VisibleAnywhere, Category="Tactical")
+	FCompactTacticalData CompactTacticalData;
 
-	// Fast portal lookup (transient, rebuilt at runtime)
-	TMap<int32, TMultiMap<uint64, FNav3DVoxelConnection>> PortalLookup;
+	// Store compact regions built directly from coordinates
+	UPROPERTY()
+	TArray<FCompactRegion> CompactRegions;
+
+	// Boundary connection interfaces to neighboring chunks (serialized)
+	UPROPERTY(VisibleAnywhere, Category="Tactical")
+	TMap<FVector, FChunkConnectionInterface> ConnectionInterfaces;
+
+	// Fast portal lookup removed; iterate CompactPortals via ChunkAdjacency instead
 	
 	// Universal chunk management (works in all scenarios)
 	void InitializeForStandardLevel(); // Non-world-partition setup
@@ -42,8 +52,30 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Navigation")
 	bool ContainsPoint(const FVector& Point) const;
 	
-	UFUNCTION(BlueprintCallable, Category="Navigation")
-	const UNav3DDataChunk* GetChunkContainingPoint(const FVector& Point) const;
+	// Tactical data access
+	UFUNCTION(BlueprintCallable, Category="Tactical")
+	bool HasTacticalData() const { return !CompactTacticalData.IsEmpty(); }
+	
+	UFUNCTION(BlueprintCallable, Category="Tactical")
+	bool HasCompactTacticalData() const { return !CompactTacticalData.IsEmpty(); }
+	
+	UFUNCTION(BlueprintCallable, Category="Tactical")
+	int32 GetTacticalRegionCount() const 
+	{ 
+		return CompactTacticalData.Regions.Num(); 
+	}
+
+	// Get region by index (works with both old and new formats)
+	const FCompactRegion* GetTacticalRegion(uint8 RegionIndex) const
+	{
+		return CompactTacticalData.GetRegion(RegionIndex);
+	}
+	
+	// Check if this chunk is adjacent to another chunk
+	bool IsAdjacentToChunk(const ANav3DDataChunkActor* OtherChunk, float Tolerance = 10.0f) const;
+
+	/** Clear all tactical data from this chunk (called before tactical rebuild) */
+	void ClearTacticalData();
 	
 	// Build state management
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Build Status")
@@ -54,6 +86,9 @@ public:
 	
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Build Status")
 	bool bNeedsRebuild = false;
+	
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Build Status")
+	bool bNeedsTacticalDataBuild = false;
 
 	virtual uint32 GetDefaultGridSize(UWorld* InWorld) const override;
 	virtual void GetActorBounds(bool bOnlyCollidingComponents, FVector& OutOrigin, FVector& OutBoxExtent, bool bIncludeFromChildActors) const override;

@@ -147,6 +147,27 @@ public:
 	void ProcessTacticalGeneration();
 	void ResetTacticalGenerationFlag();
 	bool IsTacticalGenerationInProgress() const { return bTacticalGenerationInProgress; }
+	
+	// Adjacency helper functions
+	static float CalculateConnectionWeight(const ANav3DDataChunkActor* FromChunk, const ANav3DDataChunkActor* ToChunk);
+
+	// Compact portal conversion helpers
+	static FNav3DVoxelConnection CompactPortalToVoxelConnection(
+		const FCompactPortal& CompactPortal,
+		const FNav3DChunkAdjacency& Adjacency,
+		int32 LocalVolumeIndex = 0,
+		int32 RemoteVolumeIndex = 0);
+
+	static FNav3DActorPortal CompactPortalToActorPortal(
+		const FCompactPortal& CompactPortal,
+		const FNav3DChunkAdjacency& Adjacency,
+		ANav3DDataChunkActor* FromActor,
+		ANav3DDataChunkActor* ToActor);
+
+	TNavStatArray<FPendingBoundsDataGenerationElement> GetPendingBoundsDataGenerationElements()
+	{
+		return PendingBoundsDataGenerationElements;
+	};
 
 private:
 	void StartChunkedBuildCompletion();
@@ -176,10 +197,8 @@ private:
 	FBox TotalNavigationBounds;
 
 	TNavStatArray<FBox> RegisteredNavigationBounds;
-	TNavStatArray<FPendingBoundsDataGenerationElement>
-	PendingBoundsDataGenerationElements;
-	TNavStatArray<FRunningBoundsDataGenerationElement>
-	RunningBoundsDataGenerationElements;
+	TNavStatArray<FPendingBoundsDataGenerationElement> PendingBoundsDataGenerationElements;
+	TNavStatArray<FRunningBoundsDataGenerationElement> RunningBoundsDataGenerationElements;
 
 	FTimerHandle ChunkedBuildTimerHandle;
 	

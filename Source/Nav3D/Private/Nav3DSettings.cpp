@@ -1,13 +1,11 @@
 ﻿#include "Nav3DSettings.h"
-#include "Pathfinding/Search/Nav3DPathFindingSearch.h"
-#include "Pathfinding/Search/Nav3DLazyThetaStar.h"
 #include "Pathfinding/Search/Nav3DPathTraversalCostCalculator.h"
 #include "Pathfinding/Search/Nav3DPathHeuristicCalculator.h"
 
 UNav3DSettings::UNav3DSettings()
 {
-	// Set default class selections
-	DefaultPathFinder = UNav3DLazyThetaStar::StaticClass();
+    // Set default selections
+    DefaultAlgorithm = ENav3DPathingAlgorithm::LazyThetaStar;
 	DefaultCostCalculator = UNav3DPathCostCalculator_Distance::StaticClass();
 	DefaultHeuristic = UNav3DPathHeuristicCalculator_Euclidean::StaticClass();
     
@@ -27,12 +25,7 @@ const UNav3DSettings* UNav3DSettings::Get()
 FNav3DQueryFilterSettings UNav3DSettings::GetDefaultQueryFilterSettings() const
 {
 	FNav3DQueryFilterSettings Settings;
-    
-	// Create default instances of the configured classes
-	if (DefaultPathFinder)
-	{
-		Settings.PathFinder = DefaultPathFinder->GetDefaultObject<UNav3DPathFindingSearch>();
-	}
+    // PathFinder instance removed; algorithm now chosen via enum elsewhere
     
 	if (DefaultCostCalculator)
 	{

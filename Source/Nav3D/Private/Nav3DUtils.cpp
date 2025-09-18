@@ -1,22 +1,37 @@
 #include "Nav3DUtils.h"
-
 #include "Nav3D.h"
 #include "GameFramework/NavMovementComponent.h"
 #include "ThirdParty/libmorton/morton.h"
 #include "Nav3DDataChunk.h"
 #include "Nav3DDataChunkActor.h"
-#include "Pathfinding/Nav3DCrossVolumeGraph.h"
 #include "NavigationSystem.h"
 #include "Nav3DData.h"
+#include "Nav3DSettings.h"
 
 MortonCode FNav3DUtils::GetMortonCodeFromVector(const FVector& Vector)
 {
 	return morton3D_64_encode(Vector.X, Vector.Y, Vector.Z);
 }
 
-MortonCode FNav3DUtils::GetMortonCodeFromVector(const FIntVector& Vector)
+MortonCode FNav3DUtils::GetMortonCodeFromIntVector(const FIntVector& IntVector)
 {
-	return morton3D_64_encode(Vector.X, Vector.Y, Vector.Z);
+	// Ensure coordinates are non-negative and within valid range for Morton encoding
+	const uint32 X = FMath::Clamp(IntVector.X, 0, 1023); // 10 bits max per coordinate
+	const uint32 Y = FMath::Clamp(IntVector.Y, 0, 1023);
+	const uint32 Z = FMath::Clamp(IntVector.Z, 0, 1023);
+    
+	MortonCode Result = 0;
+    
+	// Interleave bits: Z|Y|X for each bit position
+	for (int32 i = 0; i < 10; ++i) // 10 bits per coordinate = 30 bits total
+	{
+		const uint32 BitPos = i * 3;
+		Result |= ((X >> i) & 1) << (BitPos + 0);  // X bits at positions 0, 3, 6, 9...
+		Result |= ((Y >> i) & 1) << (BitPos + 1);  // Y bits at positions 1, 4, 7, 10...
+		Result |= ((Z >> i) & 1) << (BitPos + 2);  // Z bits at positions 2, 5, 8, 11...
+	}
+    
+	return Result;
 }
 
 FVector FNav3DUtils::GetVectorFromMortonCode(const MortonCode MortonCode)
@@ -25,6 +40,13 @@ FVector FNav3DUtils::GetVectorFromMortonCode(const MortonCode MortonCode)
 	morton3D_64_decode(MortonCode, X, Y, Z);
 
 	return FVector(X, Y, Z);
+}
+
+FIntVector FNav3DUtils::GetIntVectorFromMortonCode(const MortonCode MortonCode)
+{
+	uint_fast32_t X, Y, Z;
+	morton3D_64_decode(MortonCode, X, Y, Z);
+	return FIntVector(X, Y, Z);  // Direct integer conversion
 }
 
 MortonCode FNav3DUtils::GetParentMortonCode(const MortonCode ChildMortonCode)
@@ -139,6 +161,15 @@ FNavAgentProperties FNav3DUtils::GetNavAgentPropsFromQuerier(const UObject* Quer
 	return FNavAgentProperties::DefaultProperties;
 }
 
+float FNav3DUtils::GetMaxSearchDistance()
+{
+	if (const UNav3DSettings* Nav3DSettings = GetDefault<UNav3DSettings>())
+	{
+		return Nav3DSettings->MaxVolumePartitionSize; 
+	}
+	return 10000.0f;
+}
+
 void FNav3DUtils::IdentifyBoundaryVoxels(UNav3DDataChunk* Chunk)
 {
 	if (!Chunk)
@@ -235,10 +266,8 @@ void FNav3DUtils::IdentifyBoundaryVoxels(UNav3DDataChunk* Chunk)
 				const bool bOnMaxYFace = (WorldPos.Y + VoxelExtent) >= (Bounds.Max.Y - Epsilon);
 				const bool bOnMinZFace = (WorldPos.Z - VoxelExtent) <= (Bounds.Min.Z + Epsilon);
 				const bool bOnMaxZFace = (WorldPos.Z + VoxelExtent) >= (Bounds.Max.Z - Epsilon);
-				
-				const bool bOnBoundary = bOnMinXFace || bOnMaxXFace || bOnMinYFace || bOnMaxYFace || bOnMinZFace || bOnMaxZFace;
 
-				if (bOnBoundary)
+				if (bOnMinXFace || bOnMaxXFace || bOnMinYFace || bOnMaxYFace || bOnMinZFace || bOnMaxZFace)
 				{
 					FNav3DEdgeVoxel Edge;
 					Edge.Morton = Node.MortonCode;
@@ -435,7 +464,7 @@ ANav3DData* FNav3DUtils::GetNav3DData(const UWorld* World)
 	return nullptr;
 }
 
-FLinearColor FNav3DUtils::GetChunkColorByIndex(int32 ChunkIndex)
+FLinearColor FNav3DUtils::GetChunkColorByIndex(const int32 ChunkIndex)
 {
 	static const TArray<FLinearColor> Palette = {
 		FLinearColor(0.0f, 1.0f, 1.0f),
@@ -456,414 +485,20 @@ FLinearColor FNav3DUtils::GetChunkColorByIndex(int32 ChunkIndex)
 	return Palette[FMath::Abs(ChunkIndex) % Palette.Num()];
 }
 
-// Endpoint projection utilities for cross-volume pathfinding
-
-FNav3DUtils::FEndpointProjectionResult FNav3DUtils::ProjectPointToFreeVoxel(
-	const FNav3DVolumeNavigationData& VolumeData,
-	const FVector& InputPosition,
-	const FNavAgentProperties& AgentProperties,
-	LayerIndex MinLayerIndex,
-	float MaxSearchRadius,
-	int32 MaxSearchIterations)
+float FNav3DUtils::GetDefaultVoxelSize(const ANav3DData* NavData)
 {
-	UE_LOG(LogNav3D, VeryVerbose, TEXT("ProjectPointToFreeVoxel: Projecting point %s with agent radius %.2f"), 
-	       *InputPosition.ToString(), AgentProperties.AgentRadius);
-
-	// First, clamp the input position to be within navigation bounds
-	const FBox& NavBounds = VolumeData.GetNavigationBounds();
-	FVector ClampedPosition = InputPosition;
-	
-	UE_LOG(LogNav3D, VeryVerbose, TEXT("ProjectPointToFreeVoxel: Input position %s, NavBounds %s"), 
-		*InputPosition.ToString(), *NavBounds.ToString());
-	
-	if (!NavBounds.IsInside(ClampedPosition))
+	if (NavData)
 	{
-		ClampedPosition = NavBounds.GetClosestPointTo(ClampedPosition);
-		UE_LOG(LogNav3D, VeryVerbose, TEXT("ProjectPointToFreeVoxel: Clamped position to %s"), *ClampedPosition.ToString());
-	}
-
-	// Try direct resolution first
-	FNav3DNodeAddress NodeAddress;
-	if (VolumeData.GetNodeAddressFromPosition(NodeAddress, ClampedPosition, MinLayerIndex))
-	{
-		// Verify the node is actually navigable for this agent
-		const FNav3DNode& Node = VolumeData.GetNodeFromAddress(NodeAddress);
-		
-		// Check if node is navigable - nodes without children are free
-		bool bIsNavigable = false;
-		if (NodeAddress.LayerIndex == 0)
+		const float VoxelExtent = NavData->GetVoxelExtent();
+		if (VoxelExtent > 0.0f)
 		{
-			// For leaf nodes, check if the specific subnode is free
-			const auto& LeafNodes = VolumeData.GetData().GetLeafNodes();
-			if (LeafNodes.GetLeafNodes().IsValidIndex(NodeAddress.NodeIndex))
-			{
-				const auto& LeafNode = LeafNodes.GetLeafNode(NodeAddress.NodeIndex);
-				bIsNavigable = !LeafNode.IsSubNodeOccluded(NodeAddress.SubNodeIndex);
-			}
-		}
-		else
-		{
-			// For non-leaf nodes, check if they don't have children (meaning they're free)
-			bIsNavigable = !Node.HasChildren();
-		}
-		
-		if (bIsNavigable)
-		{
-			FVector NodePosition = VolumeData.GetNodePositionFromAddress(NodeAddress, false);
-			UE_LOG(LogNav3D, Verbose, TEXT("ProjectPointToFreeVoxel: Direct resolution successful at layer %d, node %d, subnode %d, position %s"), 
-				NodeAddress.LayerIndex, NodeAddress.NodeIndex, NodeAddress.SubNodeIndex, *NodePosition.ToString());
-			return FEndpointProjectionResult(true, NodePosition, NodeAddress, NodeAddress.LayerIndex);
-		}
-		else
-		{
-			UE_LOG(LogNav3D, VeryVerbose, TEXT("ProjectPointToFreeVoxel: Direct resolution found node but it's not navigable at layer %d, node %d, subnode %d"), 
-				NodeAddress.LayerIndex, NodeAddress.NodeIndex, NodeAddress.SubNodeIndex);
+			return VoxelExtent;
 		}
 	}
-
-	// If direct resolution failed, try layer fallback
-	const LayerIndex LayerCount = VolumeData.GetLayerCount();
-	for (LayerIndex TestLayer = MinLayerIndex + 1; TestLayer < LayerCount; ++TestLayer)
-	{
-		UE_LOG(LogNav3D, VeryVerbose, TEXT("ProjectPointToFreeVoxel: Trying layer fallback at layer %d"), TestLayer);
-		if (VolumeData.GetNodeAddressFromPosition(NodeAddress, ClampedPosition, TestLayer))
-		{
-			const FNav3DNode& Node = VolumeData.GetNodeFromAddress(NodeAddress);
-			
-			// Check if node is navigable - nodes without children are free
-			bool bIsNavigable = false;
-			if (NodeAddress.LayerIndex == 0)
-			{
-				// For leaf nodes, check if the specific subnode is free
-				const auto& LeafNodes = VolumeData.GetData().GetLeafNodes();
-				if (LeafNodes.GetLeafNodes().IsValidIndex(NodeAddress.NodeIndex))
-				{
-					const auto& LeafNode = LeafNodes.GetLeafNode(NodeAddress.NodeIndex);
-					bIsNavigable = !LeafNode.IsSubNodeOccluded(NodeAddress.SubNodeIndex);
-				}
-			}
-			else
-			{
-				// For non-leaf nodes, check if they don't have children (meaning they're free)
-				bIsNavigable = !Node.HasChildren();
-			}
-			
-			if (bIsNavigable)
-			{
-				FVector NodePosition = VolumeData.GetNodePositionFromAddress(NodeAddress, false);
-				UE_LOG(LogNav3D, VeryVerbose, TEXT("ProjectPointToFreeVoxel: Layer fallback successful at layer %d"), TestLayer);
-				return FEndpointProjectionResult(true, NodePosition, NodeAddress, TestLayer);
-			}
-		}
-	}
-
-	// If layer fallback failed, try spatial search
-	UE_LOG(LogNav3D, VeryVerbose, TEXT("ProjectPointToFreeVoxel: Attempting spatial search within radius %.2f"), MaxSearchRadius);
-	return FindNearestFreeVoxel(VolumeData, ClampedPosition, MaxSearchRadius, AgentProperties, MinLayerIndex, MaxSearchIterations);
-}
-
-// ============================================================================
-// Cross-volume adjacency utilities
-// ============================================================================
-
-TArray<FNav3DEdgeVoxel> FNav3DUtils::ExtractCrossVolumeBoundaryVoxels(UNav3DDataChunk* Chunk, int32 /*ChunkIndex*/)
-{
-	TArray<FNav3DEdgeVoxel> Result;
-	if (!Chunk)
-	{
-		return Result;
-	}
-	if (Chunk->BoundaryVoxels.Num() == 0)
-	{
-		IdentifyBoundaryVoxels(Chunk);
-	}
-	// Only include navigable (free) boundary voxels
-	Result.Reserve(Chunk->BoundaryVoxels.Num());
-	for (const FNav3DEdgeVoxel& V : Chunk->BoundaryVoxels)
-	{
-		if (V.bIsNavigable)
-		{
-			Result.Add(V);
-		}
-	}
-	return Result;
-}
-
-static const FNav3DVolumeNavigationData* ResolveVolumeDataForVoxelID(const FNav3DVoxelID& VoxelID, const TArray<ANav3DDataChunkActor*>& ChunkActors)
-{
-	if (!ChunkActors.IsValidIndex(VoxelID.ChunkIndex)) { return nullptr; }
-	const ANav3DDataChunkActor* Actor = ChunkActors[VoxelID.ChunkIndex];
-	if (!Actor) { return nullptr; }
-	if (Actor->Nav3DChunks.Num() == 0) { return nullptr; }
-	const UNav3DDataChunk* Chunk = Actor->Nav3DChunks[0];
-	if (!Chunk) { return nullptr; }
-	if (!Chunk->NavigationData.IsValidIndex(VoxelID.VolumeIndex)) { return nullptr; }
-	return &Chunk->NavigationData[VoxelID.VolumeIndex];
-}
-
-FVector FNav3DUtils::GetVoxelWorldPosition(const FNav3DVoxelID& VoxelID, const TArray<ANav3DDataChunkActor*>& ChunkActors)
-{
-	if (const FNav3DVolumeNavigationData* Vol = ResolveVolumeDataForVoxelID(VoxelID, ChunkActors))
-	{
-		if (VoxelID.Layer == 0)
-		{
-			return Vol->GetLeafNodePositionFromMortonCode(VoxelID.Morton);
-		}
-		return Vol->GetNodePositionFromLayerAndMortonCode(VoxelID.Layer, VoxelID.Morton);
-	}
-	return FVector::ZeroVector;
-}
-
-float FNav3DUtils::GetVoxelExtent(const FNav3DVoxelID& VoxelID, const TArray<ANav3DDataChunkActor*>& ChunkActors)
-{
-	if (const FNav3DVolumeNavigationData* Vol = ResolveVolumeDataForVoxelID(VoxelID, ChunkActors))
-	{
-		if (VoxelID.Layer == 0)
-		{
-			return Vol->GetData().GetLeafNodes().GetLeafNodeExtent();
-		}
-		return Vol->GetData().GetLayer(VoxelID.Layer).GetNodeExtent();
-	}
-	return 0.0f;
-}
-
-FBox FNav3DUtils::GetVoxelWorldBounds(const FNav3DVoxelID& VoxelID, const TArray<ANav3DDataChunkActor*>& ChunkActors)
-{
-	const FVector Center = GetVoxelWorldPosition(VoxelID, ChunkActors);
-	const float Ext = GetVoxelExtent(VoxelID, ChunkActors);
-	return FBox(Center - FVector(Ext), Center + FVector(Ext));
-}
-
-bool FNav3DUtils::AreFaceAdjacent(const FNav3DVoxelID& A, const FNav3DVoxelID& B, const TArray<ANav3DDataChunkActor*>& ChunkActors)
-{
-	const FBox BoxA = GetVoxelWorldBounds(A, ChunkActors);
-	const FBox BoxB = GetVoxelWorldBounds(B, ChunkActors);
-	// Face adjacency: boxes touch on one axis with overlap on the other two
-	auto OverlapOn = [](float Amin, float Amax, float Bmin, float Bmax) { return !(Amax < Bmin || Bmax < Amin); };
-
-	const bool TouchX = FMath::IsNearlyEqual(BoxA.Max.X, BoxB.Min.X) || FMath::IsNearlyEqual(BoxB.Max.X, BoxA.Min.X);
-	const bool OverlapY = OverlapOn(BoxA.Min.Y, BoxA.Max.Y, BoxB.Min.Y, BoxB.Max.Y);
-	const bool OverlapZ = OverlapOn(BoxA.Min.Z, BoxA.Max.Z, BoxB.Min.Z, BoxB.Max.Z);
-	if (TouchX && OverlapY && OverlapZ) return true;
-
-	const bool TouchY = FMath::IsNearlyEqual(BoxA.Max.Y, BoxB.Min.Y) || FMath::IsNearlyEqual(BoxB.Max.Y, BoxA.Min.Y);
-	const bool OverlapX = OverlapOn(BoxA.Min.X, BoxA.Max.X, BoxB.Min.X, BoxB.Max.X);
-	if (TouchY && OverlapX && OverlapZ) return true;
-
-	const bool TouchZ = FMath::IsNearlyEqual(BoxA.Max.Z, BoxB.Min.Z) || FMath::IsNearlyEqual(BoxB.Max.Z, BoxA.Min.Z);
-	if (TouchZ && OverlapX && OverlapY) return true;
-
-	return false;
-}
-
-FVector FNav3DUtils::CalculateSharedFacePortal(const FNav3DVoxelID& A, const FNav3DVoxelID& B, const TArray<ANav3DDataChunkActor*>& ChunkActors)
-{
-	const FVector PosA = GetVoxelWorldPosition(A, ChunkActors);
-	const FVector PosB = GetVoxelWorldPosition(B, ChunkActors);
-	const float ExtA = GetVoxelExtent(A, ChunkActors);
-	const float ExtB = GetVoxelExtent(B, ChunkActors);
-
-	const bool bAIsSmaller = ExtA < ExtB;
-	const FNav3DVoxelID& Smaller = bAIsSmaller ? A : B;
-	const FVector SmallerPos = bAIsSmaller ? PosA : PosB;
-	const FVector LargerPos = bAIsSmaller ? PosB : PosA;
-	const FBox SmallerBox = GetVoxelWorldBounds(Smaller, ChunkActors);
-
-	const FVector Dir = (LargerPos - SmallerPos).GetSafeNormal();
-	FVector Portal = SmallerPos;
-	const float ax = FMath::Abs(Dir.X), ay = FMath::Abs(Dir.Y), az = FMath::Abs(Dir.Z);
-	if (ax >= ay && ax >= az)
-	{
-		Portal.X = Dir.X > 0 ? SmallerBox.Max.X : SmallerBox.Min.X;
-	}
-	else if (ay >= az)
-	{
-		Portal.Y = Dir.Y > 0 ? SmallerBox.Max.Y : SmallerBox.Min.Y;
-	}
-	else
-	{
-		Portal.Z = Dir.Z > 0 ? SmallerBox.Max.Z : SmallerBox.Min.Z;
-	}
-	return Portal;
-}
-
-bool FNav3DUtils::FindCrossActorBoundaryPortal(const ANav3DDataChunkActor* FromActor,
-	const ANav3DDataChunkActor* ToActor,
-	FVector& OutLocalPortal,
-	FVector& OutRemotePortal,
-	FVector& OutPortalLocation)
-{
-	if (!FromActor || !ToActor) { return false; }
-	if (FromActor->Nav3DChunks.Num() == 0 || ToActor->Nav3DChunks.Num() == 0) { return false; }
-	const UNav3DDataChunk* FromChunk = FromActor->Nav3DChunks[0];
-	const UNav3DDataChunk* ToChunk = ToActor->Nav3DChunks[0];
-	if (!FromChunk || !ToChunk) { return false; }
-
-	// Extract free boundary voxels
-	TArray<FNav3DEdgeVoxel> FromEdges = FromChunk->BoundaryVoxels;
-	TArray<FNav3DEdgeVoxel> ToEdges = ToChunk->BoundaryVoxels;
-	FromEdges.RemoveAllSwap([](const FNav3DEdgeVoxel& E){ return !E.bIsNavigable; });
-	ToEdges.RemoveAllSwap([](const FNav3DEdgeVoxel& E){ return !E.bIsNavigable; });
-
-	// Prepare actors array for utility calls
-	TArray<ANav3DDataChunkActor*> Actors;
-	Actors.Add(const_cast<ANav3DDataChunkActor*>(FromActor));
-	Actors.Add(const_cast<ANav3DDataChunkActor*>(ToActor));
-
-	float BestDist2 = TNumericLimits<float>::Max();
-	FNav3DVoxelID BestA, BestB;
-	bool bFound = false;
-
-	for (const FNav3DEdgeVoxel& A : FromEdges)
-	{
-		for (const FNav3DEdgeVoxel& B : ToEdges)
-		{
-			FNav3DVoxelID VA{ A.VolumeIndex, 0, A.LayerIndex, A.Morton };
-			FNav3DVoxelID VB{ B.VolumeIndex, 1, B.LayerIndex, B.Morton };
-			if (!AreFaceAdjacent(VA, VB, Actors)) { continue; }
-			const FVector PA = GetVoxelWorldPosition(VA, Actors);
-			const FVector PB = GetVoxelWorldPosition(VB, Actors);
-			const float D2 = FVector::DistSquared(PA, PB);
-			if (D2 < BestDist2)
-			{
-				BestDist2 = D2;
-				BestA = VA; BestB = VB; bFound = true;
-			}
-		}
-	}
-
-	if (!bFound) { return false; }
-
-	OutLocalPortal = GetVoxelWorldPosition(BestA, Actors);
-	OutRemotePortal = GetVoxelWorldPosition(BestB, Actors);
-	OutPortalLocation = CalculateSharedFacePortal(BestA, BestB, Actors);
-	return true;
-}
-
-FNav3DUtils::FEndpointProjectionResult FNav3DUtils::ProjectPortalToFreeVoxel(
-	const FNav3DVolumeNavigationData& VolumeData,
-	const FNav3DVoxelConnection& Connection,
-	bool bUseLocal,
-	const FNavAgentProperties& AgentProperties,
-	LayerIndex MinLayerIndex)
-{
-	UE_LOG(LogNav3D, VeryVerbose, TEXT("ProjectPortalToFreeVoxel: Projecting portal connection (Local=%s, VolIdx=%d)"), 
-	       bUseLocal ? TEXT("true") : TEXT("false"), bUseLocal ? Connection.LocalVolumeIndex : Connection.RemoteVolumeIndex);
-
-	const uint64 MortonCode = bUseLocal ? Connection.Local : Connection.Remote;
-	
-	// First try to get the position from the morton code
-	FVector PortalPosition = VolumeData.GetLeafNodePositionFromMortonCode(MortonCode);
-	
-	UE_LOG(LogNav3D, VeryVerbose, TEXT("ProjectPortalToFreeVoxel: Portal position from morton code %llu: %s"), 
-	       MortonCode, *PortalPosition.ToString());
-	
-	// Check if this position can be resolved back to a node address
-	FNav3DNodeAddress TestAddress;
-	if (VolumeData.GetNodeAddressFromPosition(TestAddress, PortalPosition, 0))
-	{
-		UE_LOG(LogNav3D, VeryVerbose, TEXT("ProjectPortalToFreeVoxel: Portal position can be resolved to layer=%d, node=%d, subnode=%d"), 
-		       TestAddress.LayerIndex, TestAddress.NodeIndex, TestAddress.SubNodeIndex);
-	}
-	else
-	{
-		UE_LOG(LogNav3D, VeryVerbose, TEXT("ProjectPortalToFreeVoxel: Portal position CANNOT be resolved to a node address!"));
-	}
-	
-	// Try to resolve this position to a node address
-	FNav3DNodeAddress NodeAddress;
-	UE_LOG(LogNav3D, VeryVerbose, TEXT("ProjectPortalToFreeVoxel: Attempting to resolve portal position %s at layer %d"), 
-	       *PortalPosition.ToString(), MinLayerIndex);
-	
-	if (VolumeData.GetNodeAddressFromPosition(NodeAddress, PortalPosition, MinLayerIndex))
-	{
-		const FNav3DNode& Node = VolumeData.GetNodeFromAddress(NodeAddress);
-		
-		// Check if node is navigable - nodes without children are free
-		bool bIsNavigable = false;
-		if (NodeAddress.LayerIndex == 0)
-		{
-			// For leaf nodes, check if the specific subnode is free
-			const auto& LeafNodes = VolumeData.GetData().GetLeafNodes();
-			if (LeafNodes.GetLeafNodes().IsValidIndex(NodeAddress.NodeIndex))
-			{
-				const auto& LeafNode = LeafNodes.GetLeafNode(NodeAddress.NodeIndex);
-				bIsNavigable = !LeafNode.IsSubNodeOccluded(NodeAddress.SubNodeIndex);
-			}
-		}
-		else
-		{
-			// For non-leaf nodes, check if they don't have children (meaning they're free)
-			bIsNavigable = !Node.HasChildren();
-		}
-		
-		if (bIsNavigable)
-		{
-			UE_LOG(LogNav3D, VeryVerbose, TEXT("ProjectPortalToFreeVoxel: Direct portal resolution successful"));
-			return FEndpointProjectionResult(true, PortalPosition, NodeAddress, NodeAddress.LayerIndex);
-		}
-	}
-
-	// If direct resolution failed, try layer fallback
-	const LayerIndex LayerCount = VolumeData.GetLayerCount();
-	for (LayerIndex TestLayer = MinLayerIndex + 1; TestLayer < LayerCount; ++TestLayer)
-	{
-		if (VolumeData.GetNodeAddressFromPosition(NodeAddress, PortalPosition, TestLayer))
-		{
-			const FNav3DNode& Node = VolumeData.GetNodeFromAddress(NodeAddress);
-			
-			// Check if node is navigable - nodes without children are free
-			bool bIsNavigable = false;
-			if (NodeAddress.LayerIndex == 0)
-			{
-				// For leaf nodes, check if the specific subnode is free
-				const auto& LeafNodes = VolumeData.GetData().GetLeafNodes();
-				if (LeafNodes.GetLeafNodes().IsValidIndex(NodeAddress.NodeIndex))
-				{
-					const auto& LeafNode = LeafNodes.GetLeafNode(NodeAddress.NodeIndex);
-					bIsNavigable = !LeafNode.IsSubNodeOccluded(NodeAddress.SubNodeIndex);
-				}
-			}
-			else
-			{
-				// For non-leaf nodes, check if they don't have children (meaning they're free)
-				bIsNavigable = !Node.HasChildren();
-			}
-			
-			if (bIsNavigable)
-			{
-				FVector NodePosition = VolumeData.GetNodePositionFromAddress(NodeAddress, false);
-				UE_LOG(LogNav3D, VeryVerbose, TEXT("ProjectPortalToFreeVoxel: Layer fallback successful at layer %d"), TestLayer);
-				return FEndpointProjectionResult(true, NodePosition, NodeAddress, TestLayer);
-			}
-		}
-	}
-
-	// If all else fails, try spatial search around the portal position
-	UE_LOG(LogNav3D, VeryVerbose, TEXT("ProjectPortalToFreeVoxel: Attempting spatial search around portal position"));
-	return FindNearestFreeVoxel(VolumeData, PortalPosition, 200.0f, AgentProperties, MinLayerIndex, 15);
-}
-
-FNav3DUtils::FEndpointProjectionResult FNav3DUtils::ProjectBoundaryToNavigable(
-	const FNav3DVolumeNavigationData& VolumeData,
-	const FVector& BoundaryPosition,
-	const FNavAgentProperties& AgentProperties,
-	LayerIndex MinLayerIndex)
-{
-	UE_LOG(LogNav3D, VeryVerbose, TEXT("ProjectBoundaryToNavigable: Projecting boundary position %s"), *BoundaryPosition.ToString());
-
-	// First, ensure the boundary position is within navigation bounds
-	const FBox& NavBounds = VolumeData.GetNavigationBounds();
-	FVector ClampedPosition = BoundaryPosition;
-	
-	if (!NavBounds.IsInside(ClampedPosition))
-	{
-		ClampedPosition = NavBounds.GetClosestPointTo(ClampedPosition);
-		UE_LOG(LogNav3D, VeryVerbose, TEXT("ProjectBoundaryToNavigable: Clamped boundary position to %s"), *ClampedPosition.ToString());
-	}
-
-	// Try to project this to a free voxel
-	return ProjectPointToFreeVoxel(VolumeData, ClampedPosition, AgentProperties, MinLayerIndex, 500.0f, 15);
+    
+	// Fallback to default if no NavData or invalid extent
+	static constexpr float DefaultVoxelSize = 100.0f; // cm
+	return DefaultVoxelSize;
 }
 
 bool FNav3DUtils::ValidatePortalConnection(
@@ -890,8 +525,8 @@ bool FNav3DUtils::ValidatePortalConnection(
 	}
 
 	// Try to resolve both portal positions
-	FVector LocalPos = LocalVolume.GetLeafNodePositionFromMortonCode(Connection.Local);
-	FVector RemotePos = RemoteVolume.GetLeafNodePositionFromMortonCode(Connection.Remote);
+	const FVector LocalPos = LocalVolume.GetLeafNodePositionFromMortonCode(Connection.Local);
+	const FVector RemotePos = RemoteVolume.GetLeafNodePositionFromMortonCode(Connection.Remote);
 
 	// Check if positions are within their respective volume bounds
 	if (!LocalVolume.GetNavigationBounds().IsInside(LocalPos))
@@ -907,9 +542,9 @@ bool FNav3DUtils::ValidatePortalConnection(
 	}
 
 	// Check if the distance is reasonable - use dynamic threshold based on voxel size
-	float Distance = FVector::Dist(LocalPos, RemotePos);
-	float VoxelSize = LocalVolume.GetData().GetLeafNodes().GetLeafNodeSize();
-	float MaxReasonableDistance = VoxelSize * 2.0f; // Allow up to 2 voxel lengths for adjacent volumes
+	const float Distance = FVector::Dist(LocalPos, RemotePos);
+	const float VoxelSize = LocalVolume.GetData().GetLeafNodes().GetLeafNodeSize();
+	const float MaxReasonableDistance = VoxelSize * 2.0f; // Allow up to 2 voxel lengths for adjacent volumes
 	
 	if (Distance > MaxReasonableDistance)
 	{
@@ -923,119 +558,197 @@ bool FNav3DUtils::ValidatePortalConnection(
 	return true;
 }
 
-FNav3DUtils::FEndpointProjectionResult FNav3DUtils::FindNearestFreeVoxel(
-	const FNav3DVolumeNavigationData& VolumeData,
-	const FVector& SearchCenter,
-	float SearchRadius,
-	const FNavAgentProperties& AgentProperties,
-	LayerIndex MinLayerIndex,
-	int32 MaxSearchIterations)
+bool FNav3DUtils::CheckVoxelFaceAdjacency(
+    const FNav3DEdgeVoxel& VoxelA, 
+    const FNav3DEdgeVoxel& VoxelB,
+    const FNav3DVolumeNavigationData* VolumeA,
+    const FNav3DVolumeNavigationData* VolumeB,
+    uint8 FaceA, 
+    uint8 FaceB,
+    float AdjacencyClearance)
 {
-	UE_LOG(LogNav3D, VeryVerbose, TEXT("FindNearestFreeVoxel: Searching for free voxel around %s within radius %.2f"), 
-	       *SearchCenter.ToString(), SearchRadius);
+    // Get world positions
+    FVector PosA, PosB;
+    if (VoxelA.LayerIndex == 0)
+    {
+        PosA = VolumeA->GetLeafNodePositionFromMortonCode(VoxelA.Morton);
+    }
+    else
+    {
+        PosA = VolumeA->GetNodePositionFromLayerAndMortonCode(VoxelA.LayerIndex, VoxelA.Morton);
+    }
+    
+    if (VoxelB.LayerIndex == 0)
+    {
+        PosB = VolumeB->GetLeafNodePositionFromMortonCode(VoxelB.Morton);
+    }
+    else
+    {
+        PosB = VolumeB->GetNodePositionFromLayerAndMortonCode(VoxelB.LayerIndex, VoxelB.Morton);
+    }
 
-	const FBox& NavBounds = VolumeData.GetNavigationBounds();
-	
-	// Create a search pattern: start with small radius and expand
-	float CurrentRadius = 50.0f; // Start with a small radius
+    // Get voxel extents for each layer
+    float VoxelExtentA, VoxelExtentB;
+    if (VoxelA.LayerIndex == 0)
+    {
+        VoxelExtentA = VolumeA->GetData().GetLeafNodes().GetLeafNodeExtent();
+    }
+    else
+    {
+        VoxelExtentA = VolumeA->GetData().GetLayer(VoxelA.LayerIndex).GetNodeExtent();
+    }
+    
+    if (VoxelB.LayerIndex == 0)
+    {
+        VoxelExtentB = VolumeB->GetData().GetLeafNodes().GetLeafNodeExtent();
+    }
+    else
+    {
+        VoxelExtentB = VolumeB->GetData().GetLayer(VoxelB.LayerIndex).GetNodeExtent();
+    }
 
-	for (int32 Iteration = 0; Iteration < MaxSearchIterations && CurrentRadius <= SearchRadius; ++Iteration)
+    // Project voxel centers to their respective face boundaries
+    FVector FacePointA = PosA;
+    FVector FacePointB = PosB;
+    
+    // Project VoxelA to its face boundary
+    if (FaceA == 1)      FacePointA.X += VoxelExtentA;  // MaxX face
+    else if (FaceA == 2) FacePointA.X -= VoxelExtentA;  // MinX face
+    else if (FaceA == 4) FacePointA.Y += VoxelExtentA;  // MaxY face
+    else if (FaceA == 8) FacePointA.Y -= VoxelExtentA;  // MinY face
+    else if (FaceA == 16) FacePointA.Z += VoxelExtentA; // MaxZ face
+    else if (FaceA == 32) FacePointA.Z -= VoxelExtentA; // MinZ face
+    
+    // Project VoxelB to its face boundary
+    if (FaceB == 1)      FacePointB.X += VoxelExtentB;  // MaxX face
+    else if (FaceB == 2) FacePointB.X -= VoxelExtentB;  // MinX face
+    else if (FaceB == 4) FacePointB.Y += VoxelExtentB;  // MaxY face
+    else if (FaceB == 8) FacePointB.Y -= VoxelExtentB;  // MinY face
+    else if (FaceB == 16) FacePointB.Z += VoxelExtentB; // MaxZ face
+    else if (FaceB == 32) FacePointB.Z -= VoxelExtentB; // MinZ face
+
+    // Calculate face-to-face distance along the shared axis
+    float FaceDistance = 0.0f;
+
+    // Determine shared axis and calculate overlap
+    if ((FaceA == 1 && FaceB == 2) || (FaceA == 2 && FaceB == 1)) // X-axis shared
+    {
+        FaceDistance = FMath::Abs(FacePointA.X - FacePointB.X);
+        
+        // Check Y-Z plane overlap
+        float AMinY = PosA.Y - VoxelExtentA, AMaxY = PosA.Y + VoxelExtentA;
+        float AMinZ = PosA.Z - VoxelExtentA, AMaxZ = PosA.Z + VoxelExtentA;
+        float BMinY = PosB.Y - VoxelExtentB, BMaxY = PosB.Y + VoxelExtentB;
+        float BMinZ = PosB.Z - VoxelExtentB, BMaxZ = PosB.Z + VoxelExtentB;
+        
+        // Check if there's overlap in both Y and Z dimensions
+        bool YOverlap = (AMaxY >= BMinY) && (AMinY <= BMaxY);
+        bool ZOverlap = (AMaxZ >= BMinZ) && (AMinZ <= BMaxZ);
+        
+        if (!YOverlap || !ZOverlap)
+        {
+            return false; // No face overlap
+        }
+    }
+    else if ((FaceA == 4 && FaceB == 8) || (FaceA == 8 && FaceB == 4)) // Y-axis shared
+    {
+        FaceDistance = FMath::Abs(FacePointA.Y - FacePointB.Y);
+        
+        // Check X-Z plane overlap
+        float AMinX = PosA.X - VoxelExtentA, AMaxX = PosA.X + VoxelExtentA;
+        float AMinZ = PosA.Z - VoxelExtentA, AMaxZ = PosA.Z + VoxelExtentA;
+        float BMinX = PosB.X - VoxelExtentB, BMaxX = PosB.X + VoxelExtentB;
+        float BMinZ = PosB.Z - VoxelExtentB, BMaxZ = PosB.Z + VoxelExtentB;
+        
+        bool XOverlap = (AMaxX >= BMinX) && (AMinX <= BMaxX);
+        bool ZOverlap = (AMaxZ >= BMinZ) && (AMinZ <= BMaxZ);
+        
+        if (!XOverlap || !ZOverlap)
+        {
+            return false;
+        }
+    }
+    else if ((FaceA == 16 && FaceB == 32) || (FaceA == 32 && FaceB == 16)) // Z-axis shared
+    {
+        FaceDistance = FMath::Abs(FacePointA.Z - FacePointB.Z);
+        
+        // Check X-Y plane overlap
+        float AMinX = PosA.X - VoxelExtentA, AMaxX = PosA.X + VoxelExtentA;
+        float AMinY = PosA.Y - VoxelExtentA, AMaxY = PosA.Y + VoxelExtentA;
+        float BMinX = PosB.X - VoxelExtentB, BMaxX = PosB.X + VoxelExtentB;
+        float BMinY = PosB.Y - VoxelExtentB, BMaxY = PosB.Y + VoxelExtentB;
+        
+        bool XOverlap = (AMaxX >= BMinX) && (AMinX <= BMaxX);
+        bool YOverlap = (AMaxY >= BMinY) && (AMinY <= BMaxY);
+        
+        if (!XOverlap || !YOverlap)
+        {
+            return false;
+        }
+    }
+    else
+    {
+        // Non-adjacent faces, shouldn't happen for properly shared faces
+        return false;
+    }
+
+    // Check if face distance is within adjacency clearance
+    bool bAdjacent = FaceDistance <= AdjacencyClearance;
+    
+    UE_LOG(LogNav3D, VeryVerbose, TEXT("Face adjacency check: VoxelA(Extent=%.1f) <-> VoxelB(Extent=%.1f), FaceDistance=%.1f, Clearance=%.1f, Adjacent=%s"),
+           VoxelExtentA, VoxelExtentB, FaceDistance, AdjacencyClearance, bAdjacent ? TEXT("YES") : TEXT("NO"));
+    
+    return bAdjacent;
+}
+
+FSharedConstNavQueryFilter FNav3DUtils::GetNav3DQueryFilter(
+	const ANav3DData* Nav3DData,
+	const TSubclassOf<UNavigationQueryFilter>& NavigationQueryFilter,
+	const UObject* Querier)
+{
+	FSharedConstNavQueryFilter QueryFilter;
+    
+	// In editor mode, use default
+	if (GIsEditor && !GIsPlayInEditorWorld)
 	{
-		constexpr float RadiusIncrement = 50.0f;
-		UE_LOG(LogNav3D, VeryVerbose, TEXT("FindNearestFreeVoxel: Iteration %d, searching radius %.2f"), Iteration, CurrentRadius);
-		
-		// Create a bounding box for this search iteration
-		FBox SearchBounds(SearchCenter - FVector(CurrentRadius), SearchCenter + FVector(CurrentRadius));
-		SearchBounds = SearchBounds.Overlap(NavBounds); // Clamp to navigation bounds
-		
-		// Sample points in a grid pattern within the search bounds
-		constexpr int32 GridSize = 5; // 5x5x5 grid
-		const FVector GridSpacing = SearchBounds.GetSize() / (GridSize - 1);
-		
-		for (int32 X = 0; X < GridSize; ++X)
-		{
-			for (int32 Y = 0; Y < GridSize; ++Y)
-			{
-				for (int32 Z = 0; Z < GridSize; ++Z)
-				{
-					FVector TestPosition = SearchBounds.Min + FVector(X * GridSpacing.X, Y * GridSpacing.Y, Z * GridSpacing.Z);
-					
-					// Try to resolve this position
-					FNav3DNodeAddress NodeAddress;
-					if (VolumeData.GetNodeAddressFromPosition(NodeAddress, TestPosition, MinLayerIndex))
-					{
-						const FNav3DNode& Node = VolumeData.GetNodeFromAddress(NodeAddress);
-						
-						// Check if node is navigable - nodes without children are free
-						bool bIsNavigable = false;
-						if (NodeAddress.LayerIndex == 0)
-						{
-							// For leaf nodes, check if the specific subnode is free
-							const auto& LeafNodes = VolumeData.GetData().GetLeafNodes();
-							if (LeafNodes.GetLeafNodes().IsValidIndex(NodeAddress.NodeIndex))
-							{
-								const auto& LeafNode = LeafNodes.GetLeafNode(NodeAddress.NodeIndex);
-								bIsNavigable = !LeafNode.IsSubNodeOccluded(NodeAddress.SubNodeIndex);
-							}
-						}
-						else
-						{
-							// For non-leaf nodes, check if they don't have children (meaning they're free)
-							bIsNavigable = !Node.HasChildren();
-						}
-						
-						if (bIsNavigable)
-						{
-							FVector NodePosition = VolumeData.GetNodePositionFromAddress(NodeAddress, false);
-							UE_LOG(LogNav3D, VeryVerbose, TEXT("FindNearestFreeVoxel: Found free voxel at %s (layer %d)"), 
-							       *NodePosition.ToString(), NodeAddress.LayerIndex);
-							return FEndpointProjectionResult(true, NodePosition, NodeAddress, NodeAddress.LayerIndex);
-						}
-					}
-					
-					// Try layer fallback for this position
-					const LayerIndex LayerCount = VolumeData.GetLayerCount();
-					for (LayerIndex TestLayer = MinLayerIndex + 1; TestLayer < LayerCount; ++TestLayer)
-					{
-						if (VolumeData.GetNodeAddressFromPosition(NodeAddress, TestPosition, TestLayer))
-						{
-							const FNav3DNode& Node = VolumeData.GetNodeFromAddress(NodeAddress);
-							
-							// Check if node is navigable - nodes without children are free
-							bool bIsNavigable = false;
-							if (NodeAddress.LayerIndex == 0)
-							{
-								// For leaf nodes, check if the specific subnode is free
-								const auto& LeafNodes = VolumeData.GetData().GetLeafNodes();
-								if (LeafNodes.GetLeafNodes().IsValidIndex(NodeAddress.NodeIndex))
-								{
-									const auto& LeafNode = LeafNodes.GetLeafNode(NodeAddress.NodeIndex);
-									bIsNavigable = !LeafNode.IsSubNodeOccluded(NodeAddress.SubNodeIndex);
-								}
-							}
-							else
-							{
-								// For non-leaf nodes, check if they don't have children (meaning they're free)
-								bIsNavigable = !Node.HasChildren();
-							}
-							
-							if (bIsNavigable)
-							{
-								FVector NodePosition = VolumeData.GetNodePositionFromAddress(NodeAddress, false);
-								UE_LOG(LogNav3D, VeryVerbose, TEXT("FindNearestFreeVoxel: Found free voxel at %s (layer %d, fallback)"), 
-								       *NodePosition.ToString(), TestLayer);
-								return FEndpointProjectionResult(true, NodePosition, NodeAddress, TestLayer);
-							}
-						}
-					}
-				}
-			}
-		}
-		
-		CurrentRadius += RadiusIncrement;
+		QueryFilter = Nav3DData->GetDefaultQueryFilter();
 	}
+	else
+	{
+		if (NavigationQueryFilter)
+		{
+			QueryFilter = UNavigationQueryFilter::GetQueryFilter(*Nav3DData, Querier, NavigationQueryFilter);
+		}
+		else
+		{
+			QueryFilter = Nav3DData->GetDefaultQueryFilter();
+		}
+	}
+    
+	return QueryFilter;
+}
 
-	FString FailureReason = FString::Printf(TEXT("No free voxel found within radius %.2f after %d iterations"), SearchRadius, MaxSearchIterations);
-	UE_LOG(LogNav3D, Warning, TEXT("FindNearestFreeVoxel: %s"), *FailureReason);
-	return FEndpointProjectionResult(false, SearchCenter, FNav3DNodeAddress(), MinLayerIndex, FailureReason);
+
+bool FNav3DUtils::IsNodeFreeSpace(
+	const FNav3DVolumeNavigationData& VolumeData,
+	const FNav3DNodeAddress& NodeAddress)
+{
+	const FNav3DNode& Node = VolumeData.GetNodeFromAddress(NodeAddress);
+	
+	if (NodeAddress.LayerIndex == 0)
+	{
+		// For leaf nodes, check if the specific subnode is free
+		const auto& LeafNodes = VolumeData.GetData().GetLeafNodes();
+		if (LeafNodes.GetLeafNodes().IsValidIndex(NodeAddress.NodeIndex))
+		{
+			const auto& LeafNode = LeafNodes.GetLeafNode(NodeAddress.NodeIndex);
+			return !LeafNode.IsSubNodeOccluded(NodeAddress.SubNodeIndex);
+		}
+		return false;
+	}
+	else
+	{
+		// For non-leaf nodes, free space means no children (not subdivided due to obstacles)
+		return !Node.HasChildren();
+	}
 }

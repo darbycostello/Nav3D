@@ -2,7 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Engine/DeveloperSettings.h"
-#include "Pathfinding/Nav3DQueryFilterSettings.h"
+#include "Pathfinding/Core/Nav3DPathingTypes.h"
 #include "Nav3DSettings.generated.h"
 
 UCLASS(config=Engine, defaultconfig, meta=(DisplayName="Nav3D Settings"))
@@ -13,9 +13,9 @@ class NAV3D_API UNav3DSettings : public UDeveloperSettings
 public:
 	UNav3DSettings();
 
-	// Pathfinding defaults
-	UPROPERTY(EditAnywhere, config, Category="Pathfinding")
-	TSubclassOf<UNav3DPathFindingSearch> DefaultPathFinder;
+    // Default algorithm selection (enum-based)
+    UPROPERTY(EditAnywhere, config, Category="Pathfinding")
+    ENav3DPathingAlgorithm DefaultAlgorithm = ENav3DPathingAlgorithm::LazyThetaStar;
 
 	// Default traversal cost calculator class
 	UPROPERTY(EditAnywhere, config, Category="Pathfinding")

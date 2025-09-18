@@ -36,6 +36,9 @@ public:
 	void AddNavigationData(FNav3DVolumeNavigationData& NavData);
 	void ReleaseNavigationData();
 	const FNav3DVolumeNavigationData* GetVolumeNavigationData() const;
+	
+	// Get bounds of this chunk
+	FBox GetBounds() const;
 
 	// Octree navigation data blocks belonging to this chunk
 	TArray<FNav3DVolumeNavigationData> NavigationData;

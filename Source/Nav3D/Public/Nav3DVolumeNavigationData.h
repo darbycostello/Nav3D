@@ -1,11 +1,9 @@
 #pragma once
-
 #include "Engine/OverlapResult.h"
 #include "LandscapeComponent.h"
 #include "Nav3DTypes.h"
 #include <Templates/SubclassOf.h>
 #include "CoreMinimal.h"
-#include "Tactical/Nav3DTacticalReasoning.h"
 #include "Templates/Atomic.h"
 
 class UNavigationQueryFilter;
@@ -23,6 +21,8 @@ struct FNav3DVolumeNavigationDataSettings
 	UWorld* World;
 	FNav3DDataGenerationSettings GenerationSettings;
 	FNav3DTacticalSettings TacticalSettings;
+	FString DebugLabel;
+	int32 DebugVolumeIndex = -1;
 	// Optional cooperative cancellation flag provided by the generator
 	TAtomic<bool>* CancelFlag = nullptr;
 };
@@ -69,12 +69,15 @@ public:
 	const FBox& GetNavigationBounds() const;
 	const FNav3DNode& GetNodeFromAddress(const FNav3DNodeAddress& Address) const;
 	FVector GetNodePositionFromAddress(const FNav3DNodeAddress& Address, bool TryGetSubNodePosition) const;
-	bool GetNodeAddressFromPosition(FNav3DNodeAddress& OutNodeAddress, const FVector& Position, const LayerIndex MinLayerIndex) const;
+	bool GetNodeAddressFromPosition(FNav3DNodeAddress& OutNodeAddress, const FVector& Position,
+	                                const LayerIndex MinLayerIndex) const;
+	bool FindNearestNavigableNode(const FVector& Position, FNav3DNodeAddress& OutNodeAddress,
+	                              LayerIndex MinLayerIndex) const;
 	void GetNodeNeighbours(TArray<FNav3DNodeAddress>& Neighbours, const FNav3DNodeAddress& NodeAddress) const;
 	float GetLayerRatio(LayerIndex LayerIndex) const;
 	float GetLayerInverseRatio(LayerIndex LayerIndex) const;
 	float GetNodeExtentFromNodeAddress(FNav3DNodeAddress NodeAddress) const;
-	
+
 	TOptional<FNavLocation> GetRandomPoint() const;
 	TArray<TWeakObjectPtr<const AActor>> DynamicOccluders;
 
@@ -89,27 +92,36 @@ public:
 	static void ClearCancelBuildAll();
 	static bool IsCancelRequested();
 
-	static bool CheckStaticMeshOcclusion(const UStaticMeshComponent* StaticMeshComp, const FVector& Position, const float BoxExtent);
+	static bool CheckStaticMeshOcclusion(const UStaticMeshComponent* StaticMeshComp, const FVector& Position,
+	                                     const float BoxExtent);
 	static bool CheckInstancedStaticMeshOcclusion(const UInstancedStaticMeshComponent* InstancedMeshComp,
 	                                              const FVector& Position,
 	                                              float BoxExtent);
 	bool IsPositionOccluded(const FVector& Position, const float BoxExtent) const;
 	LayerIndex GetMinLayerIndexForAgentSize(const float AgentRadius) const;
 	int32 GetLayerCount() const { return Nav3DData.GetLayerCount(); }
+	bool GetNodeAddressFromMortonCode(FNav3DNodeAddress& OutNodeAddress, MortonCode MortonCode,
+	                                  LayerIndex LayerIndex) const;
+	const TArray<NodeIndex>& GetLayerBlockedNodes(const LayerIndex LayerIndex) const;
+	static MortonCode GetParentMortonCodeAtLayer(MortonCode ChildCode, LayerIndex TargetLayer, LayerIndex ChildLayer);
+	float GetLayerNodeSize(LayerIndex LayerIndex) const;
+	float GetLayerNodeExtent(LayerIndex LayerIndex) const;
 
 private:
 	void FirstPass();
-	static MortonCode GetParentMortonCodeAtLayer(MortonCode ChildCode, LayerIndex TargetLayer, LayerIndex ChildLayer);
+	FString GetLogPrefix() const;
 	void RasterizeLeaf(const FVector& NodePosition, const LeafIndex LeafIndex);
 	void RasterizeInitialLayer(TMap<LeafIndex, MortonCode>& LeafIndexToLayerOneNodeIndexMap);
 	void RasterizeLayer(LayerIndex LayerIndex);
 	int32 GetNodeIndexFromMortonCode(LayerIndex LayerIndex, MortonCode MortonCode) const;
 	void BuildNeighbourLinks(LayerIndex LayerIdx);
-	bool FindNeighbourInDirection(FNav3DNodeAddress& NodeAddress, const LayerIndex LayerIndex, const NodeIndex NodeIndex, const NeighbourDirection Direction);
+	bool FindNeighbourInDirection(FNav3DNodeAddress& NodeAddress, const LayerIndex LayerIndex,
+	                              const NodeIndex NodeIndex, const NeighbourDirection Direction);
 	void GetLeafNeighbours(TArray<FNav3DNodeAddress>& Neighbours, const FNav3DNodeAddress& LeafAddress) const;
 	void GetFreeNodesFromNodeAddress(FNav3DNodeAddress NodeAddress, TArray<FNav3DNodeAddress>& FreeNodes) const;
 	void BuildParentLinkForLeafNodes(const TMap<LeafIndex, MortonCode>& LeafIndexToParentMortonCodeMap);
-	static bool CheckLandscapeProxyOcclusion(const ALandscapeProxy* LandscapeProxy, const FVector& Position, const float BoxExtent);
+	static bool CheckLandscapeProxyOcclusion(const ALandscapeProxy* LandscapeProxy, const FVector& Position,
+	                                         const float BoxExtent);
 	void LogNavigationStats() const;
 	void GatherOverlappingObjects();
 	static bool IsCollisionOnlyComponent(const UPrimitiveComponent* Component);
@@ -120,9 +132,7 @@ private:
 	                                                  const FVector& Position, float BoxExtent);
 	void PropagateChangesToHigherLayers(const TSet<MortonCode>& ModifiedLeafCodes, LayerIndex StartLayer);
 	static bool IsNodeInBounds(const FVector& NodePosition, float NodeExtent, const FBox& Bounds);
-	void FirstPassOptimized();
 	void CacheLayer1Overlaps();
-	bool IsPositionOccludedOptimized(const FVector& Position, float BoxExtent, MortonCode Layer1Parent) const;
 	void ClearOverlapCache();
 	bool IsPositionOccludedPhysics(const FVector& Position, float BoxExtent) const;
 	mutable int32 NumCandidateObjects;

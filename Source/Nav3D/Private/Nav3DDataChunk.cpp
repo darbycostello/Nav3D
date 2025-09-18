@@ -92,3 +92,12 @@ const FNav3DVolumeNavigationData* UNav3DDataChunk::GetVolumeNavigationData() con
 {
 	return NavigationData.Num() > 0 ? &NavigationData[0] : nullptr;
 }
+
+FBox UNav3DDataChunk::GetBounds() const
+{
+	if (NavigationData.Num() > 0)
+	{
+		return NavigationData[0].GetVolumeBounds();
+	}
+	return FBox(ForceInit);
+}
