@@ -50,7 +50,7 @@ public class Nav3D : ModuleRules
 				"AIModule",
 				"NavigationSystem",
 				"Landscape",
-				"InputCore"
+				"InputCore",
 			}
 		);
 

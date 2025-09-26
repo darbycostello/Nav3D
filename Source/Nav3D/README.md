@@ -68,10 +68,10 @@ Open **Project Settings** → **Game** → **Navigation System**:
 
 1. Expand the **Supported Agents** array
 2. Add a new agent configuration:
-   - **Nav Data Class**: `Nav3DData`
-   - **Preferred Nav Data**: `Nav3DData`
-   - **Agent Radius**: Critical setting - determines minimum voxel size (voxel = 2 × radius)
-   - **Agent Height**: Used for collision detection
+    - **Nav Data Class**: `Nav3DData`
+    - **Preferred Nav Data**: `Nav3DData`
+    - **Agent Radius**: Critical setting - determines minimum voxel size (voxel = 2 × radius)
+    - **Agent Height**: Used for collision detection
 
 **Important**: You only need one agent configuration with Nav Data Class and Preferred Nav Data set to Nav3DData. Set the Agent Radius to match your smallest agent - the system automatically routes larger agents to higher octree layers with appropriately sized voxels. For example, if your smallest pawn has radius 50, set Agent Radius to 50. Larger agents (radius 100, 200, etc.) will automatically use coarser layers for better performance while maintaining appropriate navigation granularity.
 
@@ -79,14 +79,14 @@ Open **Project Settings** → **Game** → **Navigation System**:
 
 1. **Add Nav3D Bounds Volume**: Place a `Nav3DBoundsVolume` actor in your level
 2. **Set Navigation Extents**: Use the brush settings in the volume's details panel to set the extents rather than scaling the volume actor
-3. **Configure Chunking Settings**: 
-   - **Enable Automatic Volume Partitioning** is configured in **Project Settings** → **Nav3D Settings**
-   - **Max Volume Partition Size**: Controls how large volumes are automatically divided (default: 250,000 units = 2.5km)
-   - **Max Sub Volumes Per Axis**: Limits subdivision density (default: 8)
-   - **Prefer Cube Partitions**: Creates cubic chunks rather than elongated ones
-4. **Build Settings**: 
-   - **Automatic Generation** is configured in **Edit** → **Editor Preferences** → **Level Editor - Miscellaneous**
-   - For large 3D levels, disable automatic generation and use the **Build** button in the `Nav3DData` actor inspector instead
+3. **Configure Chunking Settings**:
+    - **Enable Automatic Volume Partitioning** is configured in **Project Settings** → **Nav3D Settings**
+    - **Max Volume Partition Size**: Controls how large volumes are automatically divided (default: 250,000 units = 2.5km)
+    - **Max Sub Volumes Per Axis**: Limits subdivision density (default: 8)
+    - **Prefer Cube Partitions**: Creates cubic chunks rather than elongated ones
+4. **Build Settings**:
+    - **Automatic Generation** is configured in **Edit** → **Editor Preferences** → **Level Editor - Miscellaneous**
+    - For large 3D levels, disable automatic generation and use the **Build** button in the `Nav3DData` actor inspector instead
 
 **Note**: The actual octree bounds may differ from your volume due to power-of-2 constraints required by the octree structure.
 
@@ -112,11 +112,11 @@ Create a Blueprint from `Nav3DQueryFilter` to define pathfinding behavior:
 
 #### Cost Calculation
 - **Traversal Cost Calculator**:
-  - `Distance`: Standard distance-based cost
-  - `Fixed`: Equal cost regardless of voxel size (favors larger voxels)
+    - `Distance`: Standard distance-based cost
+    - `Fixed`: Equal cost regardless of voxel size (favors larger voxels)
 - **Heuristic Calculator**:
-  - `Euclidean`: Direct distance to goal
-  - `Manhattan`: Taxicab geometry distance
+    - `Euclidean`: Direct distance to goal
+    - `Manhattan`: Taxicab geometry distance
 - **Heuristic Scale**: Bias toward goal-oriented exploration
 - **Use Node Size Compensation**: Makes larger voxels cheaper to traverse
 
@@ -137,12 +137,16 @@ Nav3D features an intelligent automated chunking system that handles large 3D en
 - **Granular Updates**: Rebuild individual chunks without affecting the entire volume
 - **Adjacency Optimization**: Automatic inter-chunk connectivity with portal mapping
 
+![Nav3D chunk data image](https://raw.githubusercontent.com/darbycostello/Nav3D/refs/heads/v2.0/Resources/nav3d-chunks.png)
+
 **How It Works**:
 1. **Volume Analysis**: The system analyzes your `Nav3DBoundsVolume` bounds
 2. **Intelligent Subdivision**: Automatically partitions volumes exceeding `MaxVolumePartitionSize`
 3. **Chunk Actor Creation**: Each partition becomes a `Nav3DDataChunkActor` with its own navigation data
 4. **Adjacency Mapping**: Automatic connectivity between adjacent chunks using boundary voxel analysis
 5. **Management Integration**: The central `Nav3DData` actor coordinates all chunks seamlessly
+
+![Nav3D chunk data image](https://raw.githubusercontent.com/darbycostello/Nav3D/refs/heads/v2.0/Resources/nav3d-chunk-data.png)
 
 **Configuration Settings** (Project Settings → Nav3D Settings → Volume Partitioning):
 ```cpp
@@ -199,7 +203,7 @@ Layer 0: Leaf nodes (finest detail, sized for agent radius)
 
 **Benefits**:
 - **Memory Efficient**: Only stores occupied space
-- **Multi-Scale**: Large voxels for distance, small for precision  
+- **Multi-Scale**: Large voxels for distance, small for precision
 - **Fast Queries**: Logarithmic search times
 - **Dynamic Updates**: Real-time modifications without full rebuilds
 
@@ -210,8 +214,8 @@ Nav3D supports seamless pathfinding across multiple navigation volumes:
 1. **Path Sanitization**: Analyzes start/end points across all volumes
 2. **Intersection Detection**: Uses ray-box intersection to find volume entry/exit points
 3. **Segment Creation**: Builds composite paths with multiple segments:
-   - **Navigation Segments**: 3D pathfinding within volumes using octree data
-   - **Direct Movement Segments**: Straight-line movement between volumes
+    - **Navigation Segments**: 3D pathfinding within volumes using octree data
+    - **Direct Movement Segments**: Straight-line movement between volumes
 4. **Automatic Point Adjustment**: Finds closest valid points when start/end is outside volumes
 
 ### Tactical Reasoning System
@@ -277,7 +281,7 @@ CountNavMem
 
 **Debug Draw Layers**: Hierarchical voxel display by layer index
 
-**Debug Draw Voxels**: 
+**Debug Draw Voxels**:
 - **Red cubes**: Occluded/blocked voxels
 - **Green cubes**: Free/navigable voxels
 
@@ -321,8 +325,8 @@ Use `Nav3DPathFinderTest` actors for algorithm testing:
 2. Set one as "Other Actor" on the first
 3. Configure pathfinding settings
 4. Use test buttons:
-   - **Clear Paths**: Clear any previously rendered paths for this actor
-   - **Find Path**: Path to the Other Actor immediately. Enabled debug drawing to see the path
+    - **Clear Paths**: Clear any previously rendered paths for this actor
+    - **Find Path**: Path to the Other Actor immediately. Enabled debug drawing to see the path
 
 ### Tactical Reasoning Visualization
 
