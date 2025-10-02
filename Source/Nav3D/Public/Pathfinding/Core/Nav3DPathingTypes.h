@@ -87,10 +87,10 @@ struct NAV3D_API FNav3DQueryFilterSettings
 	GENERATED_BODY()
 
 	UPROPERTY(EditAnywhere, Instanced)
-	UNav3DPathTraversalCostCalculator* TraversalCostCalculator;
+	UNav3DPathTraversalCostCalculator* TraversalCostCalculator = nullptr;
 
 	UPROPERTY(EditAnywhere, Instanced)
-	UNav3DPathHeuristicCalculator* HeuristicCalculator;
+	UNav3DPathHeuristicCalculator* HeuristicCalculator = nullptr;
 
 	UPROPERTY(EditDefaultsOnly)
 	float HeuristicScale = 1.0f;
@@ -98,10 +98,10 @@ struct NAV3D_API FNav3DQueryFilterSettings
 	// If set to true, this will lower the cost of traversing bigger nodes, and
 	// make the PathFinding more favorable traversing them
 	UPROPERTY(EditDefaultsOnly)
-	uint8 bUseNodeSizeCompensation : 1;
+	uint8 bUseNodeSizeCompensation : 1 = 0;
 
 	UPROPERTY(EditDefaultsOnly)
-	uint8 bSmoothPaths : 1;
+	uint8 bSmoothPaths : 1 = 0;
 
 	// How many intermediate points we will generate between the points returned
 	// by the PathFinding in order to smooth the curve (the bigger, the smoother)
