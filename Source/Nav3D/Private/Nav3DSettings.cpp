@@ -13,6 +13,7 @@ UNav3DSettings::UNav3DSettings()
 	HeuristicScale = 1.0f;
 	bUseNodeSizeCompensation = true;
 	bSmoothPaths = true;
+	bPrunePaths = false;
 	SmoothingSubdivisions = 10;
 	MaxRegions = 10000;
 }

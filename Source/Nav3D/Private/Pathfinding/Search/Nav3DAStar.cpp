@@ -179,8 +179,8 @@ void FNav3DAStar::ProcessNeighbor(const FNav3DNodeAddress& NeighborAddress, cons
 		NeighborNode.GScore = TNumericLimits<float>::Max();
 	}
 
-	// Check if this path to neighbor is better
-	if (TentativeGScore < NeighborNode.GScore)
+    // Check if this path to neighbor is better (avoid self-parent cycles)
+    if (TentativeGScore < NeighborNode.GScore && NeighborAddress != CurrentNode.Address)
 	{
 		NeighborNode.Parent = CurrentNode.Address;
 		NeighborNode.GScore = TentativeGScore;
@@ -213,7 +213,7 @@ ENavigationQueryResult::Type FNav3DAStar::ReconstructPath(FNav3DPath& OutPath, c
 		PathAddresses.Add(Current);
         
 		// LOG: Show the current node and its world position
-		const FVector CurrentWorldPos = VolumeData->GetNodePositionFromAddress(Current, false);
+        const FVector CurrentWorldPos = VolumeData->GetNodePositionFromAddress(Current, true);
 		UE_LOG(LogNav3D, Warning, TEXT("Chain[%d]: Address=%s, WorldPos=%s"), 
 			   ChainIndex, *Current.ToString(), *CurrentWorldPos.ToString());
         
@@ -226,7 +226,7 @@ ENavigationQueryResult::Type FNav3DAStar::ReconstructPath(FNav3DPath& OutPath, c
 			if (Current == StartAddress)
 			{
 				PathAddresses.Add(StartAddress);
-				const FVector StartWorldPos = VolumeData->GetNodePositionFromAddress(StartAddress, false);
+                const FVector StartWorldPos = VolumeData->GetNodePositionFromAddress(StartAddress, true);
 				UE_LOG(LogNav3D, Warning, TEXT("Chain[%d]: Address=%s, WorldPos=%s (START)"), 
 					   ChainIndex + 1, *StartAddress.ToString(), *StartWorldPos.ToString());
 				break;
@@ -273,7 +273,7 @@ ENavigationQueryResult::Type FNav3DAStar::ReconstructPath(FNav3DPath& OutPath, c
 		return ENavigationQueryResult::Type::Invalid;
 	}
 
-	const FVector ProjectedStartPos = VolumeData->GetNodePositionFromAddress(PathAddresses[0], false);
+    const FVector ProjectedStartPos = VolumeData->GetNodePositionFromAddress(PathAddresses[0], true);
 	if (!CurrentRequest.StartLocation.Equals(ProjectedStartPos, 1.0f))
 	{
 		PathPoints.Add(FNavPathPoint(ProjectedStartPos));
@@ -282,13 +282,13 @@ ENavigationQueryResult::Type FNav3DAStar::ReconstructPath(FNav3DPath& OutPath, c
 
 	for (int32 i = 1; i < PathAddresses.Num(); ++i)
 	{
-		const FVector WorldPos = VolumeData->GetNodePositionFromAddress(PathAddresses[i], false);
+        const FVector WorldPos = VolumeData->GetNodePositionFromAddress(PathAddresses[i], true);
 		PathPoints.Add(FNavPathPoint(WorldPos));
 		const float Cost = FVector::Dist(WorldPos, PathPoints[PathPoints.Num() - 2].Location);
 		PathCosts.Add(Cost);
 	}
 
-	const FVector ProjectedGoalPos = VolumeData->GetNodePositionFromAddress(PathAddresses.Last(), false);
+    const FVector ProjectedGoalPos = VolumeData->GetNodePositionFromAddress(PathAddresses.Last(), true);
 	if (!CurrentRequest.EndLocation.Equals(ProjectedGoalPos, 1.0f))
 	{
 		PathPoints.Add(FNavPathPoint(ProjectedGoalPos));

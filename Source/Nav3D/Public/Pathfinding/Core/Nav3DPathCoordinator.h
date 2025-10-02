@@ -6,6 +6,7 @@
 
 class INav3DPathfinder;
 class FNav3DVolumePathfinder;
+class UNav3DMultiChunkRaycaster;
 
 class NAV3D_API FNav3DPathCoordinator
 {
@@ -25,8 +26,10 @@ private:
 	TUniquePtr<class FNav3DLazyThetaStar> LazyThetaStarSolver;
 
 	TUniquePtr<FNav3DVolumePathfinder> VolumeManager;
+	TObjectPtr<UNav3DMultiChunkRaycaster> MultiChunkRaycaster;
 
 	INav3DPathfinder* GetAlgorithm(ENav3DPathingAlgorithm AlgorithmType) const;
+	bool TryDirectTraversal(const FNav3DPathingRequest& Request, FNav3DPath& OutPath) const;
 
 	static TUniquePtr<FNav3DPathCoordinator> Instance;
 };

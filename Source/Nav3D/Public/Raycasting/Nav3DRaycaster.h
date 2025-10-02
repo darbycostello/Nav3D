@@ -141,6 +141,7 @@ private:
        FRaycastState(const FVector& From, const FVector& To)
           : RayOrigin(From)
             , RayDirection((To - From).GetSafeNormal())
+            , OriginalRayDirection((To - From).GetSafeNormal())
             , RaySize((To - From).Size())
             , A(0)
        {
@@ -148,6 +149,7 @@ private:
 
        FVector RayOrigin;
        FVector RayDirection;
+       FVector OriginalRayDirection; // Store original ray direction for ray-box intersection
        float RaySize;
        uint8 A; // Direction bit flags
     };

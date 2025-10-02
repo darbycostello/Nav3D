@@ -130,13 +130,18 @@ ENavigationQueryResult::Type FNav3DThetaStar::FindPath(
 
 void FNav3DThetaStar::ProcessCurrentNodeWithLineOfSight(const FSearchNode& CurrentNode, int32& LineOfSightChecks)
 {
-	// Get neighbors for current node using actual API
-	TArray<FNav3DNodeAddress> Neighbors;
-	VolumeData->GetNodeNeighbours(Neighbors, CurrentNode.Address);
+    // Get neighbors for current node using actual API
+    TArray<FNav3DNodeAddress> Neighbors;
+    VolumeData->GetNodeNeighbours(Neighbors, CurrentNode.Address);
 
 	for (const FNav3DNodeAddress& NeighborAddress : Neighbors)
 	{
-		ProcessNeighborWithLineOfSight(NeighborAddress, CurrentNode, LineOfSightChecks);
+        // Skip self-loops which lead to duplicated points
+        if (NeighborAddress == CurrentNode.Address)
+        {
+            continue;
+        }
+        ProcessNeighborWithLineOfSight(NeighborAddress, CurrentNode, LineOfSightChecks);
 	}
 }
 

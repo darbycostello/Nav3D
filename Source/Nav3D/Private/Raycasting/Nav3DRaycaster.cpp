@@ -2,6 +2,15 @@
 #include "Nav3DUtils.h"
 #include "Nav3DVolumeNavigationData.h"
 #include "Nav3D.h"
+#include "Misc/ConfigCacheIni.h"
+#include "HAL/IConsoleManager.h"
+
+// Console variable to gate VeryVerbose raycaster logs
+static TAutoConsoleVariable<int32> CVarNav3DRaycasterVeryVerbose(
+    TEXT("nav3d.Raycaster.VeryVerbose"),
+    0,
+    TEXT("Set to 1 to enable VeryVerbose logs for Nav3D raycaster; 0 to suppress."),
+    ECVF_Default);
 
 FNav3DRaycasterProcessor_GenerateDebugInfos::
 FNav3DRaycasterProcessor_GenerateDebugInfos(
@@ -197,8 +206,11 @@ bool UNav3DRaycaster::TraceInternal(
 
     // Start at highest layer and traverse down
     const int32 HighestLayer = VolumeNavigationData.GetData().GetLayerCount() - 1;
-    UE_LOG(LogNav3D, VeryVerbose, TEXT("Raycaster: Starting traversal from layer %d, ray from %s to %s"), 
-           HighestLayer, *From.ToString(), *To.ToString());
+    if (CVarNav3DRaycasterVeryVerbose.GetValueOnAnyThread() != 0)
+    {
+        UE_LOG(LogNav3D, VeryVerbose, TEXT("Raycaster: Starting traversal from layer %d, ray from %s to %s"), 
+               HighestLayer, *From.ToString(), *To.ToString());
+    }
     
     const auto Result = DoesRayIntersectOccludedNode(
         OctreeRay,
@@ -236,16 +248,34 @@ bool UNav3DRaycaster::DoesRayIntersectOccludedNode(
     FNav3DRaycastHit& OutHit,
     const bool bCountAllOccludedVoxels) const
 {
+    if (CVarNav3DRaycasterVeryVerbose.GetValueOnAnyThread() != 0)
+    {
+        UE_LOG(LogNav3D, VeryVerbose, TEXT("Raycaster: DoesRayIntersectOccludedNode - Layer %d, Node %d"), 
+               NodeAddress.LayerIndex, NodeAddress.NodeIndex);
+    }
+    
     if (!Ray.IsInRange(RayState.RaySize))
     {
+        if (CVarNav3DRaycasterVeryVerbose.GetValueOnAnyThread() != 0)
+        {
+            UE_LOG(LogNav3D, VeryVerbose, TEXT("Raycaster: Node %d is out of range"), NodeAddress.NodeIndex);
+        }
         return false;
     }
 
     // If this is a layer 0 node, test for actual intersection
     if (NodeAddress.LayerIndex == 0)
     {
-        UE_LOG(LogNav3D, VeryVerbose, TEXT("Raycaster: Reached layer 0 node %d, checking for occluded leaf"), NodeAddress.NodeIndex);
-        return DoesRayIntersectOccludedLeaf(Ray, NodeAddress, Data, RayState, OutHit, bCountAllOccludedVoxels);
+        if (CVarNav3DRaycasterVeryVerbose.GetValueOnAnyThread() != 0)
+        {
+            UE_LOG(LogNav3D, VeryVerbose, TEXT("Raycaster: Reached layer 0 node %d, checking for occluded leaf"), NodeAddress.NodeIndex);
+        }
+        const bool bResult = DoesRayIntersectOccludedLeaf(Ray, NodeAddress, Data, RayState, OutHit, bCountAllOccludedVoxels);
+        if (CVarNav3DRaycasterVeryVerbose.GetValueOnAnyThread() != 0)
+        {
+            UE_LOG(LogNav3D, VeryVerbose, TEXT("Raycaster: Layer 0 node %d result: %s"), NodeAddress.NodeIndex, bResult ? TEXT("HIT") : TEXT("MISS"));
+        }
+        return bResult;
     }
 
     // Otherwise use higher layers for traversal optimization
@@ -260,29 +290,67 @@ bool UNav3DRaycaster::DoesRayIntersectOccludedLeaf(
     FNav3DRaycastHit& OutHit,
     const bool bCountAllOccludedVoxels)
 {
+    if (CVarNav3DRaycasterVeryVerbose.GetValueOnAnyThread() != 0)
+    {
+        UE_LOG(LogNav3D, VeryVerbose, TEXT("Raycaster: DoesRayIntersectOccludedLeaf - Testing node %d"), NodeAddress.NodeIndex);
+    }
+    
     const auto& LeafNodes = Data.GetData().GetLeafNodes();
     if (!LeafNodes.GetLeafNodes().IsValidIndex(NodeAddress.NodeIndex))
     {
+        if (CVarNav3DRaycasterVeryVerbose.GetValueOnAnyThread() != 0)
+        {
+            UE_LOG(LogNav3D, VeryVerbose, TEXT("Raycaster: Node index %d is invalid (max: %d)"), 
+                   NodeAddress.NodeIndex, LeafNodes.GetLeafNodes().Num() - 1);
+        }
         return false;
     }
 
     const auto& LeafNode = LeafNodes.GetLeafNode(NodeAddress.NodeIndex);
+    if (CVarNav3DRaycasterVeryVerbose.GetValueOnAnyThread() != 0)
+    {
+        UE_LOG(LogNav3D, VeryVerbose, TEXT("Raycaster: Leaf node %d - IsCompletelyFree: %s, IsCompletelyOccluded: %s"), 
+               NodeAddress.NodeIndex, 
+               LeafNode.IsCompletelyFree() ? TEXT("TRUE") : TEXT("FALSE"),
+               LeafNode.IsCompletelyOccluded() ? TEXT("TRUE") : TEXT("FALSE"));
+    }
+    
     if (LeafNode.IsCompletelyFree())
     {
+        if (CVarNav3DRaycasterVeryVerbose.GetValueOnAnyThread() != 0)
+        {
+            UE_LOG(LogNav3D, VeryVerbose, TEXT("Raycaster: Node %d is completely free, no hit"), NodeAddress.NodeIndex);
+        }
         return false;
     }
 
-    // Get node bounds for intersection test
-    const FVector NodePos = Data.GetNodePositionFromAddress(NodeAddress, true);
-    const float NodeExtent = Data.GetNodeExtentFromNodeAddress(NodeAddress);
-    const FBox NodeBox = FBox::BuildAABB(NodePos, FVector(NodeExtent));
+    // Get LEAF bounds for intersection test (use full leaf AABB, not a single sub-node)
+    const FVector LeafCenter = Data.GetNodePositionFromAddress(NodeAddress, false);
+    const float LeafExtent = Data.GetData().GetLeafNodes().GetLeafNodeExtent();
+    const FBox NodeBox = FBox::BuildAABB(LeafCenter, FVector(LeafExtent));
+    
+    if (CVarNav3DRaycasterVeryVerbose.GetValueOnAnyThread() != 0)
+    {
+        UE_LOG(LogNav3D, VeryVerbose, TEXT("Raycaster: Node %d leaf bounds - Center: %s, Extent: %.2f, Box: %s"), 
+               NodeAddress.NodeIndex, *LeafCenter.ToString(), LeafExtent, *NodeBox.ToString());
+    }
 
-    // Test intersection with node bounds first
+    // Test intersection with node bounds first - use original ray direction
     float TMin, TMax;
-    if (!FNav3DUtils::RayBoxIntersection(NodeBox, RayState.RayOrigin, RayState.RayDirection, RayState.RaySize, TMin,
+    if (!FNav3DUtils::RayBoxIntersection(NodeBox, RayState.RayOrigin, RayState.OriginalRayDirection, RayState.RaySize, TMin,
                                          TMax))
     {
+        if (CVarNav3DRaycasterVeryVerbose.GetValueOnAnyThread() != 0)
+        {
+            UE_LOG(LogNav3D, VeryVerbose, TEXT("Raycaster: Node %d - Ray does not intersect node bounds"), NodeAddress.NodeIndex);
+        }
         return false;
+    }
+    
+    if (CVarNav3DRaycasterVeryVerbose.GetValueOnAnyThread() != 0)
+    {
+        UE_LOG(LogNav3D, VeryVerbose, TEXT("Raycaster: Node %d - Ray intersects bounds at TMin=%.4f, TMax=%.4f"), 
+               NodeAddress.NodeIndex, TMin, TMax);
     }
 
     // If leaf node is completely occluded, it counts as a single voxel hit
@@ -291,14 +359,17 @@ bool UNav3DRaycaster::DoesRayIntersectOccludedLeaf(
         // Increment occluded voxel count
         OutHit.OccludedVoxelCount++;
         
-        UE_LOG(LogNav3D, VeryVerbose, TEXT("Raycaster: Found completely occluded leaf node at %s, voxel count now %d"), 
-               *NodePos.ToString(), OutHit.OccludedVoxelCount);
+        if (CVarNav3DRaycasterVeryVerbose.GetValueOnAnyThread() != 0)
+        {
+            UE_LOG(LogNav3D, VeryVerbose, TEXT("Raycaster: *** HIT! *** Found completely occluded leaf node %d at %s, voxel count now %d"), 
+                   NodeAddress.NodeIndex, *LeafCenter.ToString(), OutHit.OccludedVoxelCount);
+        }
         
         // Record hit information if this is the first hit we've found
         if (!OutHit.bBlockingHit || TMin < OutHit.Distance)
         {
-            OutHit.ImpactPoint = RayState.RayOrigin + RayState.RayDirection * TMin;
-            OutHit.ImpactNormal = CalculateImpactNormal(OutHit.ImpactPoint, NodePos);
+            OutHit.ImpactPoint = RayState.RayOrigin + RayState.OriginalRayDirection * TMin;
+            OutHit.ImpactNormal = CalculateImpactNormal(OutHit.ImpactPoint, LeafCenter);
             OutHit.Distance = TMin;
             OutHit.NodeAddress = NodeAddress;
             OutHit.bBlockingHit = true;
@@ -315,9 +386,16 @@ bool UNav3DRaycaster::DoesRayIntersectOccludedLeaf(
     }
     
     // Leaf node has sub-nodes, test them individually
+    if (CVarNav3DRaycasterVeryVerbose.GetValueOnAnyThread() != 0)
+    {
+        UE_LOG(LogNav3D, VeryVerbose, TEXT("Raycaster: Node %d has sub-nodes, testing 64 sub-nodes"), NodeAddress.NodeIndex);
+    }
+    
     bool bHit = false;
     float ClosestHit = MAX_flt;
     FNav3DNodeAddress ClosestSubNode = NodeAddress;
+    int32 OccludedSubNodes = 0;
+    int32 IntersectingSubNodes = 0;
 
     // Test each sub-node
     for (SubNodeIndex SubIdx = 0; SubIdx < 64; SubIdx++)
@@ -326,21 +404,27 @@ bool UNav3DRaycaster::DoesRayIntersectOccludedLeaf(
         {
             continue;
         }
+        
+        OccludedSubNodes++;
 
         // Calculate sub-node position and bounds
-        const auto SubNodePos = NodePos + FNav3DUtils::GetSubNodeOffset(SubIdx, NodeExtent);
-        const float SubNodeExtent = NodeExtent * 0.25f;
+        const auto SubNodePos = LeafCenter + FNav3DUtils::GetSubNodeOffset(SubIdx, LeafExtent);
+        const float SubNodeExtent = LeafExtent * 0.25f;
         const FBox SubNodeBox = FBox::BuildAABB(SubNodePos, FVector(SubNodeExtent));
 
         float SubTMin, SubTMax;
         if (FNav3DUtils::RayBoxIntersection(
-            SubNodeBox, RayState.RayOrigin, RayState.RayDirection, RayState.RaySize, SubTMin, SubTMax))
+            SubNodeBox, RayState.RayOrigin, RayState.OriginalRayDirection, RayState.RaySize, SubTMin, SubTMax))
         {
+            IntersectingSubNodes++;
             // Increment occluded voxel count for each hit subnode
             OutHit.OccludedVoxelCount++;
             
-            UE_LOG(LogNav3D, VeryVerbose, TEXT("Raycaster: Found occluded sub-node %d at %s, voxel count now %d"), 
-                   SubIdx, *SubNodePos.ToString(), OutHit.OccludedVoxelCount);
+            if (CVarNav3DRaycasterVeryVerbose.GetValueOnAnyThread() != 0)
+            {
+                UE_LOG(LogNav3D, VeryVerbose, TEXT("Raycaster: *** HIT! *** Found occluded sub-node %d at %s (TMin=%.4f), voxel count now %d"), 
+                       SubIdx, *SubNodePos.ToString(), SubTMin, OutHit.OccludedVoxelCount);
+            }
             
             // Keep track of closest hit for return value
             bHit = true;
@@ -354,7 +438,7 @@ bool UNav3DRaycaster::DoesRayIntersectOccludedLeaf(
                 // Update hit information if this is the first or closest hit
                 if (!OutHit.bBlockingHit || SubTMin < OutHit.Distance)
                 {
-                    OutHit.ImpactPoint = RayState.RayOrigin + RayState.RayDirection * SubTMin;
+                    OutHit.ImpactPoint = RayState.RayOrigin + RayState.OriginalRayDirection * SubTMin;
                     OutHit.ImpactNormal = CalculateImpactNormal(OutHit.ImpactPoint, SubNodePos);
                     OutHit.Distance = SubTMin;
                     OutHit.NodeAddress = ClosestSubNode;
@@ -371,6 +455,12 @@ bool UNav3DRaycaster::DoesRayIntersectOccludedLeaf(
             // Otherwise we continue to count all hits
         }
     }
+    
+    if (CVarNav3DRaycasterVeryVerbose.GetValueOnAnyThread() != 0)
+    {
+        UE_LOG(LogNav3D, VeryVerbose, TEXT("Raycaster: Node %d sub-node testing complete - Occluded: %d, Intersecting: %d, Hit: %s"), 
+               NodeAddress.NodeIndex, OccludedSubNodes, IntersectingSubNodes, bHit ? TEXT("TRUE") : TEXT("FALSE"));
+    }
 
     return bHit;
 }
@@ -383,16 +473,32 @@ bool UNav3DRaycaster::DoesRayIntersectOccludedNormalNode(
     FNav3DRaycastHit& OutHit,
     const bool bCountAllOccludedVoxels) const
 {
+    if (CVarNav3DRaycasterVeryVerbose.GetValueOnAnyThread() != 0)
+    {
+        UE_LOG(LogNav3D, VeryVerbose, TEXT("Raycaster: DoesRayIntersectOccludedNormalNode - Layer %d, Node %d"), 
+               NodeAddress.LayerIndex, NodeAddress.NodeIndex);
+    }
+    
     // Validate layer and node indices
     const auto& NavData = Data.GetData();
     if (NodeAddress.LayerIndex >= NavData.GetLayerCount())
     {
+        if (CVarNav3DRaycasterVeryVerbose.GetValueOnAnyThread() != 0)
+        {
+            UE_LOG(LogNav3D, VeryVerbose, TEXT("Raycaster: Layer %d >= LayerCount %d"), 
+                   NodeAddress.LayerIndex, NavData.GetLayerCount());
+        }
         return false;
     }
 
     const auto& Layer = NavData.GetLayer(NodeAddress.LayerIndex);
     if (!Layer.GetNodes().IsValidIndex(NodeAddress.NodeIndex))
     {
+        if (CVarNav3DRaycasterVeryVerbose.GetValueOnAnyThread() != 0)
+        {
+            UE_LOG(LogNav3D, VeryVerbose, TEXT("Raycaster: Node index %d invalid for layer %d (max: %d)"), 
+                   NodeAddress.NodeIndex, NodeAddress.LayerIndex, Layer.GetNodes().Num() - 1);
+        }
         return false;
     }
 
@@ -402,6 +508,10 @@ bool UNav3DRaycaster::DoesRayIntersectOccludedNormalNode(
 
     if (!Node.HasChildren())
     {
+        if (CVarNav3DRaycasterVeryVerbose.GetValueOnAnyThread() != 0)
+        {
+            UE_LOG(LogNav3D, VeryVerbose, TEXT("Raycaster: Node %d has no children"), NodeAddress.NodeIndex);
+        }
         return false;
     }
 
@@ -409,23 +519,49 @@ bool UNav3DRaycaster::DoesRayIntersectOccludedNormalNode(
     const FVector NodePos = Data.GetNodePositionFromAddress(NodeAddress, true);
     const float NodeExtent = Data.GetNodeExtentFromNodeAddress(NodeAddress);
     const FBox NodeBox = FBox::BuildAABB(NodePos, FVector(NodeExtent));
+    
+    if (CVarNav3DRaycasterVeryVerbose.GetValueOnAnyThread() != 0)
+    {
+        UE_LOG(LogNav3D, VeryVerbose, TEXT("Raycaster: Node %d bounds - Center: %s, Extent: %.2f, Box: %s"), 
+               NodeAddress.NodeIndex, *NodePos.ToString(), NodeExtent, *NodeBox.ToString());
+    }
 
     // Test intersection with node bounds first
     float TMin, TMax;
     if (!FNav3DUtils::RayBoxIntersection(NodeBox, RayState.RayOrigin, RayState.RayDirection, RayState.RaySize, TMin, TMax))
     {
+        if (CVarNav3DRaycasterVeryVerbose.GetValueOnAnyThread() != 0)
+        {
+            UE_LOG(LogNav3D, VeryVerbose, TEXT("Raycaster: Node %d - Ray does not intersect node bounds"), NodeAddress.NodeIndex);
+        }
         return false;
+    }
+    
+    if (CVarNav3DRaycasterVeryVerbose.GetValueOnAnyThread() != 0)
+    {
+        UE_LOG(LogNav3D, VeryVerbose, TEXT("Raycaster: Node %d - Ray intersects bounds at TMin=%.4f, TMax=%.4f"), 
+               NodeAddress.NodeIndex, TMin, TMax);
     }
 
     const auto& FirstChildAddress = Node.FirstChild;
     if (!FirstChildAddress.IsValid())
     {
+        if (CVarNav3DRaycasterVeryVerbose.GetValueOnAnyThread() != 0)
+        {
+            UE_LOG(LogNav3D, VeryVerbose, TEXT("Raycaster: Node %d has no valid first child"), NodeAddress.NodeIndex);
+        }
         return false;
     }
 
     // Start with the first child node in the traversal
     uint8 ChildIndex = GetFirstNodeIndex(Ray);
     bool bFoundAnyHit = false;
+    
+    if (CVarNav3DRaycasterVeryVerbose.GetValueOnAnyThread() != 0)
+    {
+        UE_LOG(LogNav3D, VeryVerbose, TEXT("Raycaster: Node %d - Starting child traversal with ChildIndex=%d, FirstChildAddress=(Layer=%d, Node=%d)"), 
+               NodeAddress.NodeIndex, ChildIndex, FirstChildAddress.LayerIndex, FirstChildAddress.NodeIndex);
+    }
 
     do
     {
@@ -433,6 +569,12 @@ bool UNav3DRaycaster::DoesRayIntersectOccludedNormalNode(
         const int32 ReflectedChildNodeIndex = ChildIndex ^ RayState.A;
         const FNav3DNodeAddress NewChildAddress(FirstChildAddress.LayerIndex, 
                                                FirstChildAddress.NodeIndex + ReflectedChildNodeIndex);
+        
+        if (CVarNav3DRaycasterVeryVerbose.GetValueOnAnyThread() != 0)
+        {
+            UE_LOG(LogNav3D, VeryVerbose, TEXT("Raycaster: Node %d - Testing child %d (ReflectedIndex=%d, NewAddress=(Layer=%d, Node=%d))"), 
+                   NodeAddress.NodeIndex, ChildIndex, ReflectedChildNodeIndex, NewChildAddress.LayerIndex, NewChildAddress.NodeIndex);
+        }
 
         bool bChildHit;
         
@@ -563,6 +705,12 @@ bool UNav3DRaycaster::DoesRayIntersectOccludedNormalNode(
     }
     while (ChildIndex < 8);
 
+    if (CVarNav3DRaycasterVeryVerbose.GetValueOnAnyThread() != 0)
+    {
+        UE_LOG(LogNav3D, VeryVerbose, TEXT("Raycaster: Node %d - Child traversal complete, FoundAnyHit: %s"), 
+               NodeAddress.NodeIndex, bFoundAnyHit ? TEXT("TRUE") : TEXT("FALSE"));
+    }
+    
     return bFoundAnyHit;
 }
 

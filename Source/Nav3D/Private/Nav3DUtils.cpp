@@ -88,27 +88,19 @@ FNav3DUtils::GraphAStarResultToNavigationTypeResult(
 bool FNav3DUtils::RayBoxIntersection(const FBox& Box, const FVector& RayOrigin, const FVector& RayDir,
                                      const float RayLength, float& OutTMin, float& OutTMax)
 {
-	// Calculate inverse ray direction for efficient tests
-	const FVector InvDir(
-		FMath::IsNearlyZero(RayDir.X) ? BIG_NUMBER : 1.0f / RayDir.X,
-		FMath::IsNearlyZero(RayDir.Y) ? BIG_NUMBER : 1.0f / RayDir.Y,
-		FMath::IsNearlyZero(RayDir.Z) ? BIG_NUMBER : 1.0f / RayDir.Z
-	);
-
-	// Calculate intersections with axis-aligned planes
 	float TMin = -BIG_NUMBER;
 	float TMax = BIG_NUMBER;
 
 	for (int32 i = 0; i < 3; i++)
 	{
 		const float RayOrig = i == 0 ? RayOrigin.X : (i == 1 ? RayOrigin.Y : RayOrigin.Z);
-		const float InvRayDir = i == 0 ? InvDir.X : (i == 1 ? InvDir.Y : InvDir.Z);
+		const float RayDirComponent = i == 0 ? RayDir.X : (i == 1 ? RayDir.Y : RayDir.Z);
 		const float BoxMin = i == 0 ? Box.Min.X : (i == 1 ? Box.Min.Y : Box.Min.Z);
 		const float BoxMax = i == 0 ? Box.Max.X : (i == 1 ? Box.Max.Y : Box.Max.Z);
 
-		if (FMath::Abs(InvRayDir) < SMALL_NUMBER)
+		if (FMath::Abs(RayDirComponent) < SMALL_NUMBER)
 		{
-			// Ray parallel to axis - check if ray origin is within box planes
+			// Ray parallel to this axis
 			if (RayOrig < BoxMin || RayOrig > BoxMax)
 			{
 				return false;
@@ -116,6 +108,7 @@ bool FNav3DUtils::RayBoxIntersection(const FBox& Box, const FVector& RayOrigin, 
 		}
 		else
 		{
+			const float InvRayDir = 1.0f / RayDirComponent;
 			float T1 = (BoxMin - RayOrig) * InvRayDir;
 			float T2 = (BoxMax - RayOrig) * InvRayDir;
 
@@ -129,23 +122,22 @@ bool FNav3DUtils::RayBoxIntersection(const FBox& Box, const FVector& RayOrigin, 
 			TMin = FMath::Max(T1, TMin);
 			TMax = FMath::Min(T2, TMax);
 
-			if (TMin > TMax || TMax < 0.0f)
+			if (TMin > TMax)
 			{
 				return false;
 			}
 		}
 	}
 
-	// Check if intersection is within ray length
-	if (TMin > RayLength)
+	// Check if intersection is within ray segment
+	if (TMax < 0.0f || TMin > RayLength)
 	{
 		return false;
 	}
 
-	TMax = FMath::Min(TMax, RayLength);
-
-	OutTMin = TMin;
-	OutTMax = TMax;
+	OutTMin = FMath::Max(TMin, 0.0f);
+	OutTMax = FMath::Min(TMax, RayLength);
+	
 	return true;
 }
 

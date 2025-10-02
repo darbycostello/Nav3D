@@ -1,4 +1,5 @@
 #include "Pathfinding/Core/Nav3DPathCoordinator.h"
+#include "Nav3D.h"
 #include "Nav3DSettings.h"
 #include "Pathfinding/Core/Nav3DPath.h"
 #include "Pathfinding/Search/Nav3DPathHeuristicCalculator.h"
@@ -7,6 +8,7 @@
 #include "Pathfinding/Search/Nav3DAStar.h"
 #include "Pathfinding/Search/Nav3DThetaStar.h"
 #include "Pathfinding/Search/Nav3DLazyThetaStar.h"
+#include "Raycasting/Nav3DMultiChunkRaycaster.h"
 
 TUniquePtr<FNav3DPathCoordinator> FNav3DPathCoordinator::Instance;
 
@@ -16,6 +18,7 @@ FNav3DPathCoordinator::FNav3DPathCoordinator()
 	AStarSolver = MakeUnique<FNav3DAStar>();
 	ThetaStarSolver = MakeUnique<FNav3DThetaStar>();
 	LazyThetaStarSolver = MakeUnique<FNav3DLazyThetaStar>();
+	MultiChunkRaycaster = NewObject<UNav3DMultiChunkRaycaster>();
 }
 
 FNav3DPathCoordinator::~FNav3DPathCoordinator() = default;
@@ -72,9 +75,66 @@ ENavigationQueryResult::Type FNav3DPathCoordinator::FindPath(
 			}
 		}
 	}
+	
+	if (Get().TryDirectTraversal(EnhancedRequest, OutPath))
+	{
+		return ENavigationQueryResult::Success;
+	}
 
 	INav3DPathfinder* Algorithm = Get().GetAlgorithm(EnhancedRequest.Algorithm);
 	return Get().VolumeManager->FindPath(OutPath, EnhancedRequest, Algorithm);
+}
+
+bool FNav3DPathCoordinator::TryDirectTraversal(
+	const FNav3DPathingRequest& Request,
+	FNav3DPath& OutPath) const
+{
+	UE_LOG(LogNav3D, Verbose, TEXT("TryDirectTraversal: Starting direct traversal check from %s to %s"), 
+		*Request.StartLocation.ToString(), *Request.EndLocation.ToString());
+
+	if (!Request.NavData)
+	{
+		UE_LOG(LogNav3D, Verbose, TEXT("TryDirectTraversal: Failed - No NavData provided"));
+		return false;
+	}
+
+	if (!MultiChunkRaycaster)
+	{
+		UE_LOG(LogNav3D, Verbose, TEXT("TryDirectTraversal: Failed - MultiChunkRaycaster not initialized"));
+		return false;
+	}
+
+	const float Distance = FVector::Dist(Request.StartLocation, Request.EndLocation);
+	UE_LOG(LogNav3D, Verbose, TEXT("TryDirectTraversal: Distance = %.2f, AgentRadius = %.2f"), 
+		Distance, Request.AgentProperties.AgentRadius);
+
+	FNav3DRaycastHit Hit;
+	const bool bHasLineOfTraversal = MultiChunkRaycaster->HasLineOfTraversal(
+		Request.NavData,
+		Request.StartLocation,
+		Request.EndLocation,
+		Request.AgentProperties.AgentRadius,
+		Hit);
+
+	if (!bHasLineOfTraversal)
+	{
+		UE_LOG(LogNav3D, Verbose, TEXT("TryDirectTraversal: Failed - Line of traversal blocked at distance %.2f"), 
+			Hit.Distance);
+		return false;
+	}
+
+	UE_LOG(LogNav3D, Log, TEXT("TryDirectTraversal: SUCCESS - Direct path found! Creating 2-point path"));
+
+	// Create 2-point path
+	OutPath.ResetForRepath();
+	OutPath.GetPathPoints().Add(FNavPathPoint(Request.StartLocation));
+	OutPath.GetPathPoints().Add(FNavPathPoint(Request.EndLocation));
+	OutPath.MarkReady();
+
+	UE_LOG(LogNav3D, Log, TEXT("TryDirectTraversal: Created direct path with %d points"), 
+		OutPath.GetPathPoints().Num());
+
+	return true;
 }
 
 

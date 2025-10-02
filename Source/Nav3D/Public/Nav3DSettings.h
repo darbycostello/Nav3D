@@ -37,6 +37,10 @@ public:
 	UPROPERTY(EditAnywhere, config, Category="Pathfinding")
 	bool bSmoothPaths;
 
+	// Prune paths using direct traversal between waypoints before smoothing
+	UPROPERTY(EditAnywhere, config, Category="Pathfinding")
+	bool bPrunePaths = false;
+
 	// Smoothing subdivisions
 	UPROPERTY(EditAnywhere, config, Category="Pathfinding")
 	int32 SmoothingSubdivisions;

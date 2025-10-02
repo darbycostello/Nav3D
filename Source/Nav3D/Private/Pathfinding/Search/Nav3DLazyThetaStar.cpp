@@ -174,6 +174,11 @@ void FNav3DLazyThetaStar::UpdateVertexLazy(FSearchNode& CurrentNode)
     // Check each neighbor of parent as potential parent for current
     for (const FNav3DNodeAddress& NeighborAddress : ParentNeighbors)
     {
+        // Avoid selecting current node as its own parent (would create a cycle)
+        if (NeighborAddress == CurrentNode.Address)
+        {
+            continue;
+        }
         if (const FSearchNode* NeighborNode = AllNodes.Find(NeighborAddress))
         {
             if (NeighborNode->bInClosedSet)
@@ -190,7 +195,7 @@ void FNav3DLazyThetaStar::UpdateVertexLazy(FSearchNode& CurrentNode)
 
     // CRITICAL FIX: If no valid parent found, fall back to using the parent's parent
     // or in worst case, the parent itself (which should be valid)
-    if (!BestParent.IsValid())
+    if (!BestParent.IsValid() || BestParent == CurrentNode.Address)
     {
         if (ParentNode->Parent.IsValid())
         {
