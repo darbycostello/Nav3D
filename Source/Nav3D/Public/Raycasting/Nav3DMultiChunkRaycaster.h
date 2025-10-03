@@ -25,12 +25,12 @@ public:
      * @param OutHit Hit result if traversal is blocked
      * @return true if traversal is clear, false if blocked
      */
-    bool HasLineOfTraversal(
+    static bool HasLineOfTraversal(
         const ANav3DData* Nav3DData,
         const FVector& From,
         const FVector& To,
         float AgentRadius,
-        FNav3DRaycastHit& OutHit) const;
+        FNav3DRaycastHit& OutHit);
 
 private:
     struct FChunkRaySegment
@@ -48,11 +48,11 @@ private:
      * @param OutSegments Array to fill with chunk segments
      * @return true if segments were built successfully
      */
-    bool BuildChunkSegments(
+    static bool BuildChunkSegments(
         const ANav3DData* Nav3DData,
         const FVector& From,
         const FVector& To,
-        TArray<FChunkRaySegment>& OutSegments) const;
+        TArray<FChunkRaySegment>& OutSegments);
 
     /**
      * Trace a corridor within a single chunk using 5-ray pattern
@@ -61,10 +61,10 @@ private:
      * @param OutHit Hit result if blocked
      * @return true if corridor is clear, false if blocked
      */
-    bool TraceCorridorInChunk(
+    static bool TraceCorridorInChunk(
         const FChunkRaySegment& Segment,
         float AgentRadius,
-        FNav3DRaycastHit& OutHit) const;
+        FNav3DRaycastHit& OutHit);
 
     /**
      * Check if a ray intersects with a bounding box
@@ -76,11 +76,11 @@ private:
      * @param OutIntersectEnd End of intersection segment
      * @return true if ray intersects the box
      */
-    bool RayIntersectsBox(
+    static bool RayIntersectsBox(
         const FVector& RayOrigin,
         const FVector& RayDirection,
         float RayLength,
         const FBox& Box,
         FVector& OutIntersectStart,
-        FVector& OutIntersectEnd) const;
+        FVector& OutIntersectEnd);
 };

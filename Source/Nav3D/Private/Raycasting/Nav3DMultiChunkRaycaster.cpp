@@ -14,7 +14,7 @@ bool UNav3DMultiChunkRaycaster::HasLineOfTraversal(
     const FVector& From,
     const FVector& To,
     float AgentRadius,
-    FNav3DRaycastHit& OutHit) const
+    FNav3DRaycastHit& OutHit)
 {
     if (!Nav3DData)
     {
@@ -57,7 +57,7 @@ bool UNav3DMultiChunkRaycaster::BuildChunkSegments(
     const ANav3DData* Nav3DData,
     const FVector& From,
     const FVector& To,
-    TArray<FChunkRaySegment>& OutSegments) const
+    TArray<FChunkRaySegment>& OutSegments)
 {
     OutSegments.Reset();
 
@@ -103,7 +103,7 @@ bool UNav3DMultiChunkRaycaster::BuildChunkSegments(
 bool UNav3DMultiChunkRaycaster::TraceCorridorInChunk(
     const FChunkRaySegment& Segment,
     float AgentRadius,
-    FNav3DRaycastHit& OutHit) const
+    FNav3DRaycastHit& OutHit)
 {
     const FNav3DVolumeNavigationData* VolumeData = nullptr;
     if (Segment.ChunkActor && Segment.ChunkActor->Nav3DChunks.Num() > 0)
@@ -173,9 +173,9 @@ bool UNav3DMultiChunkRaycaster::RayIntersectsBox(
     float RayLength,
     const FBox& Box,
     FVector& OutIntersectStart,
-    FVector& OutIntersectEnd) const
+    FVector& OutIntersectEnd)
 {
-    const float BigNumber = 1e10f;
+    constexpr float BigNumber = 1e10f;
     const FVector InvDir(
         FMath::IsNearlyZero(RayDirection.X) ? BigNumber : 1.0f / RayDirection.X,
         FMath::IsNearlyZero(RayDirection.Y) ? BigNumber : 1.0f / RayDirection.Y,
