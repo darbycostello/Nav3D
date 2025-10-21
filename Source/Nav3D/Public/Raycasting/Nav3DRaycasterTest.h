@@ -21,17 +21,17 @@ struct NAV3D_API FNav3DRaycasterDebugDrawOptions
 	{
 	}
 
-	UPROPERTY(EditAnywhere)
+	UPROPERTY(EditAnywhere, Category = "Debug")
 	uint8 bEnableDebugDraw : 1;
 
-	UPROPERTY(EditAnywhere)
+	UPROPERTY(EditAnywhere, Category = "Debug")
 	uint8 bDrawLayerNodes : 1;
 
-	UPROPERTY(EditAnywhere, meta = (EditCondition = "bDrawLayerNodes",
+	UPROPERTY(EditAnywhere, Category = "Debug", meta = (EditCondition = "bDrawLayerNodes",
 		ClampMin = "0", UIMin = "0"))
 	uint8 LayerIndexToDraw;
 
-	UPROPERTY(EditAnywhere)
+	UPROPERTY(EditAnywhere, Category = "Debug")
 	uint8 bDrawMortonCode : 1;
 };
 
@@ -121,7 +121,7 @@ private:
 	UFUNCTION(CallInEditor)
 	void DoRaycast();
 
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, meta = (AllowPrivateAccess = "true"))
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components", meta = (AllowPrivateAccess = "true"))
 	USphereComponent* SphereComponent;
 
 #if WITH_EDITORONLY_DATA
@@ -129,19 +129,19 @@ private:
 	UNav3DRaycasterRenderingComponent* RenderingComponent;
 #endif
 
-	UPROPERTY(Instanced, EditAnywhere)
+	UPROPERTY(Instanced, EditAnywhere, Category = "Raycasting")
 	UNav3DRaycaster* Raycaster;
 
-	UPROPERTY(EditInstanceOnly)
+	UPROPERTY(EditInstanceOnly, Category = "Raycasting")
 	ANav3DRaycasterTest* OtherActor;
 
-	UPROPERTY(EditAnywhere)
+	UPROPERTY(EditAnywhere, Category = "Navigation")
 	FNavAgentProperties NavAgentProperties;
 
-	UPROPERTY(EditAnywhere)
+	UPROPERTY(EditAnywhere, Category = "Raycasting")
 	uint8 bUpdatePathAfterMoving : 1;
 
-	UPROPERTY(EditAnywhere)
+	UPROPERTY(EditAnywhere, Category = "Debug")
 	FNav3DRaycasterDebugDrawOptions DebugDrawOptions;
 
 	FNav3DRaycasterDebugInfos RaycasterDebugInfos;

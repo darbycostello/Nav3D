@@ -8,6 +8,9 @@ public class Nav3D : ModuleRules
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 		bUseUnity = true;
+		
+		// Enable strict validation to catch issues like missing Category specifiers
+		bTreatAsEngineModule = true; // Treat plugin as Engine module for stricter validation
 
 
 		PublicIncludePaths.AddRange(

@@ -95,6 +95,9 @@ void UNav3DDynamicOcclusion::AttemptRegistration()
 
 void UNav3DDynamicOcclusion::UpdateSpatiallyLoaded(const ANav3DData* NavData) const
 {
+	// GetIsSpatiallyLoaded/SetIsSpatiallyLoaded are editor-only APIs in some UE5 versions
+	// Skip this functionality in non-editor builds
+#if WITH_EDITOR
 	if (!NavData)
 	{
 		return;
@@ -113,6 +116,7 @@ void UNav3DDynamicOcclusion::UpdateSpatiallyLoaded(const ANav3DData* NavData) co
 			Owner->SetIsSpatiallyLoaded(bNavDataSpatiallyLoaded);
 		}
 	}
+#endif
 }
 
 void UNav3DDynamicOcclusion::OnUnregister()

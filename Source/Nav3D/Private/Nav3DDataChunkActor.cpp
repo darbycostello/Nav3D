@@ -133,10 +133,12 @@ void ANav3DDataChunkActor::PostLoad()
 	}
 }
 
+#if WITH_EDITOR
 uint32 ANav3DDataChunkActor::GetDefaultGridSize(UWorld* InWorld) const
 {
 	return 25600;
 }
+#endif
 
 void ANav3DDataChunkActor::GetActorBounds(bool bOnlyCollidingComponents, FVector& OutOrigin, FVector& OutBoxExtent, bool bIncludeFromChildActors) const
 {

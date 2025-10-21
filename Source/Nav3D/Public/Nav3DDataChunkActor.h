@@ -90,7 +90,9 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Build Status")
 	bool bNeedsTacticalDataBuild = false;
 
+#if WITH_EDITOR
 	virtual uint32 GetDefaultGridSize(UWorld* InWorld) const override;
+#endif
 	virtual void GetActorBounds(bool bOnlyCollidingComponents, FVector& OutOrigin, FVector& OutBoxExtent, bool bIncludeFromChildActors) const override;
 	void RegisterWithNavigationSystem();
 	void UnregisterFromNavigationSystem();

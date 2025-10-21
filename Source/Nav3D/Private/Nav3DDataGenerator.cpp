@@ -736,7 +736,7 @@ ANav3DDataChunkActor* FNav3DDataGenerator::CreateChunkActorForVolume(
 	// Create chunk actor
 	FActorSpawnParameters SpawnParams;
 	SpawnParams.bDeferConstruction = false;
-	SpawnParams.bCreateActorPackage = World->IsPartitionedWorld(); // Only create packages for world partition
+	// Note: bCreateActorPackage is editor-only in some UE5 versions
 	
 	ANav3DDataChunkActor* ChunkActor = World->SpawnActor<ANav3DDataChunkActor>(SpawnParams);
 	if (!ChunkActor)
@@ -745,8 +745,13 @@ ANav3DDataChunkActor* FNav3DDataGenerator::CreateChunkActorForVolume(
 		return nullptr;
 	}
 	
-	// Configure chunk actor
-    ChunkActor->SetDataChunkActorBounds(VolumeBounds);
+	// Configure chunk actor bounds
+#if WITH_EDITOR
+	ChunkActor->SetDataChunkActorBounds(VolumeBounds);
+#else
+	// In non-editor builds, set bounds directly since SetDataChunkActorBounds is editor-only
+	ChunkActor->DataChunkActorBounds = VolumeBounds;
+#endif
 	
 	// Get the chunk index for naming
 	int32 ChunkIndex = 0;
@@ -755,7 +760,10 @@ ANav3DDataChunkActor* FNav3DDataGenerator::CreateChunkActorForVolume(
 		ChunkIndex = NavigationData.ChunkActors.Num();
 	}
 	
+#if WITH_EDITOR
+	// SetActorLabel is editor-only
 	ChunkActor->SetActorLabel(FString::Printf(TEXT("Nav3dChunk_%d"), ChunkIndex));
+#endif
 	
 	// Position the chunk actor at the center of its bounds
 	ChunkActor->SetActorLocation(VolumeBounds.GetCenter());

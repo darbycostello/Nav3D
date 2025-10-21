@@ -4,6 +4,9 @@ public class Nav3DEditor : ModuleRules
 {
 	public Nav3DEditor(ReadOnlyTargetRules Target) : base(Target)
 	{
+		// Enable strict validation to catch issues like missing Category specifiers
+		bTreatAsEngineModule = true; // Treat plugin as Engine module for stricter validation
+		
 		PublicDependencyModuleNames.AddRange(new[]
 		{
 			"Core",
