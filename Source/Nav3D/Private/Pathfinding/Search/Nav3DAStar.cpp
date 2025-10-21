@@ -201,34 +201,19 @@ ENavigationQueryResult::Type FNav3DAStar::ReconstructPath(FNav3DPath& OutPath, c
 {
 	TArray<FNav3DNodeAddress> PathAddresses;
     
-	// Add debug logging to trace the parent chain
-	UE_LOG(LogNav3D, Warning, TEXT("=== PATH RECONSTRUCTION DEBUG ==="));
-	UE_LOG(LogNav3D, Warning, TEXT("Goal Node: %s"), *GoalNode.Address.ToString());
-    
 	// Trace back from goal to start
 	FNav3DNodeAddress Current = GoalNode.Address;
 	int32 ChainIndex = 0;
 	while (Current.IsValid() && PathAddresses.Num() < 1000)
 	{
 		PathAddresses.Add(Current);
-        
-		// LOG: Show the current node and its world position
-        const FVector CurrentWorldPos = VolumeData->GetNodePositionFromAddress(Current, true);
-		UE_LOG(LogNav3D, Warning, TEXT("Chain[%d]: Address=%s, WorldPos=%s"), 
-			   ChainIndex, *Current.ToString(), *CurrentWorldPos.ToString());
-        
+	
 		if (const FSearchNode* Node = AllNodes.Find(Current))
 		{
-			// LOG: Show the parent relationship
-			UE_LOG(LogNav3D, Warning, TEXT("  -> Parent: %s"), *Node->Parent.ToString());
-            
 			Current = Node->Parent;
 			if (Current == StartAddress)
 			{
 				PathAddresses.Add(StartAddress);
-                const FVector StartWorldPos = VolumeData->GetNodePositionFromAddress(StartAddress, true);
-				UE_LOG(LogNav3D, Warning, TEXT("Chain[%d]: Address=%s, WorldPos=%s (START)"), 
-					   ChainIndex + 1, *StartAddress.ToString(), *StartWorldPos.ToString());
 				break;
 			}
 		}
@@ -239,19 +224,6 @@ ENavigationQueryResult::Type FNav3DAStar::ReconstructPath(FNav3DPath& OutPath, c
 		}
 		ChainIndex++;
 	}
-
-	UE_LOG(LogNav3D, Warning, TEXT("StartAddress used in search: %s"), *StartAddress.ToString());
-	UE_LOG(LogNav3D, Warning, TEXT("AllNodes contains %d entries"), AllNodes.Num());
-	if (AllNodes.Num() < 10) // Only log if reasonable number
-	{
-		for (const auto& Pair : AllNodes)
-		{
-			UE_LOG(LogNav3D, Warning, TEXT("  AllNodes[%s]: Parent=%s"), 
-				   *Pair.Key.ToString(), *Pair.Value.Parent.ToString());
-		}
-	}
-    
-	UE_LOG(LogNav3D, Warning, TEXT("Total path addresses in chain: %d"), PathAddresses.Num());
     
 
 	// Reverse to get start-to-goal order

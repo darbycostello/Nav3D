@@ -33,7 +33,7 @@ enum class ENav3DDiscOrientation : uint8
  * consistently across multiple uses. Changing the seed will result in a different
  * random distribution, but using the same seed will always produce identical results.
  */
-UCLASS(Blueprintable, meta=(DisplayName="Nav3D Test Volume"))
+UCLASS(Blueprintable, meta=(DisplayName="Nav3D Test Volume", PrioritizeCategories="Nav3D"))
 class NAV3D_API ANav3DTestVolume : public AActor
 {
     GENERATED_BODY()
@@ -77,6 +77,9 @@ protected:
     
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Nav3D")
 	float MaxObstacleSize;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Nav3D", meta=(ClampMin="1", ClampMax="5000", UIMin="1", UIMax="5000"))
+	int32 MaxObstacles;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Nav3D")
 	uint8 bAutoGenerate : 1;
@@ -152,25 +155,25 @@ private:
 
 public:
     // Public functions
-    UFUNCTION(BlueprintCallable, Category="Nav3D")
+    UFUNCTION(BlueprintCallable, CallInEditor, Category="Nav3D")
     void GenerateObstacles() const;
     
-    UFUNCTION(BlueprintCallable, Category="Nav3D")
+    UFUNCTION(BlueprintCallable, CallInEditor, Category="Nav3D")
     void ClearObstacles() const;
     
     UFUNCTION(BlueprintCallable, Category="Nav3D")
     int32 GetObstacleCount() const;
     
-	UFUNCTION(BlueprintCallable, Category="Nav3D")
+	UFUNCTION(BlueprintCallable, CallInEditor, Category="Nav3D")
 	void GenerateRandomSpline() const;
 	
     void GenerateRandomSpline(const FRandomStream& RandomStream) const;
     
     // Tactical testing functions
-    UFUNCTION(BlueprintCallable, Category="Nav3D Tactical")
+    UFUNCTION(BlueprintCallable, CallInEditor, Category="Nav3D Tactical")
     void TestTacticalDataGeneration() const;
     
-    UFUNCTION(BlueprintCallable, Category="Nav3D Tactical")
+    UFUNCTION(BlueprintCallable, CallInEditor, Category="Nav3D Tactical")
     void TestTacticalQueries() const;
     
     UFUNCTION(BlueprintCallable, Category="Nav3D Tactical")

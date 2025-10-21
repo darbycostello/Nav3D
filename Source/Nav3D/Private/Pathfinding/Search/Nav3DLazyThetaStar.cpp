@@ -46,9 +46,6 @@ ENavigationQueryResult::Type FNav3DLazyThetaStar::FindPath(
         return ENavigationQueryResult::Error;
     }
 	
-	UE_LOG(LogTemp, Warning, TEXT("Start Node Address: %s"), *StartAddress.ToString());
-	UE_LOG(LogTemp, Warning, TEXT("Goal Node Address: %s"), *GoalAddress.ToString());
-
 	// Initialize start node
 	FSearchNode& StartNode = AllNodes.Add(StartAddress);
 	StartNode.Address = StartAddress;

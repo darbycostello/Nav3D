@@ -78,6 +78,7 @@ ANav3DTestVolume::ANav3DTestVolume()
     // Common defaults
     MinObstacleSize = 20.0f;
     MaxObstacleSize = 100.0f;
+    MaxObstacles = 500;
     RandomSeed = 0;
     bAutoGenerate = false;
 }
@@ -226,6 +227,7 @@ void ANav3DTestVolume::GenerateObstacles() const
 void ANav3DTestVolume::ClearObstacles() const
 {
     ObstacleMeshes->ClearInstances();
+    ObstacleMeshes->MarkRenderStateDirty();
 }
 
 int32 ANav3DTestVolume::GetObstacleCount() const
@@ -247,8 +249,11 @@ void ANav3DTestVolume::GenerateUniformDistribution(const FRandomStream& RandomSt
     const float AvgObstacleSize = (MinObstacleSize + MaxObstacleSize) * 0.5f;
     const float AvgObstacleVolume = (4.0f/3.0f) * PI * FMath::Pow(AvgObstacleSize, 3.0f);
     
-    // Calculate approximate number of obstacles to place
-    const int32 NumObstacles = FMath::CeilToInt((OcclusionPercentage / 100.0f) * TotalVolume / AvgObstacleVolume);
+    // Calculate approximate number of obstacles to place (limited by MaxObstacles)
+    const int32 NumObstacles = FMath::Min(
+        FMath::CeilToInt((OcclusionPercentage / 100.0f) * TotalVolume / AvgObstacleVolume),
+        MaxObstacles
+    );
     
     // Place obstacles
     int32 PlacementAttempts = 0;
@@ -273,13 +278,16 @@ void ANav3DTestVolume::GenerateUniformDistribution(const FRandomStream& RandomSt
             FTransform Transform;
             Transform.SetLocation(LocalPosition);
             Transform.SetScale3D(FVector(Size / 50.0f));  // Assuming sphere mesh has radius 50
-            ObstacleMeshes->AddInstance(Transform);
+            ObstacleMeshes->AddInstance(Transform, /*bWorldSpace=*/false);
             
             PlacedObstacles++;
         }
         
         PlacementAttempts++;
     }
+    
+    // Mark component dirty to update render state
+    ObstacleMeshes->MarkRenderStateDirty();
 }
 
 void ANav3DTestVolume::GenerateRandomSpline() const
@@ -352,8 +360,11 @@ void ANav3DTestVolume::GenerateClusteredDistribution(const FRandomStream& Random
     const float AvgObstacleSize = (MinObstacleSize + MaxObstacleSize) * 0.5f;
     const float AvgObstacleVolume = (4.0f/3.0f) * PI * FMath::Pow(AvgObstacleSize, 3.0f);
     
-    // Calculate approximate number of obstacles to place
-    const int32 TotalObstacles = FMath::CeilToInt((OcclusionPercentage / 100.0f) * TotalVolume / AvgObstacleVolume);
+    // Calculate approximate number of obstacles to place (limited by MaxObstacles)
+    const int32 TotalObstacles = FMath::Min(
+        FMath::CeilToInt((OcclusionPercentage / 100.0f) * TotalVolume / AvgObstacleVolume),
+        MaxObstacles
+    );
     
     // 1. Place a sparse set of "seed" points first (much fewer than total obstacles)
     // 2. Then cluster additional obstacles around these seed points
@@ -409,7 +420,7 @@ void ANav3DTestVolume::GenerateClusteredDistribution(const FRandomStream& Random
             FTransform Transform;
             Transform.SetLocation(LocalPosition);
             Transform.SetScale3D(FVector(SeedSize / 50.0f));  // Assuming sphere mesh has radius 50
-            ObstacleMeshes->AddInstance(Transform);
+            ObstacleMeshes->AddInstance(Transform, /*bWorldSpace=*/false);
         }
     }
     
@@ -421,8 +432,14 @@ void ANav3DTestVolume::GenerateClusteredDistribution(const FRandomStream& Random
     
     for (int32 SeedIndex = 0; SeedIndex < SeedPoints.Num(); SeedIndex++)
     {
+        // Check if we've hit the MaxObstacles limit
+        if (TotalObstaclesPlaced >= MaxObstacles)
+        {
+            break;
+        }
+        
         FVector SeedPoint = SeedPoints[SeedIndex];
-        int32 ObstaclesToPlace = ObstaclesPerCluster;
+        int32 ObstaclesToPlace = FMath::Min(ObstaclesPerCluster, MaxObstacles - TotalObstaclesPlaced);
         int32 PlacementAttempts = 0;
         const int32 MaxAttempts = ObstaclesToPlace * 10;
         int32 PlacedForThisSeed = 0;
@@ -467,7 +484,7 @@ void ANav3DTestVolume::GenerateClusteredDistribution(const FRandomStream& Random
                 FTransform Transform;
                 Transform.SetLocation(LocalPosition);
                 Transform.SetScale3D(FVector(Size / 50.0f));  // Assuming sphere mesh has radius 50
-                ObstacleMeshes->AddInstance(Transform);
+                ObstacleMeshes->AddInstance(Transform, /*bWorldSpace=*/false);
                 
                 PlacedForThisSeed++;
                 TotalObstaclesPlaced++;
@@ -482,6 +499,9 @@ void ANav3DTestVolume::GenerateClusteredDistribution(const FRandomStream& Random
     
     UE_LOG(LogNav3D, Log, TEXT("Clustered Distribution: Created %d total obstacles (target: %d)"), 
         TotalObstaclesPlaced, TotalObstacles);
+    
+    // Mark component dirty to update render state
+    ObstacleMeshes->MarkRenderStateDirty();
 }
 
 TArray<FVector> ANav3DTestVolume::GenerateClusterCenters(const int32 NumClusters, const FRandomStream& RandomStream) const
@@ -613,11 +633,11 @@ void ANav3DTestVolume::GeneratePerlinNoiseDistribution(const FRandomStream& Rand
     int32 NumObstaclesCreated = 0;
     
     // Sample points in grid and place obstacles based on noise value
-    for (int32 X = 0; X < ResolutionX; X++)
+    for (int32 X = 0; X < ResolutionX && NumObstaclesCreated < MaxObstacles; X++)
     {
-        for (int32 Y = 0; Y < ResolutionY; Y++)
+        for (int32 Y = 0; Y < ResolutionY && NumObstaclesCreated < MaxObstacles; Y++)
         {
-            for (int32 Z = 0; Z < ResolutionZ; Z++)
+            for (int32 Z = 0; Z < ResolutionZ && NumObstaclesCreated < MaxObstacles; Z++)
             {
                 // Calculate world position
                 FVector WorldPosition = FVector(
@@ -655,7 +675,7 @@ void ANav3DTestVolume::GeneratePerlinNoiseDistribution(const FRandomStream& Rand
                         FTransform Transform;
                         Transform.SetLocation(LocalPosition);
                         Transform.SetScale3D(FVector(Size / 50.0f));  // Assuming sphere mesh has radius 50
-                        ObstacleMeshes->AddInstance(Transform);
+                        ObstacleMeshes->AddInstance(Transform, /*bWorldSpace=*/false);
                         NumObstaclesCreated++;
                     }
                 }
@@ -664,6 +684,9 @@ void ANav3DTestVolume::GeneratePerlinNoiseDistribution(const FRandomStream& Rand
     }
     
     UE_LOG(LogNav3D, Log, TEXT("Perlin Noise Distribution: Created %d obstacles"), NumObstaclesCreated);
+    
+    // Mark component dirty to update render state
+    ObstacleMeshes->MarkRenderStateDirty();
 }
 
 void ANav3DTestVolume::GenerateRingDistribution(const FRandomStream& RandomStream) const
@@ -679,21 +702,27 @@ void ANav3DTestVolume::GenerateRingDistribution(const FRandomStream& RandomStrea
     const float AvgObstacleSize = (MinObstacleSize + MaxObstacleSize) * 0.5f;
     const float AvgObstacleVolume = (4.0f/3.0f) * PI * FMath::Pow(AvgObstacleSize, 3.0f);
     
-    // Calculate approximate number of obstacles to place for desired occlusion
-    const int32 TotalObstacles = FMath::CeilToInt((OcclusionPercentage / 100.0f) * TotalVolume / AvgObstacleVolume);
+    // Calculate approximate number of obstacles to place for desired occlusion (limited by MaxObstacles)
+    const int32 TotalObstacles = FMath::Min(
+        FMath::CeilToInt((OcclusionPercentage / 100.0f) * TotalVolume / AvgObstacleVolume),
+        MaxObstacles
+    );
     
     // Calculate obstacles per ring (distribute evenly)
     const int32 ObstaclesPerRing = FMath::CeilToInt(static_cast<float>(TotalObstacles) / RingCount);
     
+    // Track total placed obstacles
+    int32 TotalPlaced = 0;
+    
     // For each ring
-    for (int32 RingIndex = 0; RingIndex < RingCount; RingIndex++)
+    for (int32 RingIndex = 0; RingIndex < RingCount && TotalPlaced < MaxObstacles; RingIndex++)
     {
         // Calculate vertical offset based on ring index
         const float VerticalOffset = (RingIndex - (RingCount - 1) / 2.0f) * RingVerticalSpacing;
         FVector RingCenter = Center + FVector(0, 0, VerticalOffset);
         
         // Place obstacles around the ring
-        for (int32 i = 0; i < ObstaclesPerRing; i++)
+        for (int32 i = 0; i < ObstaclesPerRing && TotalPlaced < MaxObstacles; i++)
         {
             // Calculate angle around ring
             float Angle = (i * 360.0f) / ObstaclesPerRing;
@@ -727,10 +756,14 @@ void ANav3DTestVolume::GenerateRingDistribution(const FRandomStream& RandomStrea
                 FTransform Transform;
                 Transform.SetLocation(Position);
                 Transform.SetScale3D(FVector(Size / 50.0f));  // Assuming sphere mesh has radius 50
-                ObstacleMeshes->AddInstance(Transform);
+                ObstacleMeshes->AddInstance(Transform, /*bWorldSpace=*/true);
+                TotalPlaced++;
             }
         }
     }
+    
+    // Mark component dirty to update render state
+    ObstacleMeshes->MarkRenderStateDirty();
 }
 
 void ANav3DTestVolume::GenerateDiscDistribution(const FRandomStream& RandomStream) const
@@ -746,8 +779,11 @@ void ANav3DTestVolume::GenerateDiscDistribution(const FRandomStream& RandomStrea
     const float AvgObstacleSize = (MinObstacleSize + MaxObstacleSize) * 0.5f;
     const float AvgObstacleVolume = (4.0f/3.0f) * PI * FMath::Pow(AvgObstacleSize, 3.0f);
     
-    // Calculate approximate number of obstacles to place for desired occlusion
-    const int32 TotalObstacles = FMath::CeilToInt((OcclusionPercentage / 100.0f) * TotalVolume / AvgObstacleVolume);
+    // Calculate approximate number of obstacles to place for desired occlusion (limited by MaxObstacles)
+    const int32 TotalObstacles = FMath::Min(
+        FMath::CeilToInt((OcclusionPercentage / 100.0f) * TotalVolume / AvgObstacleVolume),
+        MaxObstacles
+    );
     
     // Calculate disc area
     const float DiscArea = PI * DiscRadius * DiscRadius;
@@ -758,8 +794,11 @@ void ANav3DTestVolume::GenerateDiscDistribution(const FRandomStream& RandomStrea
     // Number of rings to create (more rings = more uniform distribution)
     const int32 DiscRingCount = FMath::Max(FMath::CeilToInt(DiscRadius / (AvgObstacleSize * 2.0f)), 5);
     
+    // Track total placed obstacles
+    int32 TotalPlaced = 0;
+    
     // For each ring in the disc
-    for (int32 RingIndex = 0; RingIndex < DiscRingCount; RingIndex++)
+    for (int32 RingIndex = 0; RingIndex < DiscRingCount && TotalPlaced < MaxObstacles; RingIndex++)
     {
         // Calculate ring radius (outer rings need more obstacles)
         const float RingRadiusRatio = static_cast<float>(RingIndex) / DiscRingCount;
@@ -777,7 +816,7 @@ void ANav3DTestVolume::GenerateDiscDistribution(const FRandomStream& RandomStrea
         const float ObstacleSpacing = 360.0f / ObstaclesInRing;
         
         // Place obstacles around the ring
-        for (int32 i = 0; i < ObstaclesInRing; i++)
+        for (int32 i = 0; i < ObstaclesInRing && TotalPlaced < MaxObstacles; i++)
         {
             // Calculate angle around ring
             float Angle = i * ObstacleSpacing;
@@ -833,10 +872,14 @@ void ANav3DTestVolume::GenerateDiscDistribution(const FRandomStream& RandomStrea
                 FTransform Transform;
                 Transform.SetLocation(Position);
                 Transform.SetScale3D(FVector(Size / 50.0f));  // Assuming sphere mesh has radius 50
-                ObstacleMeshes->AddInstance(Transform);
+                ObstacleMeshes->AddInstance(Transform, /*bWorldSpace=*/true);
+                TotalPlaced++;
             }
         }
     }
+    
+    // Mark component dirty to update render state
+    ObstacleMeshes->MarkRenderStateDirty();
 }
 
 void ANav3DTestVolume::GenerateSplineDistribution(const FRandomStream& RandomStream) const
@@ -856,8 +899,11 @@ void ANav3DTestVolume::GenerateSplineDistribution(const FRandomStream& RandomStr
     const float AvgObstacleSize = (MinObstacleSize + MaxObstacleSize) * 0.5f;
     const float AvgObstacleVolume = (4.0f/3.0f) * PI * FMath::Pow(AvgObstacleSize, 3.0f);
     
-    // Calculate approximate number of obstacles to place for desired occlusion
-    const int32 TotalObstacles = FMath::CeilToInt((OcclusionPercentage / 100.0f) * TotalVolume / AvgObstacleVolume);
+    // Calculate approximate number of obstacles to place for desired occlusion (limited by MaxObstacles)
+    const int32 TotalObstacles = FMath::Min(
+        FMath::CeilToInt((OcclusionPercentage / 100.0f) * TotalVolume / AvgObstacleVolume),
+        MaxObstacles
+    );
     
     // Calculate spline length
     const float ActualSplineLength = ObstacleSpline->GetSplineLength();
@@ -873,7 +919,7 @@ void ANav3DTestVolume::GenerateSplineDistribution(const FRandomStream& RandomStr
     int32 PlacedObstacles = 0;
     
     // Place obstacles along the spline
-    for (float Distance = 0.0f; Distance < ActualSplineLength; Distance += ObstacleSpacing)
+    for (float Distance = 0.0f; Distance < ActualSplineLength && PlacedObstacles < MaxObstacles; Distance += ObstacleSpacing)
     {
         // Get position and direction at this point on the spline (in world space)
         FVector WorldPosition = ObstacleSpline->GetLocationAtDistanceAlongSpline(Distance, ESplineCoordinateSpace::World);
@@ -909,12 +955,15 @@ void ANav3DTestVolume::GenerateSplineDistribution(const FRandomStream& RandomStr
             FTransform Transform;
             Transform.SetLocation(LocalPosition);
             Transform.SetScale3D(FVector(Size / 50.0f));  // Assuming sphere mesh has radius 50
-            ObstacleMeshes->AddInstance(Transform);
+            ObstacleMeshes->AddInstance(Transform, /*bWorldSpace=*/false);
             PlacedObstacles++;
         }
     }
     
     UE_LOG(LogNav3D, Log, TEXT("Spline Distribution: Placed %d obstacles"), PlacedObstacles);
+    
+    // Mark component dirty to update render state
+    ObstacleMeshes->MarkRenderStateDirty();
 }
 
 bool ANav3DTestVolume::IsPointOccluded(const FVector& WorldPoint, const float Radius) const
