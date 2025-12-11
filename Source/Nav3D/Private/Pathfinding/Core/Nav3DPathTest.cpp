@@ -4,7 +4,6 @@
 #include "Pathfinding/Core/Nav3DPath.h"
 #include "Nav3DUtils.h"
 #include "Nav3D.h"
-#include "NavigationSystem.h"
 #include "Components/SphereComponent.h"
 #include "Pathfinding/Utils/Nav3DPathTestRenderingComponent.h"
 
@@ -179,24 +178,14 @@ void ANav3DPathTest::TryUpdatePath()
 	}
 	
 	UWorld* World = GetWorld();
-	UNavigationSystemV1* NavigationSystem = UNavigationSystemV1::GetCurrent(World);
-	if (!NavigationSystem)
-	{
-		UE_LOG(LogNav3D, Error, TEXT("FindPath: No navigation system found"));
-		return;
-	}
-
-	auto* NavigationData = NavigationSystem->GetNavDataForProps(NavAgentProperties);
-	if (!NavigationData)
-	{
-		UE_LOG(LogNav3D, Error, TEXT("FindPath: No navigation data found for agent properties"));
-		return;
-	}
-
-	const auto* Nav3dData = Cast<ANav3DData>(NavigationData);
+	
+	// Find Nav3DData directly using utility function
+	// Nav3DData supports multiple agent sizes through hierarchical layers, so we don't need exact property matching
+	// The agent properties used to build the Nav3DData are automatically used
+	const ANav3DData* Nav3dData = FNav3DUtils::GetNav3DData(World);
 	if (!Nav3dData)
 	{
-		UE_LOG(LogNav3D, Error, TEXT("FindPath: Navigation data is not Nav3D data"));
+		UE_LOG(LogNav3D, Error, TEXT("FindPath: No Nav3DData found in navigation system. Make sure Nav3D data has been built."));
 		return;
 	}
 	
@@ -217,7 +206,17 @@ void ANav3DPathTest::TryUpdatePath()
     Request.StartLocation = EffectiveStart->GetActorLocation();
     Request.EndLocation = EffectiveEnd->GetActorLocation();
 	Request.NavData = Nav3dData;
-    Request.AgentProperties = NavAgentProperties.IsValid() ? NavAgentProperties : Nav3dData->GetNavAgentProperties();
+	// Use agent properties from Nav3DData (which were used to build it)
+	// Nav3DData automatically supports multiple agent sizes through hierarchical layers
+	Request.AgentProperties = Nav3dData->GetNavAgentProperties();
+	
+	// If custom agent properties are specified and valid, use them (for testing different agent sizes)
+	// This allows testing pathfinding for agents larger/smaller than the base agent
+	if (NavAgentProperties.IsValid())
+	{
+		Request.AgentProperties = NavAgentProperties;
+	}
+	
 	Request.Algorithm = Algorithm;
     Request.LogVerbosity = ENav3DPathingLogVerbosity::Standard;
 

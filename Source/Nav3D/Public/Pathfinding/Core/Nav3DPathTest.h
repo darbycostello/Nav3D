@@ -113,7 +113,10 @@ public:
 private:
 	void UpdateDrawing() const;
 
-    UPROPERTY(EditAnywhere, Category="Nav3D")
+	// Optional: Override agent properties for testing different agent sizes
+	// If not set or invalid, uses the agent properties from Nav3DData (which were used to build it)
+	// Nav3DData supports multiple agent sizes through hierarchical layers automatically
+    UPROPERTY(EditAnywhere, Category="Nav3D|Advanced", meta=(ToolTip="Optional: Override agent properties. Leave default to use Nav3DData's agent properties."))
     FNavAgentProperties NavAgentProperties;
 
 	UPROPERTY(EditInstanceOnly, Category="Nav3D")

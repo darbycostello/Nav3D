@@ -82,6 +82,16 @@ public:
 		uint8 FaceB,
 		float AdjacencyClearance);
 
+	// New boundary-based portal connection check
+	static bool CheckVoxelBoundaryConnection(
+		const FNav3DEdgeVoxel& VoxelA,
+		const FNav3DEdgeVoxel& VoxelB,
+		const FNav3DVolumeNavigationData* VolumeA,
+		const FNav3DVolumeNavigationData* VolumeB,
+		float BoundaryPlaneValue,
+		int32 BoundaryAxis,
+		float MaxGap);
+
 	static FSharedConstNavQueryFilter GetNav3DQueryFilter(
 		const ANav3DData* Nav3DData,
 		const TSubclassOf<UNavigationQueryFilter>& NavigationQueryFilter,

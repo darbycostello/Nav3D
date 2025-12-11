@@ -283,7 +283,14 @@ ENavigationQueryResult::Type FNav3DVolumePathfinder::FindPathWithinVolume(
 
             if (bLast)
             {
-                Segments.Add({CurrentPoint, EndLocation, StartVD, false, ActualStartChunk});
+                // For the final segment, use VolumeData from the chunk containing the end location
+                // This is critical for cross-chunk pathfinding where the end point is in a different chunk
+                const ANav3DDataChunkActor* PathEndChunk = FindChunkContaining(EndLocation);
+                const FNav3DVolumeNavigationData* EndVD = PathEndChunk && PathEndChunk->Nav3DChunks.Num() > 0 && PathEndChunk->Nav3DChunks[0]
+                    ? PathEndChunk->Nav3DChunks[0]->GetVolumeNavigationData()
+                    : StartVD; // Fallback to start volume data if end chunk not found
+                
+                Segments.Add({CurrentPoint, EndLocation, EndVD, false, ActualStartChunk});
                 CurrentPoint = EndLocation;
             }
             else
@@ -324,7 +331,14 @@ ENavigationQueryResult::Type FNav3DVolumePathfinder::FindPathWithinVolume(
 		const ANav3DDataChunkActor* PlannedChunk = ChunkPath[i];
 		if (bLast)
 		{
-			Segments.Add({CurrentPoint, EndLocation, StartVolumeData, false, ActualStartChunk});
+			// For the final segment, use VolumeData from the chunk containing the end location
+			// This is critical for cross-chunk pathfinding where the end point is in a different chunk
+			const ANav3DDataChunkActor* PathEndChunk = FindChunkContaining(EndLocation);
+			const FNav3DVolumeNavigationData* EndVolumeData = PathEndChunk && PathEndChunk->Nav3DChunks.Num() > 0 && PathEndChunk->Nav3DChunks[0]
+				? PathEndChunk->Nav3DChunks[0]->GetVolumeNavigationData()
+				: StartVolumeData; // Fallback to start volume data if end chunk not found
+			
+			Segments.Add({CurrentPoint, EndLocation, EndVolumeData, false, ActualStartChunk});
 			CurrentPoint = EndLocation;
 		}
 		else
@@ -558,7 +572,18 @@ FVector FNav3DVolumePathfinder::FindPortalBetweenChunks(
 		{
 			if (const FNav3DVolumeNavigationData* VD = FromChunk->Nav3DChunks[0]->GetVolumeNavigationData())
 			{
-				const FVector Guess = VD->GetLeafNodePositionFromMortonCode(Portal.Local);
+				// Use stored connection point if available, otherwise recalculate from Morton code
+				FVector Guess;
+				if (!Portal.ConnectionPoint.IsNearlyZero())
+				{
+					Guess = Portal.ConnectionPoint;
+				}
+				else
+				{
+					// Legacy: Recalculate from Morton code (may be inaccurate for non-layer-0 portals)
+					Guess = VD->GetLeafNodePositionFromMortonCode(Portal.Local);
+				}
+				
 				if (const TOptional<FVector> Fixed = SnapToNavigable(VD, Guess))
 				{
 					return Fixed.GetValue();
@@ -597,9 +622,21 @@ bool FNav3DVolumePathfinder::GetPortalPositions(
     const FNav3DVolumeNavigationData* ToVD = (ToChunk->Nav3DChunks.Num() > 0 && ToChunk->Nav3DChunks[0]) ? ToChunk->Nav3DChunks[0]->GetVolumeNavigationData() : nullptr;
     if (!FromVD || !ToVD) { return false; }
 
-    // Initial portal centers from stored morton codes
-    const FVector LocalPos  = FromVD->GetLeafNodePositionFromMortonCode(Portal.Local);
-    const FVector RemotePos = ToVD->GetLeafNodePositionFromMortonCode(Portal.Remote);
+    // Use stored connection point if available (pre-calculated during portal creation)
+    // Otherwise fall back to recalculating from Morton codes for backwards compatibility
+    FVector LocalPos, RemotePos;
+    if (!Portal.ConnectionPoint.IsNearlyZero())
+    {
+        // Use the pre-calculated connection point on the boundary plane
+        LocalPos = Portal.ConnectionPoint;
+        RemotePos = Portal.ConnectionPoint; // Same point for both sides (it's on the boundary)
+    }
+    else
+    {
+        // Legacy: Recalculate from Morton codes (may be inaccurate for non-layer-0 portals)
+        LocalPos  = FromVD->GetLeafNodePositionFromMortonCode(Portal.Local);
+        RemotePos = ToVD->GetLeafNodePositionFromMortonCode(Portal.Remote);
+    }
 
     auto SnapToNavigable = [](const FNav3DVolumeNavigationData* VD, const FVector& Pos) -> TOptional<FVector>
     {
@@ -683,23 +720,23 @@ ENavigationQueryResult::Type FNav3DVolumePathfinder::ProcessPathSegments(
 		SegmentRequest.StartLocation = Segment.StartPoint;
 		SegmentRequest.EndLocation = Segment.EndPoint;
 
-        ENavigationQueryResult::Type SegmentResult = ENavigationQueryResult::Fail;
-        if (Algorithm && Segment.VolumeData)
-        {
-            SegmentResult = Algorithm->FindPath(SegmentPath, SegmentRequest, Segment.VolumeData);
-        }
-        else
-        {
-            // Fallback: if start chunk is empty, treat as clear space and use direct segment
-            if (SegmentStartChunk && IsChunkEmpty(SegmentStartChunk))
-            {
-                SegmentPath.ResetForRepath();
-                TArray<FNavPathPoint>& Pts = SegmentPath.GetPathPoints();
-                Pts.Add(FNavPathPoint(Segment.StartPoint));
-                Pts.Add(FNavPathPoint(Segment.EndPoint));
-                SegmentResult = ENavigationQueryResult::Success;
-            }
-        }
+		ENavigationQueryResult::Type SegmentResult = ENavigationQueryResult::Fail;
+		if (Algorithm && Segment.VolumeData)
+		{
+			SegmentResult = Algorithm->FindPath(SegmentPath, SegmentRequest, Segment.VolumeData);
+		}
+		else
+		{
+			// Fallback: if start chunk is empty, treat as clear space and use direct segment
+			if (SegmentStartChunk && IsChunkEmpty(SegmentStartChunk))
+			{
+				SegmentPath.ResetForRepath();
+				TArray<FNavPathPoint>& Pts = SegmentPath.GetPathPoints();
+				Pts.Add(FNavPathPoint(Segment.StartPoint));
+				Pts.Add(FNavPathPoint(Segment.EndPoint));
+				SegmentResult = ENavigationQueryResult::Success;
+			}
+		}
 
 		if (SegmentResult == ENavigationQueryResult::Success)
 		{

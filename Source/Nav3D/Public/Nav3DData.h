@@ -6,6 +6,7 @@
 #include "Nav3DVolumeNavigationData.h"
 #include <CoreMinimal.h>
 #include <NavigationData.h>
+#include "HAL/CriticalSection.h"
 
 #include "Tactical/Nav3DTacticalReasoning.h"
 #include "Nav3DData.generated.h"
@@ -390,6 +391,10 @@ private:
 	// Track which volumes are currently loaded and their reference counts
 	TMap<FBox, int32> LoadedVolumeReferenceCounts;  // Volume bounds → ref count
 	mutable FCriticalSection VolumeLoadingMutex;    // Thread safety
+
+	// Cached discoverable volumes for render-thread access
+	mutable TArray<FBox> CachedDiscoverableVolumes;
+	mutable FCriticalSection CachedDiscoverableVolumesMutex;
 	
 	// Single volume build timing
 	double SingleVolumeBuildStartTime = 0.0;

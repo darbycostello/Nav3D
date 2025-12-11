@@ -1,7 +1,10 @@
 #pragma once
 #include "Engine/OverlapResult.h"
-#include "LandscapeComponent.h"
 #include "Nav3DTypes.h"
+
+// Forward declarations for landscape types (used in runtime)
+class ALandscapeProxy;
+class ULandscapeInfo;
 #include <Templates/SubclassOf.h>
 #include "CoreMinimal.h"
 #include "Templates/Atomic.h"

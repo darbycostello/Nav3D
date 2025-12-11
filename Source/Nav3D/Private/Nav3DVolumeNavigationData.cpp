@@ -2,7 +2,9 @@
 
 #include <libmorton/morton.h>
 
+#include "LandscapeComponent.h"
 #include "LandscapeProxy.h"
+#include "LandscapeInfo.h"
 #include "Nav3DUtils.h"
 #include "Nav3DTypes.h"
 #include "TriBoxOverlap.h"
@@ -412,92 +414,97 @@ void FNav3DVolumeNavigationData::GetNodeNeighbours(
 
 			const auto& ThisNode = GetNodeFromAddress(ThisAddress);
 
-			// If the node as no children, it's clear, so add to Neighbours and
-			// continue
-			if (!ThisNode.HasChildren())
+		// If the node as no children, it's clear, so add to Neighbours and
+		// continue
+		if (!ThisNode.HasChildren())
+		{
+			Neighbours.Add(ThisAddress);
+			continue;
+		}
+
+		if (ThisAddress.LayerIndex > 0)
+		{
+			/* Morton code node ordering
+			    Z
+			    ^
+			    |          5 --- 7
+			    |        / |   / |
+			    |       4 --- 6  |
+			    |  X    |  1 -|- 3
+			    | /     | /   | /
+			    |/      0 --- 2
+			    +-------------------> Y
+			*/
+
+			static constexpr NodeIndex ChildOffsetsDirections[6][4] = {
+				{0, 4, 2, 6}, {1, 3, 5, 7}, {0, 1, 4, 5},
+				{2, 3, 6, 7}, {0, 1, 2, 3}, {4, 5, 6, 7}
+			};
+
+			for (const auto& ChildIndex : ChildOffsetsDirections[Direction])
 			{
-				Neighbours.Add(NeighbourAddress);
-				continue;
-			}
+				auto FirstChildAddress = ThisNode.FirstChild;
+				FirstChildAddress.NodeIndex += ChildIndex;
 
-			if (ThisAddress.LayerIndex > 0)
-			{
-				/* Morton code node ordering
-				    Z
-				    ^
-				    |          5 --- 7
-				    |        / |   / |
-				    |       4 --- 6  |
-				    |  X    |  1 -|- 3
-				    | /     | /   | /
-				    |/      0 --- 2
-				    +-------------------> Y
-				*/
-
-				static constexpr NodeIndex ChildOffsetsDirections[6][4] = {
-					{0, 4, 2, 6}, {1, 3, 5, 7}, {0, 1, 4, 5},
-					{2, 3, 6, 7}, {0, 1, 2, 3}, {4, 5, 6, 7}
-				};
-
-				for (const auto& ChildIndex : ChildOffsetsDirections[Direction])
+				if (const auto& ChildNode = GetNodeFromAddress(FirstChildAddress);
+					ChildNode.HasChildren())
+				// working set to keep going down
 				{
-					auto FirstChildAddress = ThisNode.FirstChild;
-					FirstChildAddress.NodeIndex += ChildIndex;
-
-					if (const auto& ChildNode = GetNodeFromAddress(FirstChildAddress);
-						ChildNode.HasChildren())
-					// working set to keep going down
-					{
-						NeighbourAddressesWorkingSet.Emplace(FirstChildAddress);
-					}
-					else
-					{
-						Neighbours.Emplace(FirstChildAddress);
-					}
+					NeighbourAddressesWorkingSet.Emplace(FirstChildAddress);
+				}
+				else
+				{
+					Neighbours.Emplace(FirstChildAddress);
 				}
 			}
-			else
+		}
+		else
+		{
+			/*
+			Sub node morton code ordering for the face pointing to Neighbour[0],
+			which is (1,0,0) Use the debug draw options of the navigation data in
+			the scene to show all the sub nodes
+	
+			Z
+			|
+			|   36 38 52 54
+			|   32 34 48 50
+			|   04 06 20 22
+			|   00 02 16 18
+			|
+			------------------ Y
+			*/
+
+			static constexpr NodeIndex LeafChildOffsetsDirections[6][16] = {
+				{0, 2, 16, 18, 4, 6, 20, 22, 32, 34, 48, 50, 36, 38, 52, 54},
+				{9, 11, 25, 27, 13, 15, 29, 31, 41, 43, 57, 59, 45, 47, 61, 63},
+				{0, 1, 8, 9, 4, 5, 12, 13, 32, 33, 40, 41, 36, 37, 44, 45},
+				{18, 19, 26, 27, 22, 23, 30, 31, 50, 51, 58, 59, 54, 55, 62, 63},
+				{0, 1, 8, 9, 2, 3, 10, 11, 16, 17, 24, 25, 18, 19, 26, 27},
+				{36, 37, 44, 45, 38, 39, 46, 47, 52, 53, 60, 61, 54, 55, 62, 63}
+			};
+
+			// Validate that ThisNode has valid children before trying to access them
+			if (!ThisNode.FirstChild.IsValid())
 			{
-				/*
-				Sub node morton code ordering for the face pointing to Neighbour[0],
-				which is (1,0,0) Use the debug draw options of the navigation data in
-				the scene to show all the sub nodes
-		
-				Z
-				|
-				|   36 38 52 54
-				|   32 34 48 50
-				|   04 06 20 22
-				|   00 02 16 18
-				|
-				------------------ Y
-				*/
+				continue; // Skip this direction if the node doesn't have valid children
+			}
 
-				static constexpr NodeIndex LeafChildOffsetsDirections[6][16] = {
-					{0, 2, 16, 18, 4, 6, 20, 22, 32, 34, 48, 50, 36, 38, 52, 54},
-					{9, 11, 25, 27, 13, 15, 29, 31, 41, 43, 57, 59, 45, 47, 61, 63},
-					{0, 1, 8, 9, 4, 5, 12, 13, 32, 33, 40, 41, 36, 37, 44, 45},
-					{18, 19, 26, 27, 22, 23, 30, 31, 50, 51, 58, 59, 54, 55, 62, 63},
-					{0, 1, 8, 9, 2, 3, 10, 11, 16, 17, 24, 25, 18, 19, 26, 27},
-					{36, 37, 44, 45, 38, 39, 46, 47, 52, 53, 60, 61, 54, 55, 62, 63}
-				};
+			for (const auto& LeafIndex : LeafChildOffsetsDirections[Direction])
+			{
+				auto FirstChildAddress = ThisNode.FirstChild;
+				const auto& LeafNode =
+					Nav3DData.GetLeafNodes().GetLeafNode(FirstChildAddress.NodeIndex);
 
-				for (const auto& LeafIndex : LeafChildOffsetsDirections[Direction])
+				FirstChildAddress.LayerIndex = 0;
+				FirstChildAddress.SubNodeIndex = LeafIndex;
+
+				if (!LeafNode.IsSubNodeOccluded(LeafIndex))
 				{
-					auto FirstChildAddress = Neighbour.FirstChild;
-					const auto& LeafNode =
-						Nav3DData.GetLeafNodes().GetLeafNode(FirstChildAddress.NodeIndex);
-
-					FirstChildAddress.LayerIndex = 0;
-					FirstChildAddress.NodeIndex = ThisAddress.NodeIndex;
-					FirstChildAddress.SubNodeIndex = LeafIndex;
-
-					if (!LeafNode.IsSubNodeOccluded(LeafIndex))
-					{
-						Neighbours.Emplace(FirstChildAddress);
-					}
+					Neighbours.Emplace(FirstChildAddress);
 				}
 			}
+		}
 		}
 	}
 }
@@ -1368,7 +1375,7 @@ bool FNav3DVolumeNavigationData::CheckStaticMeshTrianglesWithTransform(
         FVector V1 = Transform.TransformPosition(FVector(V1F));
         FVector V2 = Transform.TransformPosition(FVector(V2F));
 
-        if (TriBoxOverlap(Position, FVector(BoxExtent), V0, V1, V2))
+        if (Nav3D::TriBoxOverlapUtils::TriBoxOverlap(Position, FVector(BoxExtent), V0, V1, V2))
         {
             return true;
         }
@@ -2105,6 +2112,13 @@ void FNav3DVolumeNavigationData::GetLeafNeighbours(
 		{
 			const FNav3DNodeAddress& NeighbourAddress =
 				Node.Neighbours[NeighbourDirection];
+			
+			// Validate the neighbor address before using it
+			if (!NeighbourAddress.IsValid() || NeighbourAddress.LayerIndex >= Nav3DData.GetLayerCount())
+			{
+				continue; // Skip invalid neighbors
+			}
+			
 			const FNav3DNode& NeighbourNode = GetNodeFromAddress(NeighbourAddress);
 
 			if (!NeighbourNode.FirstChild.IsValid())

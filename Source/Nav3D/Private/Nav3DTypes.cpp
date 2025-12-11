@@ -139,8 +139,7 @@ int FNav3DData::GetAllocatedSize() const
 }
 
 FNav3DTacticalDebugData::FNav3DTacticalDebugData()
-	: bDebugDrawPortals(0)
-    , bDebugDrawRegions(false)
+	: bDebugDrawRegions(false)
 	, bDebugDrawRegionIds(false)
 	, bDebugDrawRegionAdjacency(false)
 	, bDebugDrawVisibility(false)
@@ -165,6 +164,7 @@ FNav3DPerformanceStats::FNav3DPerformanceStats()
 FNav3DVolumeDebugData::FNav3DVolumeDebugData()
 	: bDebugDrawBounds(false)
 	, bDebugDrawVolumes(false)
+	, bDebugDrawPortals(false)
 	, bDebugDrawLayers(false)
 	, LayerIndexToDraw(0)
 	, bDebugDrawOccludedVoxels(false)

@@ -89,23 +89,23 @@ bool FNav3DPathCoordinator::TryDirectTraversal(
 	const FNav3DPathingRequest& Request,
 	FNav3DPath& OutPath) const
 {
-	UE_LOG(LogNav3D, Verbose, TEXT("TryDirectTraversal: Starting direct traversal check from %s to %s"), 
+	UE_LOG(LogNav3D, VeryVerbose, TEXT("TryDirectTraversal: Starting direct traversal check from %s to %s"), 
 		*Request.StartLocation.ToString(), *Request.EndLocation.ToString());
 
 	if (!Request.NavData)
 	{
-		UE_LOG(LogNav3D, Verbose, TEXT("TryDirectTraversal: Failed - No NavData provided"));
+		UE_LOG(LogNav3D, VeryVerbose, TEXT("TryDirectTraversal: Failed - No NavData provided"));
 		return false;
 	}
 
 	if (!MultiChunkRaycaster)
 	{
-		UE_LOG(LogNav3D, Verbose, TEXT("TryDirectTraversal: Failed - MultiChunkRaycaster not initialized"));
+		UE_LOG(LogNav3D, VeryVerbose, TEXT("TryDirectTraversal: Failed - MultiChunkRaycaster not initialized"));
 		return false;
 	}
 
 	const float Distance = FVector::Dist(Request.StartLocation, Request.EndLocation);
-	UE_LOG(LogNav3D, Verbose, TEXT("TryDirectTraversal: Distance = %.2f, AgentRadius = %.2f"), 
+	UE_LOG(LogNav3D, VeryVerbose, TEXT("TryDirectTraversal: Distance = %.2f, AgentRadius = %.2f"), 
 		Distance, Request.AgentProperties.AgentRadius);
 
 	FNav3DRaycastHit Hit;
@@ -118,12 +118,10 @@ bool FNav3DPathCoordinator::TryDirectTraversal(
 
 	if (!bHasLineOfTraversal)
 	{
-		UE_LOG(LogNav3D, Verbose, TEXT("TryDirectTraversal: Failed - Line of traversal blocked at distance %.2f"), 
+		UE_LOG(LogNav3D, VeryVerbose, TEXT("TryDirectTraversal: Failed - Line of traversal blocked at distance %.2f"), 
 			Hit.Distance);
 		return false;
 	}
-
-	UE_LOG(LogNav3D, Log, TEXT("TryDirectTraversal: SUCCESS - Direct path found! Creating 2-point path"));
 
 	// Create 2-point path
 	OutPath.ResetForRepath();
@@ -131,7 +129,7 @@ bool FNav3DPathCoordinator::TryDirectTraversal(
 	OutPath.GetPathPoints().Add(FNavPathPoint(Request.EndLocation));
 	OutPath.MarkReady();
 
-	UE_LOG(LogNav3D, Log, TEXT("TryDirectTraversal: Created direct path with %d points"), 
+	UE_LOG(LogNav3D, VeryVerbose, TEXT("TryDirectTraversal: Created direct path with %d points"), 
 		OutPath.GetPathPoints().Num());
 
 	return true;

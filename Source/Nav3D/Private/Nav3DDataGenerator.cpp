@@ -960,15 +960,9 @@ void FNav3DDataGenerator::BuildAdjacencyBetweenTwoChunkActors(ANav3DDataChunkAct
 				continue;
 			}
 			
-			float AdjacencyClearance = VolumeA->GetSettings().GenerationSettings.AdjacencyClearance;
-			// Temporarily increase clearance to test if this is the issue
-			AdjacencyClearance = FMath::Max(AdjacencyClearance, VoxelSize * 0.5f); // Use at least half voxel size
-			UE_LOG(LogNav3D, Verbose, TEXT("Using AdjacencyClearance=%.2f (original=%.2f, VoxelSize=%.2f) for adjacency between %s and %s"), 
-				AdjacencyClearance, VolumeA->GetSettings().GenerationSettings.AdjacencyClearance, VoxelSize, *ActorA->GetName(), *ActorB->GetName());
-			
 			// Early bounds check - if volumes don't share a face, skip detailed comparison
-			const FBox& BoundsA = VolumeA->GetNavigationBounds();
-			const FBox& BoundsB = VolumeB->GetNavigationBounds();
+			const FBox& BoundsA = ActorA->DataChunkActorBounds;
+			const FBox& BoundsB = ActorB->DataChunkActorBounds;
 			
 			// Check if volumes actually share a face (not just intersect)
 			bool bShareFace = false;
@@ -1053,41 +1047,43 @@ void FNav3DDataGenerator::BuildAdjacencyBetweenTwoChunkActors(ANav3DDataChunkAct
 			UE_LOG(LogNav3D, Verbose, TEXT("Volumes %s and %s share a face with distance %.2f - checking adjacency (FaceA=%d, FaceB=%d)"), 
 				*ActorA->GetName(), *ActorB->GetName(), SharedFaceDistance, FaceA, FaceB);
 			
-			// Debug: Log boundary voxel counts and face flags
-			UE_LOG(LogNav3D, Verbose, TEXT("Boundary voxel analysis: A has %d boundary voxels, B has %d boundary voxels"), 
-				A->BoundaryVoxels.Num(), B->BoundaryVoxels.Num());
-			
-			int32 AVoxelsOnFace = 0, BVoxelsOnFace = 0;
-			for (const FNav3DEdgeVoxel& VoxelA : A->BoundaryVoxels)
+			// Calculate the actual boundary plane position and axis for the new boundary-based check
+			float BoundaryPlane;
+			int32 BoundaryAxis;
+			if (FaceA == 1 || FaceA == 2) // X-axis
 			{
-				bool bVoxelAOnSharedFace = false;
-				if (FaceA == 1) bVoxelAOnSharedFace = VoxelA.bOnMaxXFace;
-				else if (FaceA == 2) bVoxelAOnSharedFace = VoxelA.bOnMinXFace;
-				else if (FaceA == 4) bVoxelAOnSharedFace = VoxelA.bOnMaxYFace;
-				else if (FaceA == 8) bVoxelAOnSharedFace = VoxelA.bOnMinYFace;
-				else if (FaceA == 16) bVoxelAOnSharedFace = VoxelA.bOnMaxZFace;
-				else if (FaceA == 32) bVoxelAOnSharedFace = VoxelA.bOnMinZFace;
-				if (bVoxelAOnSharedFace) AVoxelsOnFace++;
+				BoundaryAxis = 0;
+				BoundaryPlane = (FaceA == 1) ? BoundsA.Max.X : BoundsA.Min.X;
+			}
+			else if (FaceA == 4 || FaceA == 8) // Y-axis
+			{
+				BoundaryAxis = 1;
+				BoundaryPlane = (FaceA == 4) ? BoundsA.Max.Y : BoundsA.Min.Y;
+			}
+			else // Z-axis
+			{
+				BoundaryAxis = 2;
+				BoundaryPlane = (FaceA == 16) ? BoundsA.Max.Z : BoundsA.Min.Z;
 			}
 			
-			for (const FNav3DEdgeVoxel& VoxelB : B->BoundaryVoxels)
+			const float MaxBoundaryGap = VoxelSize * 0.5f; // Allow up to half voxel size gap
+			UE_LOG(LogNav3D, Verbose, TEXT("Boundary plane: %.2f on axis %d (X=0, Y=1, Z=2), MaxGap=%.2f"), 
+				BoundaryPlane, BoundaryAxis, MaxBoundaryGap);
+			
+			// Collect all valid connections for Poisson disk sampling
+			struct FConnectionCandidate
 			{
-				bool bVoxelBOnSharedFace = false;
-				if (FaceB == 1) bVoxelBOnSharedFace = VoxelB.bOnMaxXFace;
-				else if (FaceB == 2) bVoxelBOnSharedFace = VoxelB.bOnMinXFace;
-				else if (FaceB == 4) bVoxelBOnSharedFace = VoxelB.bOnMaxYFace;
-				else if (FaceB == 8) bVoxelBOnSharedFace = VoxelB.bOnMinYFace;
-				else if (FaceB == 16) bVoxelBOnSharedFace = VoxelB.bOnMaxZFace;
-				else if (FaceB == 32) bVoxelBOnSharedFace = VoxelB.bOnMinZFace;
-				if (bVoxelBOnSharedFace) BVoxelsOnFace++;
-			}
+				FNav3DVoxelConnection Connection;
+				FVector2D BoundaryPosition; // 2D position on the boundary plane
+				FVector ConnectionPoint; // 3D world position on the boundary plane
+				float Distance;
+			};
 			
-			UE_LOG(LogNav3D, Verbose, TEXT("Face analysis: FaceA=%d, FaceB=%d, AVoxelsOnFace=%d, BVoxelsOnFace=%d"), 
-				FaceA, FaceB, AVoxelsOnFace, BVoxelsOnFace);
-			
-			// Bucket by Local morton and keep 3 nearest per local
-			TMap<uint64, TArray<FNav3DVoxelConnection>> LocalToConns;
+			TArray<FConnectionCandidate> AllConnections;
 			int32 VoxelComparisons = 0;
+			
+			// Minimum distance between portals for Poisson sampling (adjust for density)
+			const float MinPortalDistance = VoxelSize * 3.0f;
 			
 			for (const FNav3DEdgeVoxel& VoxelA : A->BoundaryVoxels)
 			{
@@ -1113,7 +1109,6 @@ void FNav3DDataGenerator::BuildAdjacencyBetweenTwoChunkActors(ANav3DDataChunkAct
 					PosA = VolumeA->GetNodePositionFromLayerAndMortonCode(VoxelA.LayerIndex, VoxelA.Morton);
 				}
 
-				TArray<FNav3DVoxelConnection>& Bucket = LocalToConns.FindOrAdd(VoxelA.Morton);
 				for (const FNav3DEdgeVoxel& VoxelB : B->BoundaryVoxels)
 				{
 					// Only check voxels on the shared face for volume B
@@ -1140,34 +1135,40 @@ void FNav3DDataGenerator::BuildAdjacencyBetweenTwoChunkActors(ANav3DDataChunkAct
 						PosB = VolumeB->GetNodePositionFromLayerAndMortonCode(VoxelB.LayerIndex, VoxelB.Morton);
 					}
 
-					// Get voxel extents for each layer
-					float VoxelExtentA, VoxelExtentB;
-					if (VoxelA.LayerIndex == 0)
-					{
-						VoxelExtentA = VolumeA->GetData().GetLeafNodes().GetLeafNodeExtent();
-					}
-					else
-					{
-						VoxelExtentA = VolumeA->GetData().GetLayer(VoxelA.LayerIndex).GetNodeExtent();
-					}
-					
-					if (VoxelB.LayerIndex == 0)
-					{
-						VoxelExtentB = VolumeB->GetData().GetLeafNodes().GetLeafNodeExtent();
-					}
-					else
-					{
-						VoxelExtentB = VolumeB->GetData().GetLayer(VoxelB.LayerIndex).GetNodeExtent();
-					}
-					
-					// Use the smaller voxel extent for face sharing check
-					const float MinVoxelExtent = FMath::Min(VoxelExtentA, VoxelExtentB);
 					const float CenterToCenterDist = FVector::Dist(PosA, PosB);
-					const float Threshold = MinVoxelExtent + AdjacencyClearance;
 					
-					if (FNav3DUtils::CheckVoxelFaceAdjacency(VoxelA, VoxelB, VolumeA, VolumeB, FaceA, FaceB, AdjacencyClearance))
+					if (FNav3DUtils::CheckVoxelBoundaryConnection(VoxelA, VoxelB, VolumeA, VolumeB, 
+					                                               BoundaryPlane, BoundaryAxis, MaxBoundaryGap))
 					{
-						UE_LOG(LogNav3D, VeryVerbose, TEXT("  -> CONNECTION: CenterToCenter=%.2f <= Threshold=%.2f"), CenterToCenterDist, Threshold);
+						// Calculate the midpoint between voxels projected onto boundary plane
+						// This gives us the actual connection point on the shared face
+						FVector ConnectionPoint;
+						FVector2D BoundaryPosition2D;
+						
+						if (BoundaryAxis == 0) // X-axis boundary
+						{
+							// Use boundary plane X, average of Y and Z
+							ConnectionPoint.X = BoundaryPlane;
+							ConnectionPoint.Y = (PosA.Y + PosB.Y) * 0.5f;
+							ConnectionPoint.Z = (PosA.Z + PosB.Z) * 0.5f;
+							BoundaryPosition2D = FVector2D(ConnectionPoint.Y, ConnectionPoint.Z);
+						}
+						else if (BoundaryAxis == 1) // Y-axis boundary
+						{
+							// Use boundary plane Y, average of X and Z
+							ConnectionPoint.X = (PosA.X + PosB.X) * 0.5f;
+							ConnectionPoint.Y = BoundaryPlane;
+							ConnectionPoint.Z = (PosA.Z + PosB.Z) * 0.5f;
+							BoundaryPosition2D = FVector2D(ConnectionPoint.X, ConnectionPoint.Z);
+						}
+						else // Z-axis boundary
+						{
+							// Use boundary plane Z, average of X and Y
+							ConnectionPoint.X = (PosA.X + PosB.X) * 0.5f;
+							ConnectionPoint.Y = (PosA.Y + PosB.Y) * 0.5f;
+							ConnectionPoint.Z = BoundaryPlane;
+							BoundaryPosition2D = FVector2D(ConnectionPoint.X, ConnectionPoint.Y);
+						}
 						
 						FNav3DVoxelConnection Conn;
 						Conn.Local = VoxelA.Morton;
@@ -1176,78 +1177,122 @@ void FNav3DDataGenerator::BuildAdjacencyBetweenTwoChunkActors(ANav3DDataChunkAct
 						Conn.Remote = VoxelB.Morton;
 						Conn.RemoteVolumeIndex = VoxelB.VolumeIndex;
 						Conn.RemoteChunkIndex = 0;
-						Conn.Distance = CenterToCenterDist; // Store center-to-center distance
-
-						// Insert sorted and cap to 3
-						int32 InsertIdx = 0;
-						while (InsertIdx < Bucket.Num() && Bucket[InsertIdx].Distance <= CenterToCenterDist) { ++InsertIdx; }
-						Bucket.Insert(Conn, InsertIdx);
-						if (Bucket.Num() > 3) { Bucket.SetNum(3, EAllowShrinking::No); }
+						Conn.Distance = CenterToCenterDist;
+						
+						// Add to candidate list for Poisson sampling
+						FConnectionCandidate Candidate;
+						Candidate.Connection = Conn;
+						Candidate.BoundaryPosition = BoundaryPosition2D;
+						Candidate.ConnectionPoint = ConnectionPoint; // Store the actual world-space connection point
+						Candidate.Distance = CenterToCenterDist;
+						AllConnections.Add(Candidate);
 					}
 				}
 			}
 			
-			UE_LOG(LogNav3D, Verbose, TEXT("Completed %d voxel comparisons for %s <-> %s"), 
-				VoxelComparisons, *ActorA->GetName(), *ActorB->GetName());
+			UE_LOG(LogNav3D, Verbose, TEXT("Completed %d voxel comparisons, found %d candidate connections for %s <-> %s"), 
+				VoxelComparisons, AllConnections.Num(), *ActorA->GetName(), *ActorB->GetName());
 			
+			// Apply Poisson disk sampling to select evenly distributed portals
+			TArray<FConnectionCandidate> SelectedCandidates;
+			const float MinDistSq = FMath::Square(MinPortalDistance);
 			
-			for (const auto& Pair : LocalToConns)
+			// Sort candidates by distance (prefer shorter connections)
+			AllConnections.Sort([](const FConnectionCandidate& A, const FConnectionCandidate& B)
 			{
-				for (const TArray<FNav3DVoxelConnection>& Connections = Pair.Value;
-					const FNav3DVoxelConnection& Conn : Connections)
+				return A.Distance < B.Distance;
+			});
+			
+			// Greedy Poisson sampling: iterate through sorted candidates and accept those
+			// that are far enough from already selected portals
+			// Track selected positions for distance checking
+			TArray<FVector2D> SelectedPositions;
+			
+			for (const FConnectionCandidate& Candidate : AllConnections)
+			{
+				bool bTooClose = false;
+				for (const FVector2D& SelectedPos : SelectedPositions)
 				{
-					// Find or create adjacency entry for ActorA -> ActorB
-					FNav3DChunkAdjacency* AdjacencyAB = ActorA->ChunkAdjacency.FindByPredicate([ActorB](const FNav3DChunkAdjacency& Adj)
+					const float DistSq = FVector2D::DistSquared(Candidate.BoundaryPosition, SelectedPos);
+					if (DistSq < MinDistSq)
 					{
-						return Adj.OtherChunkActor.Get() == ActorB;
-					});
-					
-					if (!AdjacencyAB)
-					{
-						FNav3DChunkAdjacency NewAdjacency;
-						NewAdjacency.OtherChunkActor = ActorB;
-						
-						// Calculate spatial relationship data
-						NewAdjacency.SharedFaceNormal = (ActorB->DataChunkActorBounds.GetCenter() - 
-														ActorA->DataChunkActorBounds.GetCenter()).GetSafeNormal();
-						NewAdjacency.ConnectionWeight = CalculateConnectionWeight(ActorA, ActorB);
-						
-						ActorA->ChunkAdjacency.Add(NewAdjacency);
-						AdjacencyAB = &ActorA->ChunkAdjacency.Last();
+						bTooClose = true;
+						break;
 					}
+				}
+				
+				if (!bTooClose)
+				{
+					SelectedCandidates.Add(Candidate);
+					SelectedPositions.Add(Candidate.BoundaryPosition);
+				}
+			}
+			
+			UE_LOG(LogNav3D, Verbose, TEXT("Poisson sampling selected %d portals from %d candidates (min distance=%.2f)"), 
+				SelectedCandidates.Num(), AllConnections.Num(), MinPortalDistance);
+			
+			// Add selected portals with their connection points
+			for (const FConnectionCandidate& Candidate : SelectedCandidates)
+			{
+				const FNav3DVoxelConnection& Conn = Candidate.Connection;
+				
+				// Find or create adjacency entry for ActorA -> ActorB
+				FNav3DChunkAdjacency* AdjacencyAB = ActorA->ChunkAdjacency.FindByPredicate([ActorB](const FNav3DChunkAdjacency& Adj)
+				{
+					return Adj.OtherChunkActor.Get() == ActorB;
+				});
+				
+				if (!AdjacencyAB)
+				{
+					FNav3DChunkAdjacency NewAdjacency;
+					NewAdjacency.OtherChunkActor = ActorB;
 					
-					// Directly add compact portal instead of Build connection
-					{
-						FCompactPortal CPab; CPab.Local = Conn.Local; CPab.Remote = Conn.Remote;
-						AdjacencyAB->CompactPortals.Add(CPab);
-					}
+					// Calculate spatial relationship data
+					NewAdjacency.SharedFaceNormal = (ActorB->DataChunkActorBounds.GetCenter() - 
+													ActorA->DataChunkActorBounds.GetCenter()).GetSafeNormal();
+					NewAdjacency.ConnectionWeight = CalculateConnectionWeight(ActorA, ActorB);
 					
-					// Find or create adjacency entry for ActorB -> ActorA (reverse connection)
-					FNav3DChunkAdjacency* AdjacencyBA = ActorB->ChunkAdjacency.FindByPredicate([ActorA](const FNav3DChunkAdjacency& Adj)
-					{
-						return Adj.OtherChunkActor.Get() == ActorA;
-					});
+					ActorA->ChunkAdjacency.Add(NewAdjacency);
+					AdjacencyAB = &ActorA->ChunkAdjacency.Last();
+				}
+				
+				// Directly add compact portal with stored connection point
+				{
+					FCompactPortal CPab; 
+					CPab.Local = Conn.Local; 
+					CPab.Remote = Conn.Remote;
+					CPab.ConnectionPoint = Candidate.ConnectionPoint; // Use the pre-calculated connection point
+					AdjacencyAB->CompactPortals.Add(CPab);
+				}
+				
+				// Find or create adjacency entry for ActorB -> ActorA (reverse connection)
+				FNav3DChunkAdjacency* AdjacencyBA = ActorB->ChunkAdjacency.FindByPredicate([ActorA](const FNav3DChunkAdjacency& Adj)
+				{
+					return Adj.OtherChunkActor.Get() == ActorA;
+				});
+				
+				if (!AdjacencyBA)
+				{
+					FNav3DChunkAdjacency NewAdjacency;
+					NewAdjacency.OtherChunkActor = ActorA;
 					
-					if (!AdjacencyBA)
-					{
-						FNav3DChunkAdjacency NewAdjacency;
-						NewAdjacency.OtherChunkActor = ActorA;
-						
-						// Calculate spatial relationship data (reverse direction)
-						NewAdjacency.SharedFaceNormal = (ActorA->DataChunkActorBounds.GetCenter() - 
-														ActorB->DataChunkActorBounds.GetCenter()).GetSafeNormal();
-						NewAdjacency.ConnectionWeight = CalculateConnectionWeight(ActorB, ActorA);
-						
-						ActorB->ChunkAdjacency.Add(NewAdjacency);
-						AdjacencyBA = &ActorB->ChunkAdjacency.Last();
-					}
+					// Calculate spatial relationship data (reverse direction)
+					NewAdjacency.SharedFaceNormal = (ActorA->DataChunkActorBounds.GetCenter() - 
+													ActorB->DataChunkActorBounds.GetCenter()).GetSafeNormal();
+					NewAdjacency.ConnectionWeight = CalculateConnectionWeight(ActorB, ActorA);
 					
-					// Add reverse compact portal
-					{
-						FCompactPortal CPba; CPba.Local = Conn.Remote; CPba.Remote = Conn.Local;
-						AdjacencyBA->CompactPortals.Add(CPba);
-						TotalConnectionsAdded++;
-					}
+					ActorB->ChunkAdjacency.Add(NewAdjacency);
+					AdjacencyBA = &ActorB->ChunkAdjacency.Last();
+				}
+				
+				// Add reverse compact portal with same connection point (portal is bidirectional)
+				{
+					FCompactPortal CPba; 
+					CPba.Local = Conn.Remote; 
+					CPba.Remote = Conn.Local;
+					CPba.ConnectionPoint = Candidate.ConnectionPoint; // Same connection point for reverse direction
+					AdjacencyBA->CompactPortals.Add(CPba);
+					TotalConnectionsAdded++;
 				}
 			}
 		}

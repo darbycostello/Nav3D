@@ -252,12 +252,21 @@ void FNav3DUtils::IdentifyBoundaryVoxels(UNav3DDataChunk* Chunk)
 				}
 
 				// Check which boundary faces this voxel is on
-				const bool bOnMinXFace = (WorldPos.X - VoxelExtent) <= (Bounds.Min.X + Epsilon);
-				const bool bOnMaxXFace = (WorldPos.X + VoxelExtent) >= (Bounds.Max.X - Epsilon);
-				const bool bOnMinYFace = (WorldPos.Y - VoxelExtent) <= (Bounds.Min.Y + Epsilon);
-				const bool bOnMaxYFace = (WorldPos.Y + VoxelExtent) >= (Bounds.Max.Y - Epsilon);
-				const bool bOnMinZFace = (WorldPos.Z - VoxelExtent) <= (Bounds.Min.Z + Epsilon);
-				const bool bOnMaxZFace = (WorldPos.Z + VoxelExtent) >= (Bounds.Max.Z - Epsilon);
+				// A voxel is "on" a boundary face if:
+				// 1. Its face touches/extends past the boundary (original condition)
+				// 2. Its CENTER is within one extent of the boundary (prevents far-outside voxels)
+				const bool bOnMinXFace = (WorldPos.X - VoxelExtent) <= (Bounds.Min.X + Epsilon) && 
+				                         (WorldPos.X >= Bounds.Min.X - VoxelExtent);
+				const bool bOnMaxXFace = (WorldPos.X + VoxelExtent) >= (Bounds.Max.X - Epsilon) && 
+				                         (WorldPos.X <= Bounds.Max.X + VoxelExtent);
+				const bool bOnMinYFace = (WorldPos.Y - VoxelExtent) <= (Bounds.Min.Y + Epsilon) && 
+				                         (WorldPos.Y >= Bounds.Min.Y - VoxelExtent);
+				const bool bOnMaxYFace = (WorldPos.Y + VoxelExtent) >= (Bounds.Max.Y - Epsilon) && 
+				                         (WorldPos.Y <= Bounds.Max.Y + VoxelExtent);
+				const bool bOnMinZFace = (WorldPos.Z - VoxelExtent) <= (Bounds.Min.Z + Epsilon) && 
+				                         (WorldPos.Z >= Bounds.Min.Z - VoxelExtent);
+				const bool bOnMaxZFace = (WorldPos.Z + VoxelExtent) >= (Bounds.Max.Z - Epsilon) && 
+				                         (WorldPos.Z <= Bounds.Max.Z + VoxelExtent);
 
 				if (bOnMinXFace || bOnMaxXFace || bOnMinYFace || bOnMaxYFace || bOnMinZFace || bOnMaxZFace)
 				{
@@ -687,10 +696,128 @@ bool FNav3DUtils::CheckVoxelFaceAdjacency(
     // Check if face distance is within adjacency clearance
     bool bAdjacent = FaceDistance <= AdjacencyClearance;
     
-    UE_LOG(LogNav3D, VeryVerbose, TEXT("Face adjacency check: VoxelA(Extent=%.1f) <-> VoxelB(Extent=%.1f), FaceDistance=%.1f, Clearance=%.1f, Adjacent=%s"),
-           VoxelExtentA, VoxelExtentB, FaceDistance, AdjacencyClearance, bAdjacent ? TEXT("YES") : TEXT("NO"));
-    
     return bAdjacent;
+}
+
+// Helper function to check 2D AABB overlap
+static bool CheckAABBOverlap2D(float A1, float A2, float ExtentA, float B1, float B2, float ExtentB)
+{
+    bool Overlap1 = (A1 + ExtentA >= B1 - ExtentB) && (A1 - ExtentA <= B1 + ExtentB);
+    bool Overlap2 = (A2 + ExtentA >= B2 - ExtentB) && (A2 - ExtentA <= B2 + ExtentB);
+    return Overlap1 && Overlap2;
+}
+
+bool FNav3DUtils::CheckVoxelBoundaryConnection(
+    const FNav3DEdgeVoxel& VoxelA,
+    const FNav3DEdgeVoxel& VoxelB,
+    const FNav3DVolumeNavigationData* VolumeA,
+    const FNav3DVolumeNavigationData* VolumeB,
+    float BoundaryPlaneValue,
+    int32 BoundaryAxis,
+    float MaxGap)
+{
+    // Get voxel positions
+    FVector PosA;
+    if (VoxelA.LayerIndex == 0)
+    {
+        PosA = VolumeA->GetLeafNodePositionFromMortonCode(VoxelA.Morton);
+    }
+    else
+    {
+        PosA = VolumeA->GetNodePositionFromLayerAndMortonCode(VoxelA.LayerIndex, VoxelA.Morton);
+    }
+    
+    FVector PosB;
+    if (VoxelB.LayerIndex == 0)
+    {
+        PosB = VolumeB->GetLeafNodePositionFromMortonCode(VoxelB.Morton);
+    }
+    else
+    {
+        PosB = VolumeB->GetNodePositionFromLayerAndMortonCode(VoxelB.LayerIndex, VoxelB.Morton);
+    }
+    
+    // Get voxel extents
+    float ExtentA;
+    if (VoxelA.LayerIndex == 0)
+    {
+        ExtentA = VolumeA->GetData().GetLeafNodes().GetLeafNodeExtent();
+    }
+    else
+    {
+        ExtentA = VolumeA->GetData().GetLayer(VoxelA.LayerIndex).GetNodeExtent();
+    }
+    
+    float ExtentB;
+    if (VoxelB.LayerIndex == 0)
+    {
+        ExtentB = VolumeB->GetData().GetLeafNodes().GetLeafNodeExtent();
+    }
+    else
+    {
+        ExtentB = VolumeB->GetData().GetLayer(VoxelB.LayerIndex).GetNodeExtent();
+    }
+    
+    // Calculate distance from nearest edge to boundary plane for each voxel
+    float DistA, DistB;
+    
+    if (BoundaryAxis == 0) // X-axis
+    {
+        // Distance from nearest X edge to boundary plane
+        float MinDistA = FMath::Abs((PosA.X - ExtentA) - BoundaryPlaneValue);
+        float MaxDistA = FMath::Abs((PosA.X + ExtentA) - BoundaryPlaneValue);
+        DistA = FMath::Min(MinDistA, MaxDistA);
+        
+        float MinDistB = FMath::Abs((PosB.X - ExtentB) - BoundaryPlaneValue);
+        float MaxDistB = FMath::Abs((PosB.X + ExtentB) - BoundaryPlaneValue);
+        DistB = FMath::Min(MinDistB, MaxDistB);
+        
+        // Check Y-Z overlap
+        if (!CheckAABBOverlap2D(PosA.Y, PosA.Z, ExtentA, PosB.Y, PosB.Z, ExtentB))
+        {
+            return false;
+        }
+    }
+    else if (BoundaryAxis == 1) // Y-axis
+    {
+        float MinDistA = FMath::Abs((PosA.Y - ExtentA) - BoundaryPlaneValue);
+        float MaxDistA = FMath::Abs((PosA.Y + ExtentA) - BoundaryPlaneValue);
+        DistA = FMath::Min(MinDistA, MaxDistA);
+        
+        float MinDistB = FMath::Abs((PosB.Y - ExtentB) - BoundaryPlaneValue);
+        float MaxDistB = FMath::Abs((PosB.Y + ExtentB) - BoundaryPlaneValue);
+        DistB = FMath::Min(MinDistB, MaxDistB);
+        
+        // Check X-Z overlap
+        if (!CheckAABBOverlap2D(PosA.X, PosA.Z, ExtentA, PosB.X, PosB.Z, ExtentB))
+        {
+            return false;
+        }
+    }
+    else // Z-axis
+    {
+        float MinDistA = FMath::Abs((PosA.Z - ExtentA) - BoundaryPlaneValue);
+        float MaxDistA = FMath::Abs((PosA.Z + ExtentA) - BoundaryPlaneValue);
+        DistA = FMath::Min(MinDistA, MaxDistA);
+        
+        float MinDistB = FMath::Abs((PosB.Z - ExtentB) - BoundaryPlaneValue);
+        float MaxDistB = FMath::Abs((PosB.Z + ExtentB) - BoundaryPlaneValue);
+        DistB = FMath::Min(MinDistB, MaxDistB);
+        
+        // Check X-Y overlap
+        if (!CheckAABBOverlap2D(PosA.X, PosA.Y, ExtentA, PosB.X, PosB.Y, ExtentB))
+        {
+            return false;
+        }
+    }
+    
+    // Both voxels must be within MaxGap of the boundary plane
+    bool bConnected = (DistA <= MaxGap) && (DistB <= MaxGap);
+    
+    UE_LOG(LogNav3D, VeryVerbose, TEXT("Boundary connection check: DistA=%.2f, DistB=%.2f, MaxGap=%.2f, BoundaryPlane=%.2f (axis=%d), Result=%s"),
+           DistA, DistB, MaxGap, BoundaryPlaneValue, BoundaryAxis, bConnected ? TEXT("PASS") : TEXT("FAIL"));
+    
+    return bConnected;
 }
 
 FSharedConstNavQueryFilter FNav3DUtils::GetNav3DQueryFilter(

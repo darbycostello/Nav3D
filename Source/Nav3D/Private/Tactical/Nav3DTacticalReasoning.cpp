@@ -2206,7 +2206,7 @@ bool FNav3DTacticalReasoning::FindBestLocationFromCompact(
 
     auto FindContainingRegionId = [&](const FVector& P) -> uint16
     {
-        uint16 BestId = 0;
+        uint16 BestId = UINT16_MAX; // Use UINT16_MAX as "not found" sentinel (0 is a valid region ID!)
         float BestDist = MAX_flt;
         for (const auto& Pair : CompactData.AllLoadedRegions)
         {
@@ -2271,10 +2271,15 @@ bool FNav3DTacticalReasoning::FindBestLocationFromCompact(
     UE_LOG(LogNav3D, Verbose, TEXT("FindBestLocationFromCompact: Looking for start position %s in %d regions"), 
         *StartPosition.ToString(), CompactData.AllLoadedRegions.Num());
     
-    const uint16 StartRegionId = FindContainingRegionId(StartPosition);
-    if (StartRegionId == 0)
+    uint16 StartRegionId = FindContainingRegionId(StartPosition);
+    if (StartRegionId == UINT16_MAX)
     {
         UE_LOG(LogNav3D, Warning, TEXT("FindBestLocationFromCompact: Start position not in any loaded region"));
+        
+        // Fallback: Find nearest region
+        float NearestDist = MAX_flt;
+        uint16 NearestRegionId = UINT16_MAX;
+        
         UE_LOG(LogNav3D, Verbose, TEXT("Available regions:"));
         for (const auto& Pair : CompactData.AllLoadedRegions)
         {
@@ -2284,15 +2289,55 @@ bool FNav3DTacticalReasoning::FindBestLocationFromCompact(
             const float Radius = EstimateRegionRadius(R);
             UE_LOG(LogNav3D, Verbose, TEXT("  Region %d: center %s, radius %.2f, dist %.2f, in range: %s"), 
                 Rid, *R.Center.ToString(), Radius, Dist, (Dist <= Radius) ? TEXT("YES") : TEXT("NO"));
+            
+            // Track nearest region
+            if (Dist < NearestDist)
+            {
+                NearestDist = Dist;
+                NearestRegionId = Rid;
+            }
         }
-        return false;
+        
+        if (NearestRegionId != UINT16_MAX)
+        {
+            StartRegionId = NearestRegionId;
+            UE_LOG(LogNav3D, Warning, TEXT("FindBestLocationFromCompact: Using nearest region %d (dist %.2f) as fallback"), 
+                NearestRegionId, NearestDist);
+        }
+        else
+        {
+            UE_LOG(LogNav3D, Error, TEXT("FindBestLocationFromCompact: No regions available at all!"));
+            return false;
+        }
     }
 
     TArray<uint16> ObserverRegionIds;
     for (const FVector& ObsPos : ObserverPositions)
     {
-        const uint16 ObsId = FindContainingRegionId(ObsPos);
-        if (ObsId != 0)
+        uint16 ObsId = FindContainingRegionId(ObsPos);
+        
+        // Fallback: Use nearest region if observer not in any region
+        if (ObsId == UINT16_MAX)
+        {
+            float NearestDist = MAX_flt;
+            for (const auto& Pair : CompactData.AllLoadedRegions)
+            {
+                const float Dist = FVector::Dist(ObsPos, Pair.Value.Center);
+                if (Dist < NearestDist)
+                {
+                    NearestDist = Dist;
+                    ObsId = Pair.Key;
+                }
+            }
+            
+            if (ObsId != UINT16_MAX)
+            {
+                UE_LOG(LogNav3D, Verbose, TEXT("FindBestLocationFromCompact: Observer at %s using nearest region %d (dist %.2f)"), 
+                    *ObsPos.ToString(), ObsId, NearestDist);
+            }
+        }
+        
+        if (ObsId != UINT16_MAX)
         {
             ObserverRegionIds.AddUnique(ObsId);
         }
@@ -2300,7 +2345,7 @@ bool FNav3DTacticalReasoning::FindBestLocationFromCompact(
     
     if (ObserverRegionIds.Num() == 0)
     {
-        UE_LOG(LogNav3D, Warning, TEXT("FindBestLocationFromCompact: No observer positions in loaded regions"));
+        UE_LOG(LogNav3D, Error, TEXT("FindBestLocationFromCompact: No observer positions could be mapped to regions"));
         return false;
     }
 

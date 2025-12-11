@@ -3695,6 +3695,13 @@ TArray<FBox> ANav3DData::GetPartitionedVolumes() const
 
 TArray<FBox> ANav3DData::GetAllDiscoverableVolumes() const
 {
+	// Render threads can't touch actor iterators; return cached data
+	if (!IsInGameThread())
+	{
+		FScopeLock ScopeLock(&CachedDiscoverableVolumesMutex);
+		return CachedDiscoverableVolumes;
+	}
+
 	TArray<FBox> AllVolumes;
 	
 	if (UWorld* World = GetWorld())
@@ -3722,6 +3729,11 @@ TArray<FBox> ANav3DData::GetAllDiscoverableVolumes() const
 				AllVolumes = SupportedNavigationBounds;
 			}
 		}
+	}
+
+	{
+		FScopeLock ScopeLock(&CachedDiscoverableVolumesMutex);
+		CachedDiscoverableVolumes = AllVolumes;
 	}
 	
 	return AllVolumes;

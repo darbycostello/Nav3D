@@ -140,6 +140,11 @@ FNav3DMeshSceneProxy::FNav3DMeshSceneProxy(
 		AddVolumeTextInfos();
 	}
 
+	if (DebugInfos.bDebugDrawPortals)
+	{
+		DebugDrawPortals();
+	}
+
 	for (ANav3DDataChunkActor* ChunkActor : NavigationData->GetChunkActors())
 	{
 		if (!ChunkActor) continue;
@@ -239,11 +244,6 @@ FNav3DMeshSceneProxy::FNav3DMeshSceneProxy(
 	                if (TacticalDebugData.bDebugDrawRegionAdjacency)
 	                {
 	                    DebugDrawAdjacency();
-	                }
-	                
-	                if (TacticalDebugData.bDebugDrawPortals)
-	                {
-		                DebugDrawPortals();
 	                }
 	            }
 	            else
@@ -986,85 +986,87 @@ void FNav3DMeshSceneProxy::DebugDrawPortals()
     }
     
     const FColor PortalColor = FColor::Yellow;
-
-    // Iterate all source chunks from consolidated data
-    for (const TWeakObjectPtr<ANav3DDataChunkActor>& ChunkPtr : NavigationData->GetConsolidatedTacticalData().SourceChunks)
+    
+    // Iterate all chunk actors directly (no tactical dependency)
+    TArray<ANav3DDataChunkActor*> AllChunkActors = NavigationData->GetAllChunkActors();
+    
+    for (ANav3DDataChunkActor* SourceChunk : AllChunkActors)
     {
-        const ANav3DDataChunkActor* SourceChunk = ChunkPtr.Get();
-        if (!SourceChunk) { continue; }
-
+        if (!SourceChunk) continue;
+        
+        const UNav3DDataChunk* SourceDataChunk = (SourceChunk->Nav3DChunks.Num() > 0) 
+            ? SourceChunk->Nav3DChunks[0] : nullptr;
+        if (!SourceDataChunk) continue;
+        
+        const FNav3DVolumeNavigationData* SourceVolume = SourceDataChunk->GetVolumeNavigationData();
+        if (!SourceVolume) continue;
+        
+        // Iterate through adjacencies
         for (const FNav3DChunkAdjacency& Adjacency : SourceChunk->ChunkAdjacency)
         {
-            // Use compact portals only
+            const ANav3DDataChunkActor* TargetChunk = Adjacency.OtherChunkActor.Get();
+            if (!TargetChunk) continue;
+            
+            const UNav3DDataChunk* TargetDataChunk = (TargetChunk->Nav3DChunks.Num() > 0) 
+                ? TargetChunk->Nav3DChunks[0] : nullptr;
+            if (!TargetDataChunk) continue;
+            
+            const FNav3DVolumeNavigationData* TargetVolume = TargetDataChunk->GetVolumeNavigationData();
+            if (!TargetVolume) continue;
+            
+            // Draw compact portals
             for (const FCompactPortal& CP : Adjacency.CompactPortals)
             {
-	            // Resolve local endpoint in source chunk
-                const UNav3DDataChunk* AnyChunk = SourceChunk->Nav3DChunks.Num() > 0 ? SourceChunk->Nav3DChunks[0] : nullptr;
-                const FNav3DVolumeNavigationData* Vol = AnyChunk ? AnyChunk->GetVolumeNavigationData() : nullptr;
-                const FVector A = Vol ? Vol->GetLeafNodePositionFromMortonCode(CP.Local) : FVector::ZeroVector;
-
-                // Resolve remote endpoint using adjacent chunk
-                const ANav3DDataChunkActor* TargetChunk = Adjacency.OtherChunkActor.Get();
-                const UNav3DDataChunk* TargetAnyChunk = (TargetChunk && TargetChunk->Nav3DChunks.Num() > 0) ? TargetChunk->Nav3DChunks[0] : nullptr;
-                const FNav3DVolumeNavigationData* TargetVol = TargetAnyChunk ? TargetAnyChunk->GetVolumeNavigationData() : nullptr;
-                const FVector B = TargetVol ? TargetVol->GetLeafNodePositionFromMortonCode(CP.Remote) : FVector::ZeroVector;
-
-            	auto ProjectToFace = [](const FVector& P, const FBox& BoxBounds, const FVector& FaceNormal) -> FVector
-            	{
-            		FVector Out = P;
-            		if (FaceNormal.X > 0.5f)   Out.X = BoxBounds.Max.X;
-            		else if (FaceNormal.X < -0.5f) Out.X = BoxBounds.Min.X;
-            		else if (FaceNormal.Y > 0.5f)  Out.Y = BoxBounds.Max.Y;
-            		else if (FaceNormal.Y < -0.5f) Out.Y = BoxBounds.Min.Y;
-            		else if (FaceNormal.Z > 0.5f)  Out.Z = BoxBounds.Max.Z;
-            		else if (FaceNormal.Z < -0.5f) Out.Z = BoxBounds.Min.Z;
-            		return Out;
-            	};
-            	
-            	const FVector N = Adjacency.SharedFaceNormal.GetSafeNormal();
-            	
-                // Lightweight cross markers instead of spheres
-	            constexpr float Length = 500.0f;
-                const FBox& SrcBounds = SourceChunk->DataChunkActorBounds;
-                const FBox TgtBounds = TargetChunk ? TargetChunk->DataChunkActorBounds : FBox(ForceInit);
-
-                const FVector AProj = (!A.IsNearlyZero() && !N.IsNearlyZero()) ? ProjectToFace(A, SrcBounds, N) : A;
-                const FVector BProj = (!B.IsNearlyZero() && TargetChunk && !N.IsNearlyZero()) ? ProjectToFace(B, TgtBounds, -N) : B;
-
-                // Slight offset onto the face to avoid z-fighting
-	            constexpr float Eps = 1.0f;
-                const FVector Aon = AProj + N * Eps;
-                const FVector Bon = BProj - N * Eps;
-
+                // Use stored connection point if available (pre-calculated during portal creation)
+                // Otherwise fall back to recalculating from Morton codes for backwards compatibility
+                FVector PortalPos;
+                if (CP.ConnectionPoint.IsNearlyZero())
+                {
+                    // Legacy: Recalculate from Morton codes (may be inaccurate for non-layer-0 portals)
+                    const FVector A = SourceVolume->GetLeafNodePositionFromMortonCode(CP.Local);
+                    const FVector B = TargetVolume->GetLeafNodePositionFromMortonCode(CP.Remote);
+                    if (A.IsNearlyZero() || B.IsNearlyZero()) continue;
+                    PortalPos = (A + B) * 0.5f;
+                }
+                else
+                {
+                    // Use the pre-calculated connection point on the boundary plane
+                    PortalPos = CP.ConnectionPoint;
+                }
+                
+                const FVector N = Adjacency.SharedFaceNormal.GetSafeNormal();
+                constexpr float Length = 500.0f;
+                
+                // Portal is already on the boundary plane, just offset slightly for visibility
+                const FVector PortalRenderPos = PortalPos + N * 1.0f;
+                
+                // Create face basis
                 auto MakeFaceBasis = [](const FVector& Normal, FVector& U, FVector& V)
                 {
-                    // Snap normal to principal axis to keep basis orthogonal to world axes
-                    FVector N = Normal;
-                    const float ax = FMath::Abs(N.X);
-                    const float ay = FMath::Abs(N.Y);
-                    const float az = FMath::Abs(N.Z);
-                    if (ax >= ay && ax >= az)
+                    const float Ax = FMath::Abs(Normal.X);
+                    const float AY = FMath::Abs(Normal.Y);
+                    const float Az = FMath::Abs(Normal.Z);
+                    if (Ax >= AY && Ax >= Az)
                     {
-                        N = FVector((N.X >= 0.f) ? 1.f : -1.f, 0.f, 0.f);
                         U = FVector(0.f, 1.f, 0.f);
                         V = FVector(0.f, 0.f, 1.f);
                     }
-                    else if (ay >= ax && ay >= az)
+                    else if (AY >= Ax && AY >= Az)
                     {
-                        N = FVector(0.f, (N.Y >= 0.f) ? 1.f : -1.f, 0.f);
                         U = FVector(1.f, 0.f, 0.f);
                         V = FVector(0.f, 0.f, 1.f);
                     }
                     else
                     {
-                        N = FVector(0.f, 0.f, (N.Z >= 0.f) ? 1.f : -1.f);
                         U = FVector(1.f, 0.f, 0.f);
                         V = FVector(0.f, 1.f, 0.f);
                     }
                 };
-
-                FVector UAxis, VAxis; MakeFaceBasis(N, UAxis, VAxis);
-
+                
+                FVector UAxis, VAxis;
+                MakeFaceBasis(N, UAxis, VAxis);
+                
+                // Draw square at the connection point (portal is on the boundary plane)
                 auto DrawSquare = [&](const FVector& C)
                 {
                     const FVector P0 = C + UAxis * Length + VAxis * Length;
@@ -1076,9 +1078,9 @@ void FNav3DMeshSceneProxy::DebugDrawPortals()
                     Lines.Emplace(P2, P3, PortalColor, 5.f);
                     Lines.Emplace(P3, P0, PortalColor, 5.f);
                 };
-
-                if (!Aon.IsNearlyZero()) { DrawSquare(Aon); }
-                if (!Bon.IsNearlyZero()) { DrawSquare(Bon); }
+                
+                // Draw portal at the connection point (single square on boundary plane)
+                DrawSquare(PortalRenderPos);
             }
         }
     }

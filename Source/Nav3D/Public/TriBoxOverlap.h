@@ -62,7 +62,7 @@ namespace Nav3D::TriBoxOverlapUtils
 		}
 		return 0;
 	}
-}
 
-bool TriBoxOverlap(const FVector& BoxCenter, const FVector& BoxHalfSize, const FVector& TriVert0,
-                   const FVector& TriVert1, const FVector& TriVert2);
+	bool TriBoxOverlap(const FVector& BoxCenter, const FVector& BoxHalfSize, const FVector& TriVert0,
+	                   const FVector& TriVert1, const FVector& TriVert2);
+}

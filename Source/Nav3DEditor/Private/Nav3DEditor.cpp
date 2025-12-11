@@ -1,7 +1,7 @@
-#include "Nav3DEditor/Public/Nav3DEditor.h"
+#include "Nav3DEditor.h"
 #include "Nav3DDataDetailCustomization.h"
 #include "PropertyEditorModule.h"
-#include "Nav3D/Public/Nav3DData.h"
+#include "Nav3DData.h"
 #include "Modules/ModuleManager.h"
 
 IMPLEMENT_GAME_MODULE(FNav3DEditorModule, Nav3DEditor);

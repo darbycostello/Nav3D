@@ -2,8 +2,8 @@
 #include "CoreMinimal.h"
 #include "Math/Vector.h"
 
-using namespace Nav3D::TriBoxOverlapUtils;
-
+namespace Nav3D::TriBoxOverlapUtils
+{
 static void FVectorToFloatArray(const FVector& Vec, float Array[3])
 {
 	Array[0] = Vec.X;
@@ -88,4 +88,5 @@ bool TriBoxOverlap(const FVector& BoxCenter, const FVector& BoxHalfSize, const F
 	}
 
 	return true;
+}
 }

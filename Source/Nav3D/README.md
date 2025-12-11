@@ -319,14 +319,14 @@ Use the **Analyse** feature in the `Nav3DData` actor inspector to:
 
 ### Pathfinding Test Actor
 
-Use `Nav3DPathFinderTest` actors for algorithm testing:
+Use `ANav3DPathTest` actors for algorithm testing:
 
 1. Place two test actors in scene
 2. Set one as "Other Actor" on the first
 3. Configure pathfinding settings
 4. Use test buttons:
-    - **Clear Paths**: Clear any previously rendered paths for this actor
-    - **Find Path**: Path to the Other Actor immediately. Enabled debug drawing to see the path
+   - **Clear Paths**: Clear any previously rendered paths for this actor
+   - **Find Path**: Path to the Other Actor immediately. Enabled debug drawing to see the path
 
 ### Tactical Reasoning Visualization
 

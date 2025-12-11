@@ -276,6 +276,9 @@ struct NAV3D_API FNav3DVolumeDebugData
 
 	UPROPERTY(EditInstanceOnly)
 	uint8 bDebugDrawVolumes : 1;
+	
+	UPROPERTY(EditInstanceOnly)
+	uint8 bDebugDrawPortals : 1;
 
 	UPROPERTY(EditInstanceOnly)
 	uint8 bDebugDrawLayers : 1;
@@ -302,9 +305,6 @@ struct NAV3D_API FNav3DTacticalDebugData
 	GENERATED_BODY()
 
 	FNav3DTacticalDebugData();
-
-	UPROPERTY(EditInstanceOnly)
-	uint8 bDebugDrawPortals : 1;
 
 	UPROPERTY(EditInstanceOnly)
 	uint8 bDebugDrawRegions : 1;
@@ -772,6 +772,11 @@ struct NAV3D_API FCompactPortal
 
     UPROPERTY()
     uint64 Remote = 0;
+
+    // World-space position of the portal on the boundary plane
+    // This is the actual connection point between chunks, pre-calculated during portal creation
+    UPROPERTY()
+    FVector ConnectionPoint = FVector::ZeroVector;
 };
 
 USTRUCT()
