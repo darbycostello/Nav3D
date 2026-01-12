@@ -2306,7 +2306,7 @@ bool FNav3DTacticalReasoning::FindBestLocationFromCompact(
         }
         else
         {
-            UE_LOG(LogNav3D, Error, TEXT("FindBestLocationFromCompact: No regions available at all!"));
+            UE_LOG(LogNav3D, Error, TEXT("FindBestLocationFromCompact: No regions available at all"));
             return false;
         }
     }
